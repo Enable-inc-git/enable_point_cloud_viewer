@@ -1,0 +1,7 @@
+{
+  "name": "enable-point-cloud-viewer",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/copy-index.js"
+  }
+}
