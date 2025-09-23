@@ -1,0 +1,23 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Node/build (safe even if you don't use them yet)
+node_modules/
+dist/
+build/
+.cache/
+.tmp/
+
+# Logs & secrets
+*.log
+.env
+.env.*
+!.env.example
+
+# Netlify
+.netlify/
