@@ -383,167 +383,133 @@
   // ===========================================================
   // ==========  SECTION 4 — GUI: SIDEBAR & HOTKEYS  ===========
   // ===========================================================
-viewer.loadGUI(function(){
-  viewer.setLanguage("en");
-  viewer.toggleSidebar();
+(function(){
+  // One-shot guard if this runs multiple times
+  let APPLIED = false;
 
-  const $side = $("#potree_sidebar_container");
-
-  // ---- Logo ---------------------------------------------------------------
-  (function brandHeader(){
-  const logoURL = "/EnableLogo.png?v=" + Date.now();
-  const html = `
-    <div id="brandHeader">
-      <img src="${logoURL}" alt="Logo">
-      <div id="brandTitle"
-           style="margin-top:8px; font-size:18px; font-weight:700; text-align:center; color:var(--text-0);">
-        Point Cloud Viewer
-      </div>
-    </div>`;
-  const $hdrAnchor = $side.find("a[href*='potree.org'], a[href*='github'], a[href*='twitter']").first();
-  const $hdrRow = $hdrAnchor.length ? $hdrAnchor.closest("div") : null;
-  if ($hdrRow && $hdrRow.length) { $hdrRow.html(html); } else { $side.prepend(html); }
-})();
-
-  // ---- Only use Tools & Navigation (we'll harvest from them) --------------
-  const hide = sel => { const $m=$(sel); if($m.length){$m.hide();$m.next().hide();} };
-  const show = sel => { const $m=$(sel); if($m.length){$m.show();$m.next().show();} };
-  show("#menu_tools"); show("#menu_navigation");
-  hide("#menu_scene"); hide("#menu_appearance"); hide("#menu_edl"); hide("#menu_background");
-  hide("#menu_filters"); hide("#menu_about"); hide("#menu_other");
-
-  // ---- Hotkeys card -------------------------------------------------------
-  (function injectHotkeysPanel(){
-    const $dst = $("#menu_tools").next();
-    if(!$dst.length || $("#hotkeysHelp").length) return;
-    const html = `
-      <section id="hotkeysHelp" class="hk-card">
-        <div class="hk-title">Hotkeys</div>
-        <table class="hk-table">
-          <tr><td>H</td><td>Horizontal chain (Top-Ortho, Z-clamp)</td></tr>
-          <tr><td>V</td><td>Vertical chain (pure ΔZ)</td></tr>
-          <tr><td>M</td><td>Measure 3D</td></tr>
-          <tr><td>O</td><td>Orthographic projection</td></tr>
-          <tr><td>P</td><td>Perspective projection</td></tr>
-          <tr><td>B</td><td>Clip box show / hide</td></tr>
-        </table>
-      </section>`;
-    $dst.prepend(html);
-  })();
-
-  // ---- Open both accordions so their DOM exists ---------------------------
-  setTimeout(function(){
-    const openAcc = (hdrSel) => {
-      const $h=$(hdrSel), $c=$h.next();
-      if(!$h.length||!$c.length) return;
-      $h.removeClass("ui-accordion-header-collapsed")
-        .addClass("ui-accordion-header-active")
-        .attr("aria-expanded","true");
+  function openAccordion($h){
+    if(!$h || !$h.length) return;
+    const $c = $h.next();
+    $h.removeClass("ui-accordion-header-collapsed")
+      .addClass("ui-accordion-header-active")
+      .attr("aria-expanded","true");
+    if($c && $c.length){
       $c.addClass("ui-accordion-content-active")
         .attr("aria-hidden","false")
         .show();
-    };
-    openAcc("#menu_tools");
-    openAcc("#menu_navigation");
-  }, 0);
-
-  // ---- Build minimal panel: Hotkeys + 6 views + tips ----------------------
-  function buildMinimal(){
-    const $toolsBody = $("#menu_tools").next();
-    const $navBody   = $("#menu_navigation").next();
-    if (!$toolsBody.length) return;
-
-    // Insert our rows right after Hotkeys
-    const $anchor   = $("#hotkeysHelp").length ? $("#hotkeysHelp") : $toolsBody.children().first();
-    const $navTitle = $('<div id="enableNavTitle" style="margin:10px 0 6px; text-align:center; font-weight:700; opacity:.85;">Navigation</div>');
-    const $viewsRow = $('<div id="enableViews" style="margin:6px 0;"></div>');
-    const $tips     = $(`
-  <div id="enableNavTips"
-       style="margin:6px 0 2px; padding:6px 8px;
-              background:#222; color:var(--text-0);
-              font:12px/1.35 system-ui,Segoe UI,Roboto,Arial,sans-serif; opacity:.95;">
-    <div style="margin:2px 0;">Left mouse button: rotate model</div>
-    <div style="margin:2px 0;">Middle mouse (drag): pan • Mouse wheel: zoom</div>
-    <div style="margin:2px 0;">Refresh browser to clear dimensions</div>
-  </div>
-`);
-    $anchor.after($navTitle, $viewsRow, $tips);
-
-    // Search pool = Tools + Navigation bodies
-    const $pool = $().add($toolsBody).add($navBody);
-
-    // Helpers ---------------------------------------------------------------
-    function clickable($el){
-      const $wrap = $el.closest("a,button");
-      return $wrap.length ? $wrap : $el;
     }
-    function findViewBtn(name){
-      const n = name.toLowerCase();
-      let $el = $pool.find('[title], [aria-label], img[alt]').filter(function(){
-        const t   = (this.getAttribute('title')||'').toLowerCase();
-        const ar  = (this.getAttribute('aria-label')||'').toLowerCase();
-        const alt = (this.getAttribute('alt')||'').toLowerCase();
-        return t.includes(n) || ar.includes(n) || alt.includes(n);
-      }).first();
-      if ($el.length) return clickable($el);
-      $el = $pool.find('img[src]').filter(function(){
-        return (this.getAttribute('src')||'').toLowerCase().includes(n);
-      }).first();
-      if ($el.length) return clickable($el);
-      return $();
-    }
-    function moveIfFound($el, $dest){ if($el && $el.length){ $el.detach().appendTo($dest); return true; } return false; }
-
-    // 6 view buttons
-    ["front","back","left","right","top","bottom"].forEach(n => {
-      moveIfFound(findViewBtn(n), $viewsRow);
-    });
-
-    // Remove Perspective / Orthographic buttons
-    (function removeCamButtons(){
-      const $candidates = $pool.find("button, .ui-button, a, span, div, img");
-      const toHide = [];
-      $candidates.each(function(){
-        const $el   = $(this);
-        const text  = ($el.text() || "").toLowerCase();
-        const title = ($el.attr("title") || "").toLowerCase();
-        const aria  = ($el.attr("aria-label") || "").toLowerCase();
-        const alt   = ($el.attr("alt") || "").toLowerCase();
-        const src   = ($el.attr("src") || "").toLowerCase();
-        const isCam =
-          text.includes("perspective") || text.includes("orthographic") || text === "ortho" ||
-          title.includes("perspective") || title.includes("orthographic") || title === "ortho" ||
-          aria.includes("perspective") || aria.includes("orthographic") || aria === "ortho" ||
-          alt.includes("perspective") || alt.includes("orthographic") || alt === "ortho" ||
-          /persp|ortho/.test(src);
-        if (isCam){
-          const $btn = $el.closest("button, .ui-button, a").length ? $el.closest("button, .ui-button, a") : $el;
-          toHide.push($btn[0]);
-        }
-      });
-      $(toHide).hide();
-    })();
-
-    // Hide everything else in Tools body
-    const keep = new Set([
-      $("#hotkeysHelp")[0],
-      $navTitle[0], $viewsRow[0], $tips[0]
-    ].filter(Boolean));
-    $toolsBody.children().each(function(){
-      if (!keep.has(this) && !$(this).find("#hotkeysHelp, #enableViews, #enableNavTips").length){
-        $(this).hide();
-      }
-    });
-
-    // Hide the entire Navigation accordion (we harvested icons)
-    $("#menu_navigation").hide();
-    $("#menu_navigation").next().hide();
   }
 
-  // Run after Potree has rendered accordion contents
-  setTimeout(buildMinimal, 0);
-});
+  function applyEnableUI(){
+    if (APPLIED) return;
+    const $side = $("#potree_sidebar_container");
+    if (!$side.length) return; // GUI not in DOM yet
 
+    // Brand header (replace potree links row if present, else prepend)
+    (function brandHeader(){
+      const logoURL = "/EnableLogo.png?v=" + Date.now();
+      const html = `
+        <div id="brandHeader">
+          <img src="${logoURL}" alt="Logo">
+          <div id="brandTitle"
+               style="margin-top:8px; font-size:18px; font-weight:700; text-align:center; color:var(--text-0);">
+            Point Cloud Viewer
+          </div>
+        </div>`;
+      const $hdrAnchor = $side.find("a[href*='potree.org'], a[href*='github'], a[href*='twitter']").first();
+      const $hdrRow = $hdrAnchor.length ? $hdrAnchor.closest("div") : null;
+      if ($hdrRow && $hdrRow.length) { $hdrRow.html(html); } else { $side.prepend(html); }
+    })();
+
+    // Choose a destination body to host our minimal panel:
+    // prefer Tools content, else Appearance content, else sidebar root.
+    const $toolsH = $("#menu_tools");
+    let   $dst    = $toolsH.next();
+    if (!$dst || !$dst.length) $dst = $("#menu_appearance").next();
+    if (!$dst || !$dst.length) $dst = $side;
+
+    // Ensure the likely hosts are opened so their DOM exists/visible
+    openAccordion($toolsH);
+    openAccordion($("#menu_navigation"));
+    openAccordion($("#menu_appearance"));
+
+    // Inject Hotkeys + 6 view buttons + tips (id-guarded to avoid duplicates)
+    if (!document.getElementById("hotkeysHelp")){
+      const $hotkeys = $(`
+        <section id="hotkeysHelp" class="hk-card">
+          <div class="hk-title">Hotkeys</div>
+          <table class="hk-table">
+            <tr><td>H</td><td>Horizontal chain (Top-Ortho, Z-clamp)</td></tr>
+            <tr><td>V</td><td>Vertical chain (pure ΔZ)</td></tr>
+            <tr><td>M</td><td>Measure 3D</td></tr>
+            <tr><td>O</td><td>Orthographic projection</td></tr>
+            <tr><td>P</td><td>Perspective projection</td></tr>
+            <tr><td>B</td><td>Clip box show / hide</td></tr>
+            <tr><td>C</td><td>Clear all measurements</td></tr>
+          </table>
+        </section>`);
+      const $navTitle = $('<div id="enableNavTitle" style="margin:10px 0 6px; text-align:center; font-weight:700; opacity:.85;">Navigation</div>');
+      const $views    = $('<div id="enableViews" style="margin:6px 0;"></div>');
+      const $tips     = $(`
+        <div id="enableNavTips"
+             style="margin:6px 0 2px; padding:6px 8px;
+                    background:#222; color:var(--text-0);
+                    font:12px/1.35 system-ui,Segoe UI,Roboto,Arial,sans-serif; opacity:.95;">
+          <div style="margin:2px 0;">Left mouse: rotate • Middle drag: pan • Wheel: zoom</div>
+          <div style="margin:2px 0;">Refresh to clear dimensions</div>
+        </div>`);
+
+      $dst.prepend($tips).prepend($views).prepend($navTitle).prepend($hotkeys);
+
+      // Harvest the 6 view buttons from anywhere in the sidebar
+      const $pool = $side; // search the whole sidebar
+      function clickable($el){
+        const $wrap = $el.closest("a,button"); return $wrap.length ? $wrap : $el;
+      }
+      function findViewBtn(name){
+        const n = name.toLowerCase();
+        let $el = $pool.find('[title],[aria-label],img[alt]').filter(function(){
+          const t=(this.getAttribute('title')||'').toLowerCase();
+          const a=(this.getAttribute('aria-label')||'').toLowerCase();
+          const alt=(this.getAttribute('alt')||'').toLowerCase();
+          return t.includes(n)||a.includes(n)||alt.includes(n);
+        }).first();
+        if ($el.length) return clickable($el);
+        $el = $pool.find('img[src]').filter(function(){
+          return (this.getAttribute('src')||'').toLowerCase().includes(n);
+        }).first();
+        return $el.length ? clickable($el) : $();
+      }
+      ["front","back","left","right","top","bottom"].forEach(n=>{
+        const $b = findViewBtn(n);
+        if ($b.length) $b.detach().appendTo($views);
+      });
+
+      // Hide Navigation accordion after harvesting (if present)
+      $("#menu_navigation").hide().next().hide();
+
+      // Optionally hide the clutter (leave Appearance collapsed but present)
+      $("#menu_scene, #menu_edl, #menu_background, #menu_filters, #menu_about, #menu_other")
+        .each(function(){ const $h=$(this); $h.hide(); $h.next().hide(); });
+    }
+
+    APPLIED = true;
+  }
+
+  // Load GUI and attach in a way that works across Potree variants:
+  // 1) legacy callback
+  // 2) promise form
+  // 3) timed fallback if neither triggers (or DOM race)
+  try{
+    const maybePromise = viewer.loadGUI && viewer.loadGUI(function(){ applyEnableUI(); });
+    if (maybePromise && typeof maybePromise.then === "function"){
+      maybePromise.then(applyEnableUI);
+    }
+  }catch(_){}
+  // Timed fallback (in case callback didn’t fire due to template differences)
+  setTimeout(applyEnableUI, 600);
+  setTimeout(applyEnableUI, 1200);
+})();
   // ===========================================================
   // ===============  SECTION 5 — HUD TOAST ====================
   // ===========================================================
