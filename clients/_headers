@@ -1,0 +1,17 @@
+/libs/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*/pointclouds/*/data/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*/pointclouds/*/cloud.js
+  Cache-Control: public, max-age=600
+
+/*/index.html
+  Cache-Control: no-store
+
+/*/viewer.html
+  Cache-Control: no-store
+
+/EnableLogo.png
+  Cache-Control: public, max-age=86400

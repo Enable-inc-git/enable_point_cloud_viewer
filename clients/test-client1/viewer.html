@@ -36,6 +36,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Potree Viewer</title>
 
+  <!-- ========= Performance hints (Point 3: Preload critical scripts) ========= -->
+  <link rel="preload" as="script" href="/libs/three.js/build/three.min.js">
+  <link rel="preload" as="script" href="/libs/potree/potree.js">
+
+  <!-- Optional: if you want to nudge CSS too -->
+  <link rel="preload" as="style" href="/libs/potree/potree.css">
+
+  <!-- ========= Libraries (Point 2: Local first, CDN fallback) ========= -->
+  <script src="/libs/three.js/build/three.min.js"></script>
+  <script>
+    if (typeof window.THREE === 'undefined') {
+      document.write('<script src="https://unpkg.com/three@0.118.3/build/three.min.js"><\\/script>');
+    }
+  </script>
+
+  <link rel="stylesheet" href="/libs/potree/potree.css">
+  <script src="/libs/potree/potree.js"></script>
+
+
   <!-- Potree & vendor CSS -->
   <link rel="stylesheet" href="/libs/potree/potree.css" />
   <link rel="stylesheet" href="/libs/jquery-ui/jquery-ui.min.css" />
