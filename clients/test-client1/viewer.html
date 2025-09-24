@@ -1,47 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-
-  <script>
-  function getProjectId() {
-    const url = new URL(location.href);
-
-    // A) query param ?p=...
-    const qp = url.searchParams.get('p');
-    if (qp) return qp;
-
-    // B) path form: /test-client1/<project>
-    const parts = url.pathname.replace(/\/+$/,'').split('/');   // trim trailing slash
-    const last  = parts[parts.length - 1];
-    if (last && !/\.html?$/i.test(last)) return decodeURIComponent(last);
-
-    // C) optional: /test-client1/p/<project>
-    const pIdx = parts.indexOf('p');
-    if (pIdx >= 0 && parts[pIdx + 1]) return decodeURIComponent(parts[pIdx + 1]);
-
-    return null;
-  }
-
-  const id = getProjectId();
-  if (!id) { location.href = 'index.html'; }
-  window.PROJECT_PATH = `pointclouds/${id}`;
-</script>
-
-
-
   <!-- =========================================================
   ===============  SECTION 0 — HEAD & STYLES  =================
   ========================================================== -->
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-<title>Potree Viewer</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Potree Viewer</title>
 
-<!-- Potree & vendor CSS (relative paths!) -->
-<link rel="stylesheet" href="./libs/potree/potree.css" />
-<link rel="stylesheet" href="./libs/jquery-ui/jquery-ui.min.css" />
-<link rel="stylesheet" href="./libs/openlayers3/ol.css" />
-<link rel="stylesheet" href="./libs/spectrum/spectrum.css" />
-<link rel="stylesheet" href="./libs/jstree/themes/mixed/style.css" />
+  <!-- Potree & vendor CSS (LOCAL + RELATIVE PATHS) -->
+  <link rel="stylesheet" href="./libs/potree/potree.css" />
+  <link rel="stylesheet" href="./libs/jquery-ui/jquery-ui.min.css" />
+  <link rel="stylesheet" href="./libs/openlayers3/ol.css" />
+  <link rel="stylesheet" href="./libs/spectrum/spectrum.css" />
+  <link rel="stylesheet" href="./libs/jstree/themes/mixed/style.css" />
 
   <style>
     /* ================= Theme: charcoal canvas + neutral sidebar ================= */
@@ -51,8 +23,8 @@
       --panel-1:#272727;     /* sidebar headers */
       --panel-2:#bc6813;     /* active header */
       --btn-0:#272727;       /* buttons idle */
-      --btn-1:#2faa47ff;       /* buttons active */
-      --border-0:#2faa47ff;    /* accent border */
+      --btn-1:#2faa47ff;     /* buttons active */
+      --border-0:#2faa47ff;  /* accent border */
       --text-0:#e8eaf0;
       --text-dim:#aeb6c0;
     }
@@ -64,9 +36,9 @@
     #potree_sidebar_container{
       background:var(--panel-0);
       color:var(--text-0);
-      border-right:1px solid #1b1b1b; /* neutral (not blue) */
+      border-right:1px solid #1b1b1b;
     }
-    #potree_render_area{ border-left:1px solid #1b1b1b; } /* match divider */
+    #potree_render_area{ border-left:1px solid #1b1b1b; }
 
     /* Remove default blue/teal gradients & shadows */
     #potree_sidebar_container .ui-widget-header,
@@ -103,7 +75,7 @@
       border-color:var(--border-0) !important;
     }
 
-    /* Buttons (includes segmented button sets) */
+    /* Buttons */
     #potree_sidebar_container .ui-button,
     #potree_sidebar_container .ui-state-default,
     #potree_sidebar_container .ui-widget-header .ui-state-default{
@@ -117,7 +89,7 @@
     #potree_sidebar_container .ui-button.ui-state-active,
     #potree_sidebar_container .ui-state-active,
     #potree_sidebar_container .ui-buttonset .ui-state-active{
-      background:var(--btn-1) !important;   /* green active button */
+      background:var(--btn-1) !important;
       color:#0b0b0b !important;
       border-color:var(--border-0) !important;
     }
@@ -150,7 +122,7 @@
       border:1px solid var(--border-0) !important;
     }
 
-    /* Tabs (if present) */
+    /* Tabs */
     #potree_sidebar_container .ui-tabs .ui-tabs-nav{
       background:var(--panel-1) !important;
       border-color:var(--border-0) !important;
@@ -192,36 +164,29 @@
     /* Cursor when N-mode */
     body.n-mode{ cursor:crosshair; }
 
-    /* ===== Sidebar scrollbar: neutralize blue track ===== */
+    /* Sidebar scrollbar */
     #potree_sidebar_container,
     #potree_sidebar_container *{
       scrollbar-width:thin;
-      scrollbar-color:var(--btn-1) var(--panel-0); /* thumb | track (Firefox) */
+      scrollbar-color:var(--btn-1) var(--panel-0);
     }
     #potree_sidebar_container::-webkit-scrollbar{ width:10px; }
-    #potree_sidebar_container::-webkit-scrollbar-track{
-      background:var(--panel-0) !important;
-    }
+    #potree_sidebar_container::-webkit-scrollbar-track{ background:var(--panel-0) !important; }
     #potree_sidebar_container::-webkit-scrollbar-thumb{
       background:var(--btn-1) !important;
       border:2px solid var(--panel-0) !important;
       border-radius:8px;
     }
-    #potree_sidebar_container::-webkit-scrollbar-thumb:hover{
-      background:#1fd124 !important;
-    }
-    /* Ensure sidebar root wrapper (if present) isn’t tinted */
+    #potree_sidebar_container::-webkit-scrollbar-thumb:hover{ background:#1fd124 !important; }
     #sidebar_root{ background:var(--panel-0) !important; }
 
-    /* Hide the "Tools" header bar */
-#menu_tools { display:none !important; }
-
-/* Remove any top border/extra gap from its content panel */
-#menu_tools + .ui-accordion-content {
-  border-top: 0 !important;
-  margin-top: 0 !important;
-  padding-top: 6px !important; /* tiny breathing room */
-}
+    /* Hide the "Tools" header bar (you asked for this) */
+    #menu_tools { display:none !important; }
+    #menu_tools + .ui-accordion-content {
+      border-top: 0 !important;
+      margin-top: 0 !important;
+      padding-top: 6px !important;
+    }
   </style>
 </head>
 
@@ -235,28 +200,27 @@
     <div id="hudToast" aria-live="polite"></div>
   </div>
 
-<!-- ================= Vendor & Potree libs (ordered) ================= -->
-<!-- Core vendors -->
-<script src="./libs/jquery/jquery-3.1.1.min.js"></script>
-<script src="./libs/spectrum/spectrum.js"></script>
-<script src="./libs/jquery-ui/jquery-ui.min.js"></script>
+  <!-- ================= Vendor & Potree libs (LOCAL, single load, ordered) ================= -->
+  <script src="./libs/jquery/jquery-3.1.1.min.js"></script>
+  <script src="./libs/spectrum/spectrum.js"></script>
+  <script src="./libs/jquery-ui/jquery-ui.min.js"></script>
 
-<!-- THREE must load BEFORE lines.js & potree.js -->
-<script src="./libs/three.js/build/three.min.js"></script>
-<script src="./libs/three.js/extra/lines.js"></script>
+  <!-- THREE (must be before lines.js & potree.js) -->
+  <script src="./libs/three.js/build/three.min.js"></script>
+  <script src="./libs/three.js/extra/lines.js"></script>
 
-<!-- remaining vendors -->
-<script src="./libs/other/BinaryHeap.js"></script>
-<script src="./libs/tween/tween.min.js"></script>
-<script src="./libs/d3/d3.js"></script>
-<script src="./libs/proj4/proj4.js"></script>
-<script src="./libs/openlayers3/ol.js"></script>
-<script src="./libs/i18next/i18next.js"></script>
-<script src="./libs/jstree/jstree.js"></script>
+  <!-- remaining vendors -->
+  <script src="./libs/other/BinaryHeap.js"></script>
+  <script src="./libs/tween/tween.min.js"></script>
+  <script src="./libs/d3/d3.js"></script>
+  <script src="./libs/proj4/proj4.js"></script>
+  <script src="./libs/openlayers3/ol.js"></script>
+  <script src="./libs/i18next/i18next.js"></script>
+  <script src="./libs/jstree/jstree.js"></script>
 
-<!-- Potree + LAS loader (after all deps) -->
-<script src="./libs/potree/potree.js"></script>
-<script src="./libs/plasio/js/laslaz.js"></script>
+  <!-- Potree + LAS loader -->
+  <script src="./libs/potree/potree.js"></script>
+  <script src="./libs/plasio/js/laslaz.js"></script>
 
   <script>
   // ===========================================================
@@ -267,29 +231,25 @@
   // ===========================================================
   // ==========  SECTION 3 — VIEWER: INIT & DEFAULTS  ==========
   // ===========================================================
- window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
+  window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
   document.title = "Potree Viewer";
   viewer.setBackground("grey");
   try { viewer.renderer.setClearColor(0x0E1116, 1); } catch(e){}  // charcoal
 
   // --- Stable defaults for picking on first load ---
-  // Larger base pick window; H tool will still bump higher temporarily.
   try {
     viewer.pickWindowSize = 28;
     if (viewer.inputHandler) viewer.inputHandler.pickWindowSize = 28;
     if (viewer.renderer?.setPixelRatio) viewer.renderer.setPixelRatio(window.devicePixelRatio || 1);
   } catch(e){}
 
-  // One function to re-sync everything after layout/pixel changes
   function stabilizePicking(){
     try { viewer.renderer?.setPixelRatio?.(window.devicePixelRatio || 1); } catch(e){}
     try { viewer.onWindowResize && viewer.onWindowResize(); } catch(e){}
     try { viewer.inputHandler?.setScene?.(viewer.scene); } catch(e){}
     viewer.repaint && viewer.repaint();
   }
-  // Run it once layout is settled
   requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
-  // Keep it healthy on resizes/zoom changes
   window.addEventListener("resize", ()=>requestAnimationFrame(stabilizePicking), {passive:true});
 
   viewer.setEDLEnabled(false);
@@ -310,94 +270,59 @@
       Potree?.utils && (Potree.utils.formatLength = fmt, Potree.utils.toStringLength = fmt);
     } catch(e){}
   })();
-  (function(){
-    const re=/(-?\d+(?:\.\d+)?)(\s*m)\b/;
-    const orig=CanvasRenderingContext2D.prototype.fillText;
-    if(!CanvasRenderingContext2D.prototype.__potree3decimals){
-      CanvasRenderingContext2D.prototype.fillText=function(text,x,y,maxW){
-        try{
-          if(typeof text==="string"){
-            const m=text.match(re);
-            if(m){ const v=Number(m[1]); if(!Number.isNaN(v)) text=text.replace(m[0], v.toFixed(3)+m[2]); }
-          }
-        }catch(e){}
-        return orig.call(this, text, x, y, maxW);
-      };
-      CanvasRenderingContext2D.prototype.__potree3decimals = true;
-    }
-  })();
   // ===========================================================
-// =====  SECTION 3.6 — PICK WINDOW HARD-LOCK (no races)  ====
-// ===========================================================
-(function lockPickWindow(minPx = 32){
-  if (!window.viewer) return;
+  // =====  SECTION 3.6 — PICK WINDOW HARD-LOCK (no races)  ====
+  // ===========================================================
+  (function lockPickWindow(minPx = 32){
+    if (!window.viewer) return;
 
-  function clamp(v){
-    v = Number(v);
-    return (isFinite(v) && v >= minPx) ? v : minPx;
-  }
+    function clamp(v){
+      v = Number(v);
+      return (isFinite(v) && v >= minPx) ? v : minPx;
+    }
 
-  // Lock viewer.pickWindowSize so internal tools can't shrink it
-  try{
-    let _v = clamp(viewer.pickWindowSize);
-    Object.defineProperty(viewer, 'pickWindowSize', {
-      get(){ return _v; },
-      set(val){ _v = clamp(val); },
-      configurable: true
-    });
-    viewer.pickWindowSize = minPx;
-  }catch(_){}
-
-  // Lock inputHandler.pickWindowSize (some builds look at this one)
-  try{
-    if (viewer.inputHandler){
-      let _vh = clamp(viewer.inputHandler.pickWindowSize);
-      Object.defineProperty(viewer.inputHandler, 'pickWindowSize', {
-        get(){ return _vh; },
-        set(val){ _vh = clamp(val); },
+    try{
+      let _v = clamp(viewer.pickWindowSize);
+      Object.defineProperty(viewer, 'pickWindowSize', {
+        get(){ return _v; },
+        set(val){ _v = clamp(val); },
         configurable: true
       });
-      viewer.inputHandler.pickWindowSize = minPx;
-    }
-  }catch(_){}
+      viewer.pickWindowSize = minPx;
+    }catch(_){}
 
-  // One-time, layout-safe resync (no continuous observers)
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    try { viewer.renderer?.setPixelRatio?.(window.devicePixelRatio || 1); } catch(_){}
-    try { viewer.onWindowResize && viewer.onWindowResize(); } catch(_){}
-    try { viewer.inputHandler?.setScene?.(viewer.scene); } catch(_){}
-    viewer.repaint && viewer.repaint();
-  }));
-})();
+    try{
+      if (viewer.inputHandler){
+        let _vh = clamp(viewer.inputHandler.pickWindowSize);
+        Object.defineProperty(viewer.inputHandler, 'pickWindowSize', {
+          get(){ return _vh; },
+          set(val){ _vh = clamp(val); },
+          configurable: true
+        });
+        viewer.inputHandler.pickWindowSize = minPx;
+      }
+    }catch(_){}
 
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      try { viewer.renderer?.setPixelRatio?.(window.devicePixelRatio || 1); } catch(_){}
+      try { viewer.onWindowResize && viewer.onWindowResize(); } catch(_){}
+      try { viewer.inputHandler?.setScene?.(viewer.scene); } catch(_){}
+      viewer.repaint && viewer.repaint();
+    }));
+  })();
 
   // ===========================================================
   // ==========  SECTION 4 — GUI: SIDEBAR & HOTKEYS  ===========
   // ===========================================================
-(function(){
-  let APPLIED = false;
+  viewer.loadGUI(function(){
+    viewer.setLanguage("en");
+    viewer.toggleSidebar();
 
-  function openAccordion($h){
-    if(!$h || !$h.length) return;
-    const $c = $h.next();
-    $h.removeClass("ui-accordion-header-collapsed")
-      .addClass("ui-accordion-header-active")
-      .attr("aria-expanded","true");
-    if($c && $c.length){
-      $c.addClass("ui-accordion-content-active")
-        .attr("aria-hidden","false")
-        .show();
-    }
-  }
-
-  function applyEnableUI(){
-    if (APPLIED) return;
     const $side = $("#potree_sidebar_container");
-    if (!$side.length) return;
 
-    // --- Brand header ------------------------------------------------------
+    // ---- Logo ---------------------------------------------------------------
     (function brandHeader(){
-      const logoURL = "/EnableLogo.png?v=" + Date.now();
+      const logoURL = "./EnableLogo.png?v=" + Date.now();
       const html = `
         <div id="brandHeader">
           <img src="${logoURL}" alt="Logo">
@@ -411,19 +336,18 @@
       if ($hdrRow && $hdrRow.length) { $hdrRow.html(html); } else { $side.prepend(html); }
     })();
 
-    // Prefer Tools panel as our host
-    const $toolsH = $("#menu_tools");
-    let   $host   = $toolsH.next();
-    openAccordion($toolsH);
+    // ---- Only use Tools & Navigation (harvest from them) --------------------
+    const hide = sel => { const $m=$(sel); if($m.length){$m.hide();$m.next().hide();} };
+    const show = sel => { const $m=$(sel); if($m.length){$m.show();$m.next().show();} };
+    show("#menu_tools"); show("#menu_navigation");
+    hide("#menu_scene"); hide("#menu_appearance"); hide("#menu_edl"); hide("#menu_background");
+    hide("#menu_filters"); hide("#menu_about"); hide("#menu_other");
 
-    // If Tools body missing (template variant), create a simple host div
-    if (!$host || !$host.length){
-      $host = $('<div id="enableHost"></div>').appendTo($side);
-    }
-
-    // --- Inject minimal content (guarded) ---------------------------------
-    if (!document.getElementById("hotkeysHelp")){
-      const $hotkeys = $(`
+    // ---- Hotkeys card -------------------------------------------------------
+    (function injectHotkeysPanel(){
+      const $dst = $("#menu_tools").next();
+      if(!$dst.length || $("#hotkeysHelp").length) return;
+      const html = `
         <section id="hotkeysHelp" class="hk-card">
           <div class="hk-title">Hotkeys</div>
           <table class="hk-table">
@@ -435,85 +359,117 @@
             <tr><td>B</td><td>Clip box show / hide</td></tr>
             <tr><td>C</td><td>Clear all measurements</td></tr>
           </table>
-        </section>`);
+        </section>`;
+      $dst.prepend(html);
+    })();
+
+    // ---- Open both accordions so their DOM exists ---------------------------
+    setTimeout(function(){
+      const openAcc = (hdrSel) => {
+        const $h=$(hdrSel), $c=$h.next();
+        if(!$h.length||!$c.length) return;
+        $h.removeClass("ui-accordion-header-collapsed")
+          .addClass("ui-accordion-header-active")
+          .attr("aria-expanded","true");
+        $c.addClass("ui-accordion-content-active")
+          .attr("aria-hidden","false")
+          .show();
+      };
+      openAcc("#menu_tools");
+      openAcc("#menu_navigation");
+    }, 0);
+
+    // ---- Build minimal panel: Hotkeys + 6 views + tips ----------------------
+    function buildMinimal(){
+      const $toolsBody = $("#menu_tools").next();
+      const $navBody   = $("#menu_navigation").next();
+      if (!$toolsBody.length) return;
+
+      const $anchor   = $("#hotkeysHelp").length ? $("#hotkeysHelp") : $toolsBody.children().first();
       const $navTitle = $('<div id="enableNavTitle" style="margin:10px 0 6px; text-align:center; font-weight:700; opacity:.85;">Navigation</div>');
-      const $views    = $('<div id="enableViews" style="margin:6px 0;"></div>');
+      const $viewsRow = $('<div id="enableViews" style="margin:6px 0;"></div>');
       const $tips     = $(`
         <div id="enableNavTips"
              style="margin:6px 0 2px; padding:6px 8px;
                     background:#222; color:var(--text-0);
                     font:12px/1.35 system-ui,Segoe UI,Roboto,Arial,sans-serif; opacity:.95;">
-          <div style="margin:2px 0;">Left mouse: rotate (about cursor) • Middle drag: pan • Wheel: zoom</div>
-          <div style="margin:2px 0;">Refresh to clear dimensions</div>
-        </div>`);
+          <div style="margin:2px 0;">Left mouse button: rotate model</div>
+          <div style="margin:2px 0;">Middle mouse (drag): pan • Mouse wheel: zoom</div>
+          <div style="margin:2px 0;">Refresh browser to clear dimensions</div>
+        </div>
+      `);
+      $anchor.after($navTitle, $viewsRow, $tips);
 
-      $host.prepend($tips).prepend($views).prepend($navTitle).prepend($hotkeys);
+      // Search pool = Tools + Navigation bodies
+      const $pool = $().add($toolsBody).add($navBody);
 
-      // Harvest the 6 view buttons from anywhere in the sidebar
-      const $pool = $side;
-      function clickable($el){ const $w=$el.closest("a,button"); return $w.length?$w:$el; }
+      function clickable($el){
+        const $wrap = $el.closest("a,button");
+        return $wrap.length ? $wrap : $el;
+      }
       function findViewBtn(name){
-        const n=name.toLowerCase();
-        let $el = $pool.find('[title],[aria-label],img[alt]').filter(function(){
-          const t=(this.getAttribute('title')||'').toLowerCase();
-          const a=(this.getAttribute('aria-label')||'').toLowerCase();
-          const alt=(this.getAttribute('alt')||'').toLowerCase();
-          return t.includes(n)||a.includes(n)||alt.includes(n);
+        const n = name.toLowerCase();
+        let $el = $pool.find('[title], [aria-label], img[alt]').filter(function(){
+          const t   = (this.getAttribute('title')||'').toLowerCase();
+          const ar  = (this.getAttribute('aria-label')||'').toLowerCase();
+          const alt = (this.getAttribute('alt')||'').toLowerCase();
+          return t.includes(n) || ar.includes(n) || alt.includes(n);
         }).first();
         if ($el.length) return clickable($el);
         $el = $pool.find('img[src]').filter(function(){
           return (this.getAttribute('src')||'').toLowerCase().includes(n);
         }).first();
-        return $el.length ? clickable($el) : $();
+        if ($el.length) return clickable($el);
+        return $();
       }
-      ["front","back","left","right","top","bottom"].forEach(n=>{
-        const $b=findViewBtn(n); if($b.length) $b.detach().appendTo($views);
+      function moveIfFound($el, $dest){ if($el && $el.length){ $el.detach().appendTo($dest); return true; } return false; }
+
+      // 6 view buttons
+      ["front","back","left","right","top","bottom"].forEach(n => {
+        moveIfFound(findViewBtn(n), $viewsRow);
       });
-    }
 
-    // --- Hide EVERYTHING else ---------------------------------------------
-    // Hide whole accordions we don’t want
-    $("#menu_navigation, #menu_scene, #menu_appearance, #menu_edl, #menu_background, #menu_filters, #menu_about, #menu_other, #menu_clipping, #menu_measurements")
-      .each(function(){ const $h=$(this); if($h.length){ $h.hide(); $h.next().hide(); } });
+      // Remove Perspective / Orthographic buttons (you kept hotkeys)
+      (function removeCamButtons(){
+        const $poolEls = $pool.find("button, .ui-button, a, span, div, img");
+        const toHide = [];
+        $poolEls.each(function(){
+          const $el   = $(this);
+          const text  = ($el.text() || "").toLowerCase();
+          const title = ($el.attr("title") || "").toLowerCase();
+          const aria  = ($el.attr("aria-label") || "").toLowerCase();
+          const alt   = ($el.attr("alt") || "").toLowerCase();
+          const src   = ($el.attr("src") || "").toLowerCase();
+          const isCam =
+            text.includes("perspective") || text.includes("orthographic") || text === "ortho" ||
+            title.includes("perspective") || title.includes("orthographic") || title === "ortho" ||
+            aria.includes("perspective") || aria.includes("orthographic") || aria === "ortho" ||
+            alt.includes("perspective") || alt.includes("orthographic") || alt === "ortho" ||
+            /persp|ortho/.test(src);
+          if (isCam){
+            const $btn = $el.closest("button, .ui-button, a").length ? $el.closest("button, .ui-button, a") : $el;
+            toHide.push($btn[0]);
+          }
+        });
+        $(toHide).hide();
+      })();
 
-    // Inside Tools panel, keep only our blocks
-    const keep = new Set(["hotkeysHelp","enableNavTitle","enableViews","enableNavTips"]);
-    const $toolsBody = $toolsH.next();
-    if ($toolsBody && $toolsBody.length){
+      // Hide everything else in Tools
+      const keep = new Set([ $("#hotkeysHelp")[0], $navTitle[0], $viewsRow[0], $tips[0] ].filter(Boolean));
       $toolsBody.children().each(function(){
-        const hasKeep = $(this).find("#hotkeysHelp, #enableNavTitle, #enableViews, #enableNavTips").length>0;
-        if (!keep.has(this.id) && !hasKeep) $(this).hide();
+        if (!keep.has(this) && !$(this).find("#hotkeysHelp, #enableViews, #enableNavTips").length){
+          $(this).hide();
+        }
       });
+
+      // Hide Navigation accordion (we harvested icons)
+      $("#menu_navigation").hide();
+      $("#menu_navigation").next().hide();
     }
 
-    APPLIED = true;
+    setTimeout(buildMinimal, 0);
+  });
 
-    // -------- Rotate about cursor (set pivot at mouse down) ---------------
-    function setPivotAtClientXY(x,y){
-      try{
-        const p = pickPointFromClientXY(x,y);
-        if (!p) return;
-        const view = viewer?.scene?.view;
-        if (view && typeof view.setPivot === "function") view.setPivot(p);
-      }catch(_){}
-    }
-    const renderEl = viewer?.inputHandler?.domElement || document.getElementById("potree_render_area") || document;
-    renderEl.addEventListener("pointerdown", function(e){
-      // Left button only, ignore when measuring inserter is active
-      if (e.button!==0) return;
-      if (H_ACTIVE || V_ACTIVE || N_ACTIVE || M_MEAS) return;
-      setPivotAtClientXY(e.clientX, e.clientY);
-    }, {capture:true, passive:true});
-  }
-
-  // Load GUI (callback or promise) + timed fallback
-  try{
-    const maybe = viewer.loadGUI && viewer.loadGUI(function(){ applyEnableUI(); });
-    if (maybe && typeof maybe.then==="function"){ maybe.then(applyEnableUI); }
-  }catch(_){}
-  setTimeout(applyEnableUI, 600);
-  setTimeout(applyEnableUI, 1200);
-})();
   // ===========================================================
   // ===============  SECTION 5 — HUD TOAST ====================
   // ===========================================================
@@ -529,239 +485,230 @@
   // =======  SECTION 6 — GLOBAL HELPERS & STATE VARS  =========
   // ===========================================================
   function synthRightClick(){
-  const el = viewer.inputHandler?.domElement || viewer.renderer?.domElement || document.getElementById("potree_render_area");
-  if(!el) return;
-  ['pointerdown','mousedown','mouseup','pointerup','contextmenu'].forEach(t=>{
-    try { el.dispatchEvent(new MouseEvent(t, {button:2, bubbles:true, cancelable:true})); } catch(e){}
-  });
-}
+    const el = viewer.inputHandler?.domElement || viewer.renderer?.domElement || document.getElementById("potree_render_area");
+    if(!el) return;
+    ['pointerdown','mousedown','mouseup','pointerup','contextmenu'].forEach(t=>{
+      try { el.dispatchEvent(new MouseEvent(t, {button:2, bubbles:true, cancelable:true})); } catch(e){}
+    });
+  }
 
-// Detach/restore the clip box so it doesn’t steal clicks
-let __savedClip = null;
-function detachClipBoxForTool(){
-  const box = window.__clipBox;
-  if (!box) return;
-  try{
-    __savedClip = {
-      vis: box.visible,
-      clip: box.clip === true,
-      pos: box.position.clone(),
-      rot: box.rotation ? box.rotation.clone() : null,
-      scale: box.scale.clone(),
-      method: (viewer.getClipMethod ? viewer.getClipMethod() : Potree.ClipMethod.INSIDE_ANY),
-      task:   (viewer.getClipTask   ? viewer.getClipTask()   : Potree.ClipTask.SHOW_INSIDE)
-    };
-  }catch(e){}
-  try{
-    if (viewer.scene.removeVolume) viewer.scene.removeVolume(box);
-    else {
-      const arr = viewer.scene.volumes || [];
-      const i = arr.indexOf(box); if(i>=0) arr.splice(i,1);
-    }
-  }catch(e){}
-  window.__clipBox = null;
-  try{ viewer.setClipTask(Potree.ClipTask.NONE); }catch(e){}
-  viewer.repaint();
-}
-function restoreClipBoxAfterTool(){
-  const saved = __savedClip; __savedClip = null;
-  if (!saved) return;
-  try{
-    const box = new Potree.BoxVolume();
-    box.clip = saved.clip;
-    box.visible = saved.vis;
-    if (saved.rot) box.rotation.copy(saved.rot);
-    box.position.copy(saved.pos);
-    box.scale.copy(saved.scale);
-    viewer.scene.addVolume(box);
-    window.__clipBox = box;
-    viewer.setClipMethod && viewer.setClipMethod(saved.method);
-    viewer.setClipTask   && viewer.setClipTask(saved.task);
+  // Detach/restore the clip box so it doesn’t steal clicks
+  let __savedClip = null;
+  function detachClipBoxForTool(){
+    const box = window.__clipBox;
+    if (!box) return;
+    try{
+      __savedClip = {
+        vis: box.visible,
+        clip: box.clip === true,
+        pos: box.position.clone(),
+        rot: box.rotation ? box.rotation.clone() : null,
+        scale: box.scale.clone(),
+        method: (viewer.getClipMethod ? viewer.getClipMethod() : Potree.ClipMethod.INSIDE_ANY),
+        task:   (viewer.getClipTask   ? viewer.getClipTask()   : Potree.ClipTask.SHOW_INSIDE)
+      };
+    }catch(e){}
+    try{
+      if (viewer.scene.removeVolume) viewer.scene.removeVolume(box);
+      else {
+        const arr = viewer.scene.volumes || [];
+        const i = arr.indexOf(box); if(i>=0) arr.splice(i,1);
+      }
+    }catch(e){}
+    window.__clipBox = null;
+    try{ viewer.setClipTask(Potree.ClipTask.NONE); }catch(e){}
     viewer.repaint();
-  }catch(e){}
-}
+  }
+  function restoreClipBoxAfterTool(){
+    const saved = __savedClip; __savedClip = null;
+    if (!saved) return;
+    try{
+      const box = new Potree.BoxVolume();
+      box.clip = saved.clip;
+      box.visible = saved.vis;
+      if (saved.rot) box.rotation.copy(saved.rot);
+      box.position.copy(saved.pos);
+      box.scale.copy(saved.scale);
+      viewer.scene.addVolume(box);
+      window.__clipBox = box;
+      viewer.setClipMethod && viewer.setClipMethod(saved.method);
+      viewer.setClipTask   && viewer.setClipTask(saved.task);
+      viewer.repaint();
+    }catch(e){}
+  }
 
-// -------- Robust, side-effect-free picker -------------------
-// Uses renderer canvas framebuffer size, not CSS*DPR guesses.
-// Tries both viewer.pick (NDC) and Utils.getMousePointCloudIntersection.
-function pickPointFromClientXY(clientX, clientY){
-  const canvas = viewer?.renderer?.domElement || document.getElementById("potree_render_area");
-  if (!canvas) return null;
+  // Robust picker
+  function pickPointFromClientXY(clientX, clientY){
+    const canvas = viewer?.renderer?.domElement || document.getElementById("potree_render_area");
+    if (!canvas) return null;
 
-  const rect = canvas.getBoundingClientRect();
-  const fbW  = (canvas.width  && canvas.width  > 0) ? canvas.width  : Math.round(rect.width  * (window.devicePixelRatio || 1));
-  const fbH  = (canvas.height && canvas.height > 0) ? canvas.height : Math.round(rect.height * (window.devicePixelRatio || 1));
+    const rect = canvas.getBoundingClientRect();
+    const fbW  = (canvas.width  && canvas.width  > 0) ? canvas.width  : Math.round(rect.width  * (window.devicePixelRatio || 1));
+    const fbH  = (canvas.height && canvas.height > 0) ? canvas.height : Math.round(rect.height * (window.devicePixelRatio || 1));
 
-  // client → framebuffer pixels
-  const px = (clientX - rect.left) * (fbW / rect.width);
-  const py = (clientY - rect.top)  * (fbH / rect.height);
+    const px = (clientX - rect.left) * (fbW / rect.width);
+    const py = (clientY - rect.top)  * (fbH / rect.height);
 
-  const cam = viewer.scene.getActiveCamera();
-  const pcs = viewer.scene.pointclouds;
+    const cam = viewer.scene.getActiveCamera();
+    const pcs = viewer.scene.pointclouds;
 
-  // A) viewer.pick path (expects NDC)
-  try{
-    if (typeof viewer.pick === "function"){
-      const nx =  (px / fbW) * 2 - 1;
-      const ny = -(py / fbH) * 2 + 1; // y up
-      const res = viewer.pick(cam, {x:nx, y:ny}, {
-        pickWindowSize: (typeof viewer.pickWindowSize==='number' ? viewer.pickWindowSize : 24),
-        pointclouds: pcs
-      });
-      if (res && res.position) return res.position.clone();
-    }
-  }catch(_){}
-
-  // B) Utils path (some builds treat y as from top, others from bottom)
-  try{
-    if (Potree?.Utils?.getMousePointCloudIntersection){
-      const hitA = Potree.Utils.getMousePointCloudIntersection({x:px, y:py},           cam, viewer.renderer, pcs);
-      const hitB = Potree.Utils.getMousePointCloudIntersection({x:px, y:(fbH - py)},   cam, viewer.renderer, pcs);
-      const h = hitA || hitB;
-      const p = h && (h.position || h.location);
-      if (p){ return p.clone ? p.clone() : new THREE.Vector3().copy(p); }
-    }
-  }catch(_){}
-
-  return null;
-}
-
-// Keep pick buffer in sync when we ask for it explicitly
-function resyncPickBufferOnce(){
-  viewer.onWindowResize && viewer.onWindowResize();
-  try{ viewer.inputHandler?.setScene?.(viewer.scene); }catch(e){}
-  viewer.repaint && viewer.repaint();
-}
-function resyncPickBuffer(){ requestAnimationFrame(resyncPickBufferOnce); }
-
-// Temporary pick-budget bump during sensitive picking (kept for compatibility)
-const __pickBump = { active:false, prevBudget:null, prevSizes:new Map() };
-function bumpPickResources(on){
-  try{
-    if(on){
-      if(__pickBump.active) return;
-      __pickBump.active = true;
-      __pickBump.prevBudget = (viewer.getPointBudget ? viewer.getPointBudget() : viewer.pointBudget);
-      const newBudget = Math.max(__pickBump.prevBudget || 8000000, 24000000);
-      viewer.setPointBudget ? viewer.setPointBudget(newBudget) : (viewer.pointBudget = newBudget);
-      const pcs = viewer.scene?.pointclouds || [];
-      __pickBump.prevSizes.clear();
-      for (let i=0;i<pcs.length;i++){
-        const mat = pcs[i]?.material;
-        if (mat){ __pickBump.prevSizes.set(pcs[i].uuid, mat.size); mat.size = Math.max(mat.size || 1.0, 2.5); }
+    try{
+      if (typeof viewer.pick === "function"){
+        const nx =  (px / fbW) * 2 - 1;
+        const ny = -(py / fbH) * 2 + 1;
+        const res = viewer.pick(cam, {x:nx, y:ny}, {
+          pickWindowSize: (typeof viewer.pickWindowSize==='number' ? viewer.pickWindowSize : 24),
+          pointclouds: pcs
+        });
+        if (res && res.position) return res.position.clone();
       }
-      requestAnimationFrame(()=>viewer.repaint && viewer.repaint());
-    } else {
-      if(!__pickBump.active) return;
-      if(__pickBump.prevBudget != null){
-        viewer.setPointBudget ? viewer.setPointBudget(__pickBump.prevBudget) : (viewer.pointBudget = __pickBump.prevBudget);
+    }catch(_){}
+
+    try{
+      if (Potree?.Utils?.getMousePointCloudIntersection){
+        const hitA = Potree.Utils.getMousePointCloudIntersection({x:px, y:py},         cam, viewer.renderer, pcs);
+        const hitB = Potree.Utils.getMousePointCloudIntersection({x:px, y:(fbH - py)}, cam, viewer.renderer, pcs);
+        const h = hitA || hitB;
+        const p = h && (h.position || h.location);
+        if (p){ return p.clone ? p.clone() : new THREE.Vector3().copy(p); }
       }
-      const pcs = viewer.scene?.pointclouds || [];
-      for (let i=0;i<pcs.length;i++){
-        const mat = pcs[i]?.material;
-        const prev = __pickBump.prevSizes.get(pcs[i].uuid);
-        if (mat != null && prev != null) mat.size = prev;
+    }catch(_){}
+
+    return null;
+  }
+
+  function resyncPickBufferOnce(){
+    viewer.onWindowResize && viewer.onWindowResize();
+    try{ viewer.inputHandler?.setScene?.(viewer.scene); }catch(e){}
+    viewer.repaint && viewer.repaint();
+  }
+  function resyncPickBuffer(){ requestAnimationFrame(resyncPickBufferOnce); }
+
+  const __pickBump = { active:false, prevBudget:null, prevSizes:new Map() };
+  function bumpPickResources(on){
+    try{
+      if(on){
+        if(__pickBump.active) return;
+        __pickBump.active = true;
+        __pickBump.prevBudget = (viewer.getPointBudget ? viewer.getPointBudget() : viewer.pointBudget);
+        const newBudget = Math.max(__pickBump.prevBudget || 8000000, 24000000);
+        viewer.setPointBudget ? viewer.setPointBudget(newBudget) : (viewer.pointBudget = newBudget);
+        const pcs = viewer.scene?.pointclouds || [];
+        __pickBump.prevSizes.clear();
+        for (let i=0;i<pcs.length;i++){
+          const mat = pcs[i]?.material;
+          if (mat){ __pickBump.prevSizes.set(pcs[i].uuid, mat.size); mat.size = Math.max(mat.size || 1.0, 2.5); }
+        }
+        requestAnimationFrame(()=>viewer.repaint && viewer.repaint());
+      } else {
+        if(!__pickBump.active) return;
+        if(__pickBump.prevBudget != null){
+          viewer.setPointBudget ? viewer.setPointBudget(__pickBump.prevBudget) : (viewer.pointBudget = __pickBump.prevBudget);
+        }
+        const pcs = viewer.scene?.pointclouds || [];
+        for (let i=0;i<pcs.length;i++){
+          const mat = pcs[i]?.material;
+          const prev = __pickBump.prevSizes.get(pcs[i].uuid);
+          if (mat != null && prev != null) mat.size = prev;
+        }
+        __pickBump.prevSizes.clear();
+        __pickBump.active = false;
+        viewer.repaint && viewer.repaint();
       }
-      __pickBump.prevSizes.clear();
-      __pickBump.active = false;
-      viewer.repaint && viewer.repaint();
-    }
-  }catch(e){ console.warn("bumpPickResources error:", e); }
-}
+    }catch(e){ console.warn("bumpPickResources error:", e); }
+  }
 
   // ===========================================================
   // ======  SECTION 7 — BLOCK **RIGHT MOUSE BUTTON**  =========
-  // =====  (physical RMB is disabled; synthetic allowed)  =====
   // ===========================================================
-(function enforceRightMouseOff(){
-  const renderEl = viewer?.inputHandler?.domElement || document.getElementById("potree_render_area");
-  const canvasEl = viewer?.renderer?.domElement || null;
-  const targets = [renderEl || document, canvasEl].filter(Boolean);
-  const opts = { capture:false, passive:false };
+  (function enforceRightMouseOff(){
+    const renderEl = viewer?.inputHandler?.domElement || document.getElementById("potree_render_area");
+    const canvasEl = viewer?.renderer?.domElement || null;
+    const targets = [renderEl || document, canvasEl].filter(Boolean);
+    const opts = { capture:false, passive:false };
 
-  // Block only *physical* RMB (button===2 or which===3) in bubble phase
-  function eatRMB(e){
-    const isRMB = (e.button === 2) || (e.which === 3);
-    if (e.isTrusted && isRMB){
-      e.preventDefault();
-      e.stopPropagation();
-      return false;
+    function eatRMB(e){
+      const isRMB = (e.button === 2) || (e.which === 3);
+      if (e.isTrusted && isRMB){
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
     }
-  }
-  // Some browsers emit auxclick for RMB
-  function eatAuxRight(e){
-    if (e.isTrusted && e.button === 2){
-      e.preventDefault();
-      e.stopPropagation();
-      return false;
+    function eatAuxRight(e){
+      if (e.isTrusted && e.button === 2){
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
     }
-  }
-  // Kill the context menu (also covers Ctrl+Click on macOS)
-  function eatContext(e){
-    if (e.isTrusted){
-      e.preventDefault();
-      e.stopPropagation();
-      return false;
+    function eatContext(e){
+      if (e.isTrusted){
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
     }
-  }
 
-  for (const t of targets){
-    t.addEventListener("pointerdown", eatRMB, opts);
-    t.addEventListener("pointerup",   eatRMB, opts);
-    t.addEventListener("mousedown",   eatRMB, opts);
-    t.addEventListener("mouseup",     eatRMB, opts);
-    t.addEventListener("click",       eatRMB, opts);
-    t.addEventListener("auxclick",    eatAuxRight, opts);
-    t.addEventListener("contextmenu", eatContext,  opts);
-    try { t.oncontextmenu = () => false; } catch(_) {}
-  }
-})();
+    for (const t of targets){
+      t.addEventListener("pointerdown", eatRMB, opts);
+      t.addEventListener("pointerup",   eatRMB, opts);
+      t.addEventListener("mousedown",   eatRMB, opts);
+      t.addEventListener("mouseup",     eatRMB, opts);
+      t.addEventListener("click",       eatRMB, opts);
+      t.addEventListener("auxclick",    eatAuxRight, opts);
+      t.addEventListener("contextmenu", eatContext,  opts);
+      try { t.oncontextmenu = () => false; } catch(_) {}
+    }
+  })();
 
- //<!-- ===========================================================
-//=========  SECTION 8 — LOAD CLOUD & CLIP BOX  =================
-//=========================================================== -->
+  // ===========================================================
+  // =========  SECTION 8 — LOAD CLOUD & CLIP BOX  =============
+  // ===========================================================
+  (function loadProjectFromURL(){
+    // Prefer /p/<project>; else ?p=<project>; else last non-html path segment
+    function getProjectId(){
+      const path = location.pathname.replace(/\/+$/,''); // trim trailing slash
+      const m = path.match(/\/p\/([^\/?#]+)/);
+      if (m) return decodeURIComponent(m[1]);
 
-(function loadProject(){
-    // Use helper from top of file
-    const project = (typeof getProjectId === 'function') ? getProjectId() : null;
+      const parts = path.split('/');
+      const last  = parts[parts.length-1];
+      if (last && !/\.html?$/i.test(last)) return decodeURIComponent(last);
+
+      const qp = new URL(location.href).searchParams.get("p");
+      return qp || null;
+    }
+
+    const project = getProjectId();
     if (!project){
-      console.warn("No project id found in URL. Redirecting to index.");
-      location.href = 'index.html';
+      console.warn("No project specified. Use /p/<project> or ?p=<project>.");
+      try { toast("No project specified. Use /p/<project>."); } catch(_) {}
       return;
     }
 
-    // Build path from window.PROJECT_PATH if set (your helper sets this),
-    // else fall back to the standard pointclouds/<id>/cloud.js
-    const cloudPath = (window.PROJECT_PATH
-      ? `${window.PROJECT_PATH}/cloud.js`
-      : `pointclouds/${project}/cloud.js`
-    );
+    const cloudPath = `./pointclouds/${project}/cloud.js`;
 
     Potree.loadPointCloud(cloudPath, project, function(e){
       const pc = e.pointcloud;
       viewer.scene.addPointCloud(pc);
 
-      // Basic material setup
       const mat = pc.material;
       mat.activeAttributeName = "rgba";
       mat.pointSizeType = Potree.PointSizeType.FIXED;
       mat.shape = Potree.PointShape.CIRCLE;
       mat.size = 1.0;
 
-      // Compute world BB + center
       viewer.scene.scene.updateMatrixWorld(true);
       pc.updateMatrixWorld(true);
 
       const bbWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
-      const size    = new THREE.Vector3();
-      const center  = new THREE.Vector3();
+      const size   = new THREE.Vector3();
+      const center = new THREE.Vector3();
       bbWorld.getSize(size);
       bbWorld.getCenter(center);
 
-      // Save a scene-scale diagonal for downstream zoom logic (optional)
-      window.__sceneDiag = Math.max(size.length(), 1);
-
-      // Create clip box with small margin
+      // Clip box
       const margin = 1.03;
       const sx = Math.max(size.x * margin, 0.25);
       const sy = Math.max(size.y * margin, 0.25);
@@ -769,44 +716,18 @@ function bumpPickResources(on){
 
       const box = new Potree.BoxVolume();
       box.clip = true;
-      box.visible = true; // ensure actually drawn
+      box.visible = true;
       if (box.rotation) box.rotation.set(0, 0, 0);
       box.position.copy(center);
       box.scale.set(sx, sy, sz);
-
-      // ---- High-contrast styling so it shows on dark backgrounds ----
-      try {
-        if (box.material){
-          box.material.transparent = true;
-          box.material.opacity = 0.10;
-          box.material.color?.set("#f0f0f0");   // off-white fill
-        }
-        // Some Potree builds keep separate meshes for frame/box/border:
-        if (box.box?.material){
-          box.box.material.transparent = true;
-          box.box.material.opacity = 0.10;
-          box.box.material.color?.set("#ffffff");
-        }
-        if (box.frame?.material){ box.frame.material.color?.set("#ffffff"); }
-        if (box.border?.material){ box.border.material.color?.set("#ffffff"); }
-
-        box.setOutlineColor?.(1,1,1);          // white outline (API if present)
-        if (box.color?.set) box.color.set("#f0f0f0");
-
-        if ("showHelper" in box) box.showHelper = true;
-        if ("showEdges"  in box) box.showEdges  = true;
-      } catch(_) {}
-
-      // Add to scene & keep a handle
+      // keep styling minimal to avoid variant conflicts; rely on Potree defaults
       viewer.scene.addVolume(box);
       window.__clipBox = box;
 
-      // Explicitly enable clipping-box visuals globally
-      try { viewer.setShowClippingBoxes(true); } catch(_) {}
-
-      // Clip method/task
+      // Clip settings + ensure visuals enabled
       viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
       viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+      try { viewer.setShowClippingBoxes(true); } catch(_){}
 
       // Fit & stabilize
       viewer.fitToScreen();
@@ -814,7 +735,7 @@ function bumpPickResources(on){
       requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
     });
   })();
-  
+
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
@@ -873,7 +794,7 @@ function bumpPickResources(on){
   // ===========================================================
   // ======  SECTION 10 — H TOOL (TOP-ORTHO, Z-CLAMP)  =========
   // ===========================================================
-var LAST_TOOL = null; // 'H','V','M','N','O','P'
+  var LAST_TOOL = null; // 'H','V','M','N','O','P'
   var H_ACTIVE=false, H_MEAS=null, H_IV=null;
   var V_ACTIVE=false, V_MEAS=null, V_IV=null;
   var N_ACTIVE=false, N_MEAS=null, N_STATE=0; // 0=await A, 1=elastic to B
@@ -882,8 +803,6 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
   var M_MEAS=null;
   var H_restore = {active:false, had:false, val:null};
   var V_restore = {active:false, had:false, val:null};
-
-  // NEW: mirror-restore bucket for inputHandler pick window
   var H_restore_input = {active:false, had:false, val:null};
 
   function setCameraModeSafe(mode, tag){
@@ -893,7 +812,6 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
   }
 
   function startHorizontalMeasure(){
-    // Unconditionally bump both pick window knobs so close points are easy to hit
     H_restore.active = true;
     H_restore.had = Object.prototype.hasOwnProperty.call(viewer, 'pickWindowSize');
     H_restore.val = viewer.pickWindowSize;
@@ -904,10 +822,8 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
     H_restore_input.val = viewer.inputHandler ? viewer.inputHandler.pickWindowSize : undefined;
     if (viewer.inputHandler) viewer.inputHandler.pickWindowSize = 1;
 
-    // Temporary resource bump for steadier hits; restored on finish/cancel
     bumpPickResources(true);
 
-    // Camera prep: top-ortho, then resync pick buffer
     viewer.setCameraMode(Potree.CameraMode.ORTHOGRAPHIC);
     viewer.scene.view.pitch = -Math.PI/2;
     resyncPickBuffer();
@@ -918,7 +834,6 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
       });
       H_MEAS = m;
 
-      // Extra safety: refresh pick buffer again next frame after inserter starts
       requestAnimationFrame(resyncPickBuffer);
 
       function onEsc(ev){
@@ -956,17 +871,14 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
         if (H_IV){ clearInterval(H_IV); H_IV=null; }
         H_MEAS=null; H_ACTIVE=false;
 
-        // Drop temporary bump FIRST
         bumpPickResources(false);
 
-        // Restore viewer pickWindowSize
         if (H_restore.active){
           if (H_restore.had){ viewer.pickWindowSize = H_restore.val; }
           else { try{ delete viewer.pickWindowSize; }catch(e){ viewer.pickWindowSize = undefined; } }
           H_restore.active = false;
         }
 
-        // Restore inputHandler pickWindowSize
         if (H_restore_input.active){
           if (H_restore_input.had && viewer.inputHandler){
             viewer.inputHandler.pickWindowSize = H_restore_input.val;
@@ -989,7 +901,6 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
 
   function stopHMode(showToast){
     if(!H_ACTIVE){
-      // Even if H isn’t flagged active, still normalize transient bumps/restores
       bumpPickResources(false);
       if (H_restore.active){
         if (H_restore.had){ viewer.pickWindowSize = H_restore.val; }
@@ -1014,10 +925,8 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
     synthRightClick();
     H_MEAS=null;
 
-    // Drop temporary bump
     bumpPickResources(false);
 
-    // Restore both pick window knobs
     if (H_restore.active){
       if (H_restore.had){ viewer.pickWindowSize = H_restore.val; }
       else { try{ delete viewer.pickWindowSize; }catch(e){ viewer.pickWindowSize = undefined; } }
@@ -1036,14 +945,6 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
     viewer.repaint();
     LAST_TOOL = 'H';
   }
-
-
-
-
-
-
-
-
 
   // ===========================================================
   // =========  SECTION 11 — V TOOL (PURE ΔZ CLAMP)  ===========
@@ -1122,94 +1023,87 @@ var LAST_TOOL = null; // 'H','V','M','N','O','P'
 
   // ===========================================================
   // ===  SECTION 12 — N TOOL (3D ELASTIC TWO-CLICK MEASURE) ===
-  // =====  with first-frame debounce & dual listeners  ========
   // ===========================================================
-var N_ACTIVE = false, N_MEAS = null, N_IV = null;
+  var N_ACTIVE = false, N_MEAS = null, N_IV = null;
+  function start3DQuickMeasure(){
+    try { viewer.measuringTool?.cancelInsertion?.(); } catch(_) {}
+    if (H_ACTIVE) stopHMode(true);
+    if (V_ACTIVE) stopVMode(true);
 
-function start3DQuickMeasure(){
-  // Don’t overlap with other modes
-  try { viewer.measuringTool?.cancelInsertion?.(); } catch(_) {}
-  if (H_ACTIVE) stopHMode(true);
-  if (V_ACTIVE) stopVMode(true);
-
-  // Start Potree inserter on the next frame (safer after any UI changes)
-  requestAnimationFrame(function(){
-    var m = viewer.measuringTool.startInsertion({
-      showDistances:true, showAngles:false, showCoordinates:false, showHeight:false,
-      closed:false, name:"3D"
-    });
-    N_MEAS = m;
-    N_ACTIVE = true;
-    LAST_TOOL = 'N';
-    document.body.classList.add('n-mode');
-    toast("3D measure ON: click A, then click B • N/ESC to exit");
-
-    function countPoints(){
-      if (!m) return 0;
-      if (Array.isArray(m.points))  return m.points.length;
-      if (Array.isArray(m.markers)) return m.markers.length;
-      return 0;
-    }
-
-    // Poll like H/V do for clamping; here we just watch for 2 points
-    N_IV = setInterval(function(){
-      if (!m || m._disposed){
-        if (N_IV){ clearInterval(N_IV); N_IV = null; }
-        return;
-      }
-      const cnt = countPoints();
-      if (cnt >= 2){
-        try {
-          if (viewer.measuringTool.finishInsertion) viewer.measuringTool.finishInsertion();
-          else viewer.measuringTool.cancelInsertion();
-        } catch(_) {}
-        cleanup(true);
-      }
-    }, 40);
-
-    function onEsc(ev){
-      if (ev.key !== "Escape") return;
-      ev.stopImmediatePropagation(); ev.preventDefault();
-      try { viewer.measuringTool.cancelInsertion && viewer.measuringTool.cancelInsertion(); } catch(_) {}
-      cleanup(false);
-    }
-    document.addEventListener("keydown", onEsc, true);
-
-    function cleanup(completed){
-      if (N_IV){ clearInterval(N_IV); N_IV = null; }
-      try { document.removeEventListener("keydown", onEsc, true); } catch(_) {}
-
-      // If canceled mid-insert, remove the partial
-      if (!completed && m){
-        try{
-          if (viewer.scene?.removeMeasurement) viewer.scene.removeMeasurement(m);
-          else {
-            const arr = viewer.scene?.measurements || [];
-            const i = arr.indexOf(m); if (i>=0) arr.splice(i,1);
-          }
-        } catch(_) {}
-      }
-
-      document.body.classList.remove('n-mode');
-      N_ACTIVE = false;
-      N_MEAS   = null;
-      viewer.repaint && viewer.repaint();
-      toast(completed ? "3D segment done" : "3D measure canceled");
+    requestAnimationFrame(function(){
+      var m = viewer.measuringTool.startInsertion({
+        showDistances:true, showAngles:false, showCoordinates:false, showHeight:false,
+        closed:false, name:"3D"
+      });
+      N_MEAS = m;
+      N_ACTIVE = true;
       LAST_TOOL = 'N';
-    }
-  });
-}
+      document.body.classList.add('n-mode');
+      toast("3D measure ON: click A, then click B • N/ESC to exit");
 
-function stop3DQuickMeasure(showToast){
-  if (N_IV){ clearInterval(N_IV); N_IV = null; }
-  try { viewer.measuringTool?.cancelInsertion?.(); } catch(_) {}
-  N_MEAS = null;
-  N_ACTIVE = false;
-  document.body.classList.remove('n-mode');
-  if (showToast) toast("3D measure OFF");
-  viewer.repaint && viewer.repaint();
-  LAST_TOOL = 'N';
-}
+      function countPoints(){
+        if (!m) return 0;
+        if (Array.isArray(m.points))  return m.points.length;
+        if (Array.isArray(m.markers)) return m.markers.length;
+        return 0;
+      }
+
+      N_IV = setInterval(function(){
+        if (!m || m._disposed){
+          if (N_IV){ clearInterval(N_IV); N_IV = null; }
+          return;
+        }
+        const cnt = countPoints();
+        if (cnt >= 2){
+          try {
+            if (viewer.measuringTool.finishInsertion) viewer.measuringTool.finishInsertion();
+            else viewer.measuringTool.cancelInsertion();
+          } catch(_) {}
+          cleanup(true);
+        }
+      }, 40);
+
+      function onEsc(ev){
+        if (ev.key !== "Escape") return;
+        ev.stopImmediatePropagation(); ev.preventDefault();
+        try { viewer.measuringTool.cancelInsertion && viewer.measuringTool.cancelInsertion(); } catch(_) {}
+        cleanup(false);
+      }
+      document.addEventListener("keydown", onEsc, true);
+
+      function cleanup(completed){
+        if (N_IV){ clearInterval(N_IV); N_IV = null; }
+        try { document.removeEventListener("keydown", onEsc, true); } catch(_) {}
+
+        if (!completed && m){
+          try{
+            if (viewer.scene?.removeMeasurement) viewer.scene.removeMeasurement(m);
+            else {
+              const arr = viewer.scene?.measurements || [];
+              const i = arr.indexOf(m); if (i>=0) arr.splice(i,1);
+            }
+          } catch(_) {}
+        }
+
+        document.body.classList.remove('n-mode');
+        N_ACTIVE = false;
+        N_MEAS   = null;
+        viewer.repaint && viewer.repaint();
+        toast(completed ? "3D segment done" : "3D measure canceled");
+        LAST_TOOL = 'N';
+      }
+    });
+  }
+  function stop3DQuickMeasure(showToast){
+    if (N_IV){ clearInterval(N_IV); N_IV = null; }
+    try { viewer.measuringTool?.cancelInsertion?.(); } catch(_) {}
+    N_MEAS = null;
+    N_ACTIVE = false;
+    document.body.classList.remove('n-mode');
+    if (showToast) toast("3D measure OFF");
+    viewer.repaint && viewer.repaint();
+    LAST_TOOL = 'N';
+  }
 
   // ===========================================================
   // =======  SECTION 13 — M TOOL (STANDARD INSERTER)  =========
@@ -1252,7 +1146,7 @@ function stop3DQuickMeasure(showToast){
   // ===========================================================
   function clearAllMeasurements(){
     try { viewer.measuringTool?.cancelInsertion?.(); } catch(e){}
-    synthRightClick(); // ensure inserter fully exits
+    synthRightClick();
 
     if (H_ACTIVE) stopHMode(false);
     if (V_ACTIVE) stopVMode(false);
@@ -1273,220 +1167,45 @@ function stop3DQuickMeasure(showToast){
   // ===========================================================
   // ============  SECTION 15 — GLOBAL HOTKEYS  =================
   // ===========================================================
-(function(){
-  function isTypingInField(t){
-    return t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.nodeName));
-  }
-
-  function handleHotkey(k){
-    if (k === "h"){ if (V_ACTIVE){ stopVMode(true); return; } if (N_ACTIVE){ stop3DQuickMeasure(true); return; } if (!H_ACTIVE) startHorizontalMeasure(); else stopHMode(true); }
-    if (k === "v"){ if (H_ACTIVE){ stopHMode(true); return; } if (N_ACTIVE){ stop3DQuickMeasure(true); return; } if (!V_ACTIVE) startVerticalMeasure(); else stopVMode(true); }
-    if (k === "m"){ if (N_ACTIVE){ stop3DQuickMeasure(true); } startNormalMeasureFresh(); }
-    if (k === "n"){ if (!N_ACTIVE) start3DQuickMeasure(); else stop3DQuickMeasure(true); }
-    if (k === "o"){ setCameraModeSafe(Potree.CameraMode.ORTHOGRAPHIC, 'O'); viewer.repaint(); toast("Orthographic"); }
-    if (k === "p"){ setCameraModeSafe(Potree.CameraMode.PERSPECTIVE,  'P'); viewer.repaint(); toast("Perspective"); }
-    if (k === "b"){
-      var box = window.__clipBox; if (!box || !viewer || !viewer.setClipTask) return;
-      if (box.visible){ box.visible=false; viewer.setClipTask(Potree.ClipTask.NONE); toast("Clip box: hidden"); }
-      else { box.visible=true; viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE); toast("Clip box: shown"); }
-      viewer.repaint();
-    }
-    if (k === "c"){ clearAllMeasurements(); }
-  }
-
-  document.addEventListener("keydown", function(ev){
-    const k = (ev.key || '').toLowerCase();
-
-    // Only handle our known hotkeys
-    if (!/[hvmnopbc]/.test(k)) return;
-
-    // Ignore auto-repeats and when typing into fields
-    if (ev.repeat || isTypingInField(ev.target)) return;
-
-    // Stop sidebar/UI from swallowing the first press
-    ev.preventDefault();
-    ev.stopPropagation();
-
-    // NEW: blur any focused widget so hotkeys can’t be eaten
-    if (document.activeElement && document.activeElement !== document.body){
-      try { document.activeElement.blur(); } catch(_) {}
+  (function(){
+    function isTypingInField(t){
+      return t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.nodeName));
     }
 
-    handleHotkey(k);
-
-    // Micro-retry for N if some UI still intercepted the first attempt
-    if (k === "n" && !N_ACTIVE){
-      setTimeout(()=>{ if (!N_ACTIVE) handleHotkey('n'); }, 0);
+    function handleHotkey(k){
+      if (k === "h"){ if (V_ACTIVE){ stopVMode(true); return; } if (N_ACTIVE){ stop3DQuickMeasure(true); return; } if (!H_ACTIVE) startHorizontalMeasure(); else stopHMode(true); }
+      if (k === "v"){ if (H_ACTIVE){ stopHMode(true); return; } if (N_ACTIVE){ stop3DQuickMeasure(true); return; } if (!V_ACTIVE) startVerticalMeasure(); else stopVMode(true); }
+      if (k === "m"){ if (N_ACTIVE){ stop3DQuickMeasure(true); } startNormalMeasureFresh(); }
+      if (k === "n"){ if (!N_ACTIVE) start3DQuickMeasure(); else stop3DQuickMeasure(true); }
+      if (k === "o"){ setCameraModeSafe(Potree.CameraMode.ORTHOGRAPHIC, 'O'); viewer.repaint(); toast("Orthographic"); }
+      if (k === "p"){ setCameraModeSafe(Potree.CameraMode.PERSPECTIVE,  'P'); viewer.repaint(); toast("Perspective"); }
+      if (k === "b"){
+        var box = window.__clipBox; if (!box || !viewer || !viewer.setClipTask) return;
+        if (box.visible){ box.visible=false; viewer.setClipTask(Potree.ClipTask.NONE); toast("Clip box: hidden"); }
+        else { box.visible=true; viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE); toast("Clip box: shown"); }
+        viewer.repaint();
+      }
+      if (k === "c"){ clearAllMeasurements(); }
     }
-  }, {capture:true});
-})();
 
+    document.addEventListener("keydown", function(ev){
+      const k = (ev.key || '').toLowerCase();
+      if (!/[hvmnopbc]/.test(k)) return;
+      if (ev.repeat || isTypingInField(ev.target)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      if (document.activeElement && document.activeElement !== document.body){
+        try { document.activeElement.blur(); } catch(_) {}
+      }
+
+      handleHotkey(k);
+      if (k === "n" && !N_ACTIVE){
+        setTimeout(()=>{ if (!N_ACTIVE) handleHotkey('n'); }, 0);
+      }
+    }, {capture:true});
+  })();
 
   </script>
-
-  <!-- =========================================================
-======  SECTION 16 — CONTROLS & SAFETY PATCHES (FINAL)  ======
-========================================================= -->
-<script>
-(function EnableFinalPatches(){
-  if (!window.viewer) { window.addEventListener('load', EnableFinalPatches, {once:true}); return; }
-
-  function applyControlTweaks(){
-    const v = viewer;
-    const controls = v.getControls(v.scene.view);
-    if (!controls) return;
-
-    // Fast, consistent wheel zoom
-    controls.zoomSpeed = 4.0;           // tweak to taste (2–6)
-    controls.enableDamping = false;
-
-    // Prevent “stall” when very close to geometry
-    if (v.scene.view && typeof v.scene.view.minRadius === 'number') {
-      v.scene.view.minRadius = 0.001;
-    }
-
-    // Always zoom toward cursor (cover variants)
-    try { controls.zoomToMouse  = true; } catch(_) {}
-    try { controls.zoomToCursor = true; } catch(_) {}
-    try {
-      if (controls.controls) {
-        controls.controls.zoomToMouse  = true;
-        controls.controls.zoomToCursor = true;
-      }
-    } catch(_) {}
-  }
-
-  function installStickyPanGuard(){
-    if (window.__enable_sticky_pan_guard__) return;
-    window.__enable_sticky_pan_guard__ = true;
-
-    const el = viewer.inputHandler?.domElement
-            || viewer.renderer?.domElement
-            || document.getElementById("potree_render_area")
-            || document.body;
-
-    const controls = viewer.getControls(viewer.scene.view);
-    const ih = viewer.inputHandler;
-
-    function hardStop(ev){
-      try { controls?.dispatchEvent?.({ type: "end" }); } catch(e){}
-      if (ih && "drag" in ih) ih.drag = null;
-      try { el.releasePointerCapture?.(ev?.pointerId); } catch(e){}
-    }
-
-    // If a mouseup/pointerup gets missed (or window blurs), end any drag.
-    window.addEventListener("mouseup",    hardStop, true);
-    window.addEventListener("pointerup",  hardStop, true);
-    window.addEventListener("blur",       hardStop, true);
-    el.addEventListener("mouseleave",     hardStop, true);
-  }
-
-  function runAll(){
-    applyControlTweaks();
-    installStickyPanGuard();
-  }
-
-  // Run now…
-  runAll();
-
-  // …and re-run when things might reset controls (safe, idempotent)
-  try {
-    viewer.addEventListener?.("pointcloud_added", runAll);
-    viewer.addEventListener?.("scene_changed",    runAll);
-  } catch(_) {}
-
-  // Fallback after full load
-  window.addEventListener("load", () => setTimeout(runAll, 0), {once:true});
-})();
-</script>
-
-<!-- =========================================================
-======  SECTION 16 — CONSTANT-STEP WHEEL ZOOM (CURSOR)  ======
-========================================================= -->
-<script>
-(function ConstantStepWheelZoom(){
-  if (!window.viewer) { window.addEventListener('load', ConstantStepWheelZoom, {once:true}); return; }
-
-  const v  = viewer;
-  const el = v.inputHandler?.domElement || v.renderer?.domElement || document.getElementById("potree_render_area") || document.body;
-
-  // 1) Disable OrbitControls' built-in wheel zoom (it scales with radius)
-  try {
-    const ctrls = v.getControls(v.scene.view);
-    if (ctrls) ctrls.enableZoom = false;
-  } catch(_) {}
-
-  // Helper: pick point under cursor (we already have a robust picker)
-  function pickAtClient(x, y){
-    try { return pickPointFromClientXY(x, y); } catch(_) { return null; }
-  }
-
-  // Move camera & view by a fixed world distance toward (+) / away from (-) target
-  function dollyToward(point, step){
-    const cam  = v.scene.getActiveCamera();
-    const view = v.scene.view;
-    if (!cam || !view) return;
-
-    // Direction: from camera to target (or view pivot if no point)
-    const target = (point && point.isVector3) ? point : (view._pivot && view._pivot.isVector3 ? view._pivot : view.position);
-    const dir = new THREE.Vector3().subVectors(target, cam.position).normalize();
-
-    const delta = dir.multiplyScalar(step);
-
-    // Shift camera and the view's position/pivot coherently
-    cam.position.add(delta);
-    if (view.position) view.position.add(delta);
-    if (view._pivot && view._pivot.isVector3) view._pivot.add(delta);
-    if (cam.target && cam.target.isVector3) cam.target.add(delta);
-
-    v.repaint();
-  }
-
-  // Choose a constant step based on scene size; feel free to tweak divisor
-  function computeStep(pixelDeltaY){
-    const diag = (typeof window.__sceneDiag === 'number' && isFinite(window.__sceneDiag)) ? window.__sceneDiag : 10;
-    const base = diag / 80;                 // ≈ 1.25% of scene diagonal per tick
-    const sign = (pixelDeltaY > 0) ? +1 : -1; // wheel down → move forward
-    // Make trackpads with large deltaY not insane: clamp magnitude
-    return sign * Math.min(Math.abs(pixelDeltaY) * (base / 100), base * 4);
-  }
-
-  function onWheel(e){
-    // Block native wheel zoom so only our dolly applies
-    e.preventDefault();
-    e.stopPropagation();
-
-    const step = computeStep(e.deltaY);
-
-    // Try to zoom to cursor; if pick fails, still move forward/back along view dir
-    const p = pickAtClient(e.clientX, e.clientY);
-
-    // If we got a cursor point, set pivot there so orbiting remains nice
-    try {
-      if (p && v.scene.view && typeof v.scene.view.setPivot === 'function') {
-        v.scene.view.setPivot(p);
-      }
-    } catch(_){}
-
-    dollyToward(p, step);
-  }
-
-  // Install (avoid double-bind)
-  if (!el.__enable_constant_step_zoom__) {
-    el.__enable_constant_step_zoom__ = true;
-    el.addEventListener('wheel', onWheel, {passive:false, capture:true});
-  }
-
-  // If anything later re-enables controls.zoom, turn it back off
-  function reassert(){
-    try { const c = v.getControls(v.scene.view); if (c) c.enableZoom = false; } catch(_){}
-  }
-  try {
-    v.addEventListener?.('pointcloud_added', reassert);
-    v.addEventListener?.('scene_changed',    reassert);
-  } catch(_){}
-  window.addEventListener('load', () => setTimeout(reassert, 0), {once:true});
-})();
-</script>
 </body>
 </html>
