@@ -738,157 +738,205 @@
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
-(function SECTION9_WAIT_AND_WIRE(){
-  // Small beacon so you know it's live
-  (function(){
-    const b = document.createElement('div');
-    Object.assign(b.style,{
-      position:'fixed',left:'12px',bottom:'12px',zIndex:'99999',
-      background:'#b36b00',color:'#fff',padding:'6px 10px',
-      borderRadius:'8px',font:'12px/1.2 system-ui,Segoe UI,Arial',
-      boxShadow:'0 2px 8px #0008'
-    });
-    b.id='sec9_beacon'; b.textContent='SECTION 9 — waiting for viewer/canvas/camera/controls…';
-    document.body.appendChild(b);
+(function SECTION9_INPUT_TAKEOVER(){
+  // ----- Settings you can tweak quickly -----
+  const ENABLE_EARTH_CONTROLS = false;   // set true to try EarthControls (helps crawl). See note at bottom.
+  const ZOOM_STEP_FACTOR      = 1.2;     // wheel & hotkeys multiplicative step
+  const PAN_CLAMP_DIV         = 80;      // bigger -> less clamp (faster close-up pan)
+  const WHEEL_SPEED_DIV       = 8;       // bigger -> slower wheel (perspective fallback)
+  const KEY_SPEED_DIV         = 6;       // bigger -> slower hotkeys (perspective fallback)
+
+  // ----- Helpers -----
+  const getViewer   = () => window.viewer || (window.Potree && Potree.viewer) || null;
+  const getRenderEl = (v) => v?.inputHandler?.domElement
+                          || document.getElementById('potree_render_area')
+                          || v?.renderer?.domElement
+                          || document.querySelector('#potree_render_area');
+  const getCamera   = (v) => v?.scene?.getActiveCamera?.()
+                          || v?.scene?.camera
+                          || v?.renderer?.camera
+                          || null;
+
+  // Wait until Potree is actually ready (renderer, input element, camera exist)
+  let tries = 0;
+  (function waitUntilReady(){
+    const v = getViewer();
+    const el = getRenderEl(v);
+    const cam = getCamera(v);
+    if (v && el && cam) return wire(v, el, cam);
+    if (++tries > 300) return console.error('[SEC9] abort: viewer/canvas/camera not ready');
+    setTimeout(waitUntilReady, 100);
   })();
 
-  const beacon = ()=>document.getElementById('sec9_beacon');
+  function sceneDiag(v){
+    const bb = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
+    return Math.max(1e-6, Math.hypot(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z));
+  }
 
-  const getViewer    = () => window.viewer || (window.Potree && Potree.viewer) || null;
-  const getCanvas    = (v) => v?.renderer?.domElement || document.querySelector('#potree_render_area canvas');
-  const getCamera    = (v) => v?.scene?.getActiveCamera?.() || v?.scene?.camera || v?.scene?.cameraP || v?.scene?.cameraO || v?.renderer?.camera || null;
-  const getControls  = (v) => v?.controls || v?.sceneControls || v?.inputHandler?.controls || (v?.getControls ? v.getControls(v.scene?.view) : null);
-  const getInput     = (v) => v?.inputHandler || null;
+  function activePivot(v){
+    const view = v.scene?.view;
+    return (view?._pivot && view._pivot.isVector3) ? view._pivot : (view?.position || null);
+  }
 
-  let tries = 0;
-  const MAX_TRIES = 300; // ~30s (300 * 100ms)
-  const tryWire = () => {
-    const v  = getViewer();
-    const el = getCanvas(v);
-    const cam= getCamera(v);
-    const ctl= getControls(v) || getInput(v); // accept InputHandler as “controls”
-    if (!v || !el || !cam || !ctl) {
-      tries++;
-      if (tries % 10 === 0 && beacon()) beacon().textContent = `SECTION 9 — waiting… (v:${!!v} canvas:${!!el} cam:${!!cam} ctl:${!!ctl})`;
-      if (tries < MAX_TRIES) return setTimeout(tryWire, 100);
-      if (beacon()) { beacon().style.background='#b71c1c'; beacon().textContent='SECTION 9 ERROR — missing canvas/controls/camera'; }
-      return;
+  function wire(v, renderEl, cam){
+    // Optional: switch to EarthControls (users report it avoids close-range zoom crawl)
+    // https://github.com/potree/potree/issues/980  +  https://github.com/potree/potree/issues/614
+    if (ENABLE_EARTH_CONTROLS && typeof v.setControls === 'function' && v.earthControls){
+      try { v.setControls(v.earthControls); v.inputHandler?.setActiveNavigationMode?.('EarthControls'); } catch(_) {}
     }
 
-    // Ready — wire inputs
-    if (beacon()) { beacon().style.background='#1b5e20'; beacon().textContent='SECTION 9 — wired'; }
+    // Make sure the element receives input and browser gestures don’t interfere
+    try{
+      renderEl.style.touchAction = 'none';
+      renderEl.style.overscrollBehavior = 'contain';
+      renderEl.style.pointerEvents = 'auto';
+      renderEl.tabIndex = 0;
+    }catch(_){}
 
-    const bb   = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
-    const diag = Math.max(1e-6, Math.hypot(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z));
+    const diag = sceneDiag(v);
 
-    // Try to tune OrbitControls if present; otherwise we’ll operate via camera/InputHandler
-    const controls = (ctl && (ctl.dollyIn || ctl.panSpeed !== undefined)) ? ctl : null;
+    // -------------------------------
+    // MMB PAN — CAPTURE & HANDLE OURSELVES
+    // -------------------------------
+    let mmb = false, lastX = 0, lastY = 0, activePointerId = null;
 
-    // Baseline: relaxed limits + sensible speeds
-    if (controls) {
-      if ('minDistance' in controls) controls.minDistance = diag/10000;
-      if ('maxDistance' in controls) controls.maxDistance = diag*100;
-      if ('zoomSpeed'   in controls) controls.zoomSpeed   = 2.0;
-      if ('panSpeed'    in controls) controls.panSpeed    = 1.0;
-      if ('rotateSpeed' in controls) controls.rotateSpeed = 0.9;
-      if ('enableDamping' in controls) { controls.enableDamping = true; controls.dampingFactor = 0.08; }
-      if ('zoomToCursor' in controls) controls.zoomToCursor = true;
+    function panPixels(dx, dy){
+      // Map pixels to world-units based on camera type & effective distance
+      const el = renderEl;
+      const w = el.clientWidth || 1;
+      const h = el.clientHeight || 1;
 
-      // Ensure MMB = PAN where API supports mouseButtons
-      try {
-        if (controls.mouseButtons) {
-          if ('PAN' in controls.mouseButtons) {
-            controls.mouseButtons.MIDDLE = controls.mouseButtons.PAN;
-          }
-        }
-      } catch(_) {}
-      controls.update?.();
-    }
-
-    // Reliable wheel: prefer Potree’s native wheel; otherwise use distance-aware fallback
-    const input = getInput(v);
-    const nativeWheel = input && (input.onMouseWheel || input.wheel);
-    const forwardWheel = typeof nativeWheel === 'function' ? nativeWheel.bind(input) : null;
-
-    el.addEventListener('wheel', (ev) => {
-      let d = ev.deltaY;
-      if (ev.deltaMode === 1) d *= 33; else if (ev.deltaMode === 2) d *= 400;
-
-      if (forwardWheel) {
-        forwardWheel(ev); // let Potree manage states/zoom
-      } else if (controls && typeof controls.dollyIn === 'function' && typeof controls.dollyOut === 'function') {
-        const factor = d > 0 ? 1.2 : (1/1.2);
-        if (factor < 1) controls.dollyIn(1/factor); else controls.dollyOut(factor);
-        controls.update?.();
+      let sx, sy;
+      if (cam.isOrthographicCamera){
+        // Orthographic: pixels scale linearly with frustum size and zoom
+        sx = (cam.right - cam.left) / (cam.zoom * w);
+        sy = (cam.top   - cam.bottom) / (cam.zoom * h);
       } else {
-        // Fallback: move camera along look direction, step scales with distance to pivot
+        const view  = v.scene?.view;
+        const pivot = activePivot(v);
+        const dist  = (pivot && cam.position.distanceTo(pivot)) || (view?.radius ?? 50);
+        const dEff  = Math.max(dist, Math.max(diag / PAN_CLAMP_DIV, 0.25));
+        const vFov  = (cam.fov || 60) * Math.PI / 180;
+        const wy    = (2 * Math.tan(vFov / 2) * dEff) / h;
+        const wx    = wy * (w / h);
+        sx = wx; sy = wy;
+      }
+
+      const right = new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion);
+      const up    = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion);
+      const delta = new THREE.Vector3()
+        .addScaledVector(right, -dx * sx)
+        .addScaledVector(up,     dy * sy);
+
+      // Move camera and Potree view together so rotations remain centered
+      const view = v.scene?.view;
+      if (view && view.position){
+        view.position.add(delta);
+        if (view._pivot && view._pivot.isVector3) view._pivot.add(delta);
+      }
+      cam.position.add(delta);
+      if (cam.target && cam.target.isVector3) cam.target.add(delta);
+
+      v.repaint?.();
+    }
+
+    function onPointerDown(e){
+      if (e.button !== 1) return;             // middle button only
+      mmb = true;
+      activePointerId = e.pointerId;
+      lastX = e.clientX; lastY = e.clientY;
+      try { renderEl.setPointerCapture(e.pointerId); } catch(_) {}
+      e.preventDefault();
+      e.stopImmediatePropagation();            // stop Potree’s handler from starting its own drag
+    }
+    function onPointerMove(e){
+      if (!mmb || e.pointerId !== activePointerId) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      panPixels(dx, dy);
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+    function endMMB(e){
+      if (e && e.type === 'pointerup' && e.pointerId !== activePointerId) return;
+      mmb = false;
+      activePointerId = null;
+    }
+
+    // Attach MMB handlers in CAPTURE phase so we preempt Potree
+    const capOpts = { capture: true, passive: false };
+    renderEl.addEventListener('pointerdown',  onPointerDown, capOpts);
+    renderEl.addEventListener('pointermove',  onPointerMove, capOpts);
+    renderEl.addEventListener('pointerup',    endMMB,        capOpts);
+    renderEl.addEventListener('pointercancel',endMMB,        capOpts);
+    renderEl.addEventListener('contextmenu',  (e)=>e.preventDefault(), capOpts);
+    window.addEventListener('blur', endMMB, true);
+
+    // -------------------------------
+    // WHEEL ZOOM — TAKE OVER & NORMALIZE
+    // -------------------------------
+    function wheelZoom(e){
+      // Normalize delta to pixels
+      let d = e.deltaY;
+      if (e.deltaMode === 1) d *= 33;
+      else if (e.deltaMode === 2) d *= 400;
+
+      if (cam.isOrthographicCamera){
+        const factor = d > 0 ? ZOOM_STEP_FACTOR : (1/ZOOM_STEP_FACTOR);
+        cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom / factor));
+        cam.updateProjectionMatrix?.();
+        v.repaint?.();
+      } else {
+        // Perspective: move along view direction scaled by distance to pivot
         const dir = new THREE.Vector3(); cam.getWorldDirection(dir);
-        let dist = 0;
-        try {
-          const view = v.scene?.view;
-          const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
-          dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-        } catch(_) {}
-        const step = (d > 0 ? 1 : -1) * (Math.max(dist, diag/200) / 8);
+        const pivot = activePivot(v);
+        const dist  = (pivot && cam.position.distanceTo(pivot)) || 0;
+        const step  = (d > 0 ? 1 : -1) * (Math.max(dist, diag/200) / WHEEL_SPEED_DIV);
         cam.position.addScaledVector(dir, step);
         cam.updateProjectionMatrix?.();
         v.repaint?.();
       }
+    }
 
-      ev.preventDefault();
-    }, { passive:false });
+    // Intercept wheel BEFORE Potree sees it (capture) and stop it
+    renderEl.addEventListener('wheel', (e) => {
+      wheelZoom(e);
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, { capture: true, passive: false });
 
-    // “Pan stuck” guard (works with either controls or input handler)
-    const endDrag = () => {
-      if (controls) {
-        if (controls.state !== undefined) controls.state = 0;
-        controls.dragging = false;
-        controls.update?.();
-      }
-      if (input) {
-        input.drag = false;
-        input.dragging = false;
-        input.potentialDrag = null;
-        input.activeLabel = null;
-      }
-    };
-    ['pointerup','mouseup','mouseleave','blur'].forEach(evt => window.addEventListener(evt, endDrag, true));
-    el.addEventListener('contextmenu', e => e.preventDefault());
-
-    // Hotkeys: [ (out) / ] (in)
-    function zoomByStep(inward){
+    // -------------------------------
+    // HOTKEYS — [ (out)   ] (in)
+    // -------------------------------
+    function keyZoom(inward){
       if (cam.isOrthographicCamera){
-        const factor = inward ? (1/1.2) : 1.2;
+        const factor = inward ? (1/ZOOM_STEP_FACTOR) : ZOOM_STEP_FACTOR;
         cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom * factor));
         cam.updateProjectionMatrix?.();
         v.repaint?.();
         return;
       }
-      if (controls && typeof controls.dollyIn === 'function'){
-        if (inward) controls.dollyIn(1/1.2); else controls.dollyOut(1.2);
-        controls.update?.();
-        return;
-      }
       const dir = new THREE.Vector3(); cam.getWorldDirection(dir);
-      let dist = 0;
-      try{
-        const view = v.scene?.view;
-        const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
-        dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-      }catch(_){}
-      const move = (inward ? -1 : 1) * (Math.max(dist, diag/200) / 6);
+      const pivot = activePivot(v);
+      const dist  = (pivot && cam.position.distanceTo(pivot)) || 0;
+      const move  = (inward ? -1 : 1) * (Math.max(dist, diag/200) / KEY_SPEED_DIV);
       cam.position.addScaledVector(dir, move);
       cam.updateProjectionMatrix?.();
       v.repaint?.();
     }
+
     window.addEventListener('keydown', (e) => {
-      const tag=(e.target&&e.target.tagName||'').toLowerCase();
-      if (tag==='input'||tag==='textarea'||e.metaKey||e.ctrlKey||e.altKey) return;
-      if (e.key === '[' || e.code === 'BracketLeft')  { zoomByStep(false); e.preventDefault(); }
-      if (e.key === ']' || e.code === 'BracketRight') { zoomByStep(true);  e.preventDefault(); }
-    }, { passive:false });
-  };
-  tryWire(); // first attempt
+      // avoid typing in inputs
+      const tag = (e.target && e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '[' || e.code === 'BracketLeft')  { keyZoom(false); e.preventDefault(); }
+      if (e.key === ']' || e.code === 'BracketRight') { keyZoom(true);  e.preventDefault(); }
+    }, { passive: false });
+
+    console.info('[SEC9] takeover wired on', renderEl);
+  }
 })();
   // ===========================================================
   // ======  SECTION 10 — H TOOL (TOP-ORTHO, Z-CLAMP)  =========
