@@ -738,190 +738,122 @@
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
-(function SECTION9(){
-  // --- Beacon + HUD (created via JS so it's safe inside <script>) ---
-  function makeEl(tag, styles){
-    const el = document.createElement(tag);
-    Object.assign(el.style, styles||{});
-    document.body.appendChild(el);
-    return el;
-  }
-  const beacon = makeEl('div', {
-    position:'fixed', left:'12px', bottom:'12px', zIndex:'99999',
-    background:'#1b5e20', color:'#fff', padding:'6px 10px',
-    borderRadius:'8px', font:'12px/1.2 system-ui,Segoe UI,Arial',
-    boxShadow:'0 2px 8px #0008'
-  });
-  beacon.textContent = 'SECTION 9 ACTIVE — waiting for viewer…';
+(function SECTION9_WAIT_AND_WIRE(){
+  // Small beacon so you know it's live
+  (function(){
+    const b = document.createElement('div');
+    Object.assign(b.style,{
+      position:'fixed',left:'12px',bottom:'12px',zIndex:'99999',
+      background:'#b36b00',color:'#fff',padding:'6px 10px',
+      borderRadius:'8px',font:'12px/1.2 system-ui,Segoe UI,Arial',
+      boxShadow:'0 2px 8px #0008'
+    });
+    b.id='sec9_beacon'; b.textContent='SECTION 9 — waiting for viewer/canvas/camera/controls…';
+    document.body.appendChild(b);
+  })();
 
-  const hud = makeEl('div', {
-    position:'fixed', right:'12px', bottom:'12px', zIndex:'99999',
-    background:'#111a', color:'#eee', padding:'8px 10px',
-    borderRadius:'8px', font:'12px/1.2 system-ui,Segoe UI,Arial',
-    border:'1px solid #444', minWidth:'240px', boxShadow:'0 2px 8px #0008',
-    whiteSpace:'pre', pointerEvents:'none', display:'none'
-  });
+  const beacon = ()=>document.getElementById('sec9_beacon');
 
-  function log(){ try{ console.log('[SEC9]', ...arguments); }catch(_){} }
-  log('Section 9 script running');
+  const getViewer    = () => window.viewer || (window.Potree && Potree.viewer) || null;
+  const getCanvas    = (v) => v?.renderer?.domElement || document.querySelector('#potree_render_area canvas');
+  const getCamera    = (v) => v?.scene?.getActiveCamera?.() || v?.scene?.camera || v?.scene?.cameraP || v?.scene?.cameraO || v?.renderer?.camera || null;
+  const getControls  = (v) => v?.controls || v?.sceneControls || v?.inputHandler?.controls || (v?.getControls ? v.getControls(v.scene?.view) : null);
+  const getInput     = (v) => v?.inputHandler || null;
 
-  // --- Helpers to find things safely ---
-  const getViewer   = () => window.viewer || (window.Potree && Potree.viewer) || null;
-  const getCanvas   = (v) => (v && v.renderer && v.renderer.domElement)
-                            || document.querySelector('#potree_render_area canvas')
-                            || document.querySelector('canvas');
-  const getControls = (v) => v?.sceneControls || v?.controls || (v?.getControls ? v.getControls(v.scene?.view) : null);
-  const getCamera   = (v) => v?.scene?.camera || v?.renderer?.camera || null;
-
-  const setHUD = (o) => {
-    hud.textContent =
-`Cam: ${o.mode||'—'}   Drag:${o.drag?'YES':'no'}
-Dist: ${o.dist ?? '—'}   ZoomSpeed: ${o.zs ?? '—'}
-Wheel: ${o.wheel||'—'}   ΔY(px): ${o.delta ?? '—'}
-Hotkeys: [ out  ] in   (MMB = Pan)`;
-  };
-
-  // --- Wait for window.viewer so we don't race init ---
   let tries = 0;
-  const t = setInterval(() => {
-    const v = getViewer(); tries++;
-    if (!v && tries < 100) return; // wait up to ~10s (100*100ms)
-
-    clearInterval(t);
-
-    if (!v){
-      beacon.style.background = '#b71c1c';
-      beacon.textContent = 'SECTION 9 ERROR — window.viewer not found';
-      log('ERROR: window.viewer not found. Ensure: window.viewer = viewer; right after new Potree.Viewer(...)');
+  const MAX_TRIES = 300; // ~30s (300 * 100ms)
+  const tryWire = () => {
+    const v  = getViewer();
+    const el = getCanvas(v);
+    const cam= getCamera(v);
+    const ctl= getControls(v) || getInput(v); // accept InputHandler as “controls”
+    if (!v || !el || !cam || !ctl) {
+      tries++;
+      if (tries % 10 === 0 && beacon()) beacon().textContent = `SECTION 9 — waiting… (v:${!!v} canvas:${!!el} cam:${!!cam} ctl:${!!ctl})`;
+      if (tries < MAX_TRIES) return setTimeout(tryWire, 100);
+      if (beacon()) { beacon().style.background='#b71c1c'; beacon().textContent='SECTION 9 ERROR — missing canvas/controls/camera'; }
       return;
     }
 
-    const canvas   = getCanvas(v);
-    const controls = getControls(v);
-    const cam      = getCamera(v);
+    // Ready — wire inputs
+    if (beacon()) { beacon().style.background='#1b5e20'; beacon().textContent='SECTION 9 — wired'; }
 
-    if (!canvas || !controls || !cam){
-      beacon.style.background = '#b71c1c';
-      beacon.textContent = 'SECTION 9 ERROR — missing canvas/controls/camera';
-      log('ERROR parts:', { canvas:!!canvas, controls:!!controls, cam:!!cam });
-      return;
-    }
+    const bb   = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
+    const diag = Math.max(1e-6, Math.hypot(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z));
 
-    // Scene diag for scale-aware steps
-    const bb = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
-    const diag = Math.max(1e-6, Math.hypot(
-      bb.max.x - bb.min.x,
-      bb.max.y - bb.min.y,
-      bb.max.z - bb.min.z
-    ));
+    // Try to tune OrbitControls if present; otherwise we’ll operate via camera/InputHandler
+    const controls = (ctl && (ctl.dollyIn || ctl.panSpeed !== undefined)) ? ctl : null;
 
-    // Baseline controls (MMB pan, sane limits)
-    try{
-      if (controls.mouseButtons){
-        if ('PAN' in controls.mouseButtons){
-          controls.mouseButtons.LEFT   = controls.mouseButtons.ROTATE ?? 'ROTATE';
-          controls.mouseButtons.MIDDLE = controls.mouseButtons.PAN;     // MMB => PAN
-          controls.mouseButtons.RIGHT  = controls.mouseButtons.DOLLY ?? 'DOLLY';
-        }else{
-          // Older API: default mapping keeps MMB pan behavior
-          const M = (window.THREE && THREE.MOUSE) ? THREE.MOUSE : {LEFT:0,MIDDLE:1,RIGHT:2};
-          controls.mouseButtons = { LEFT:M.LEFT, MIDDLE:M.MIDDLE, RIGHT:M.RIGHT };
+    // Baseline: relaxed limits + sensible speeds
+    if (controls) {
+      if ('minDistance' in controls) controls.minDistance = diag/10000;
+      if ('maxDistance' in controls) controls.maxDistance = diag*100;
+      if ('zoomSpeed'   in controls) controls.zoomSpeed   = 2.0;
+      if ('panSpeed'    in controls) controls.panSpeed    = 1.0;
+      if ('rotateSpeed' in controls) controls.rotateSpeed = 0.9;
+      if ('enableDamping' in controls) { controls.enableDamping = true; controls.dampingFactor = 0.08; }
+      if ('zoomToCursor' in controls) controls.zoomToCursor = true;
+
+      // Ensure MMB = PAN where API supports mouseButtons
+      try {
+        if (controls.mouseButtons) {
+          if ('PAN' in controls.mouseButtons) {
+            controls.mouseButtons.MIDDLE = controls.mouseButtons.PAN;
+          }
         }
-      }
-    }catch(e){ log('mouseButtons map error', e); }
+      } catch(_) {}
+      controls.update?.();
+    }
 
-    if ('minDistance' in controls) controls.minDistance = diag/10000;
-    if ('maxDistance' in controls) controls.maxDistance = diag*100;
-    if ('zoomSpeed'   in controls) controls.zoomSpeed   = 2.0;
-    if ('panSpeed'    in controls) controls.panSpeed    = 1.0;
-    if ('rotateSpeed' in controls) controls.rotateSpeed = 0.9;
-    if ('enableDamping' in controls){ controls.enableDamping = true; controls.dampingFactor = 0.08; }
-    if ('zoomToCursor' in controls) controls.zoomToCursor = true;
-    controls.update?.();
+    // Reliable wheel: prefer Potree’s native wheel; otherwise use distance-aware fallback
+    const input = getInput(v);
+    const nativeWheel = input && (input.onMouseWheel || input.wheel);
+    const forwardWheel = typeof nativeWheel === 'function' ? nativeWheel.bind(input) : null;
 
-    // Make sure canvas accepts input
-    canvas.style.pointerEvents = 'auto';
-    canvas.tabIndex = 0;
-
-    // Wheel: prefer Potree’s native; else fallback (non-passive)
-    const nativeWheel = v.inputHandler && (v.inputHandler.onMouseWheel || v.inputHandler.wheel);
-    const forwardWheel = (typeof nativeWheel === 'function') ? nativeWheel.bind(v.inputHandler) : null;
-
-    canvas.addEventListener('wheel', (ev) => {
+    el.addEventListener('wheel', (ev) => {
       let d = ev.deltaY;
-      if (ev.deltaMode === 1) d *= 33;       // lines -> px
-      else if (ev.deltaMode === 2) d *= 400; // pages -> px
+      if (ev.deltaMode === 1) d *= 33; else if (ev.deltaMode === 2) d *= 400;
 
-      if (forwardWheel){
-        forwardWheel(ev); // use Potree’s internal handler (best)
-      }else{
-        if (cam.isOrthographicCamera){
-          const factor = d > 0 ? 1.2 : (1/1.2);
-          cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom / factor));
-          cam.updateProjectionMatrix?.();
-        }else if (typeof controls.dollyIn === 'function' && typeof controls.dollyOut === 'function'){
-          const factor = d > 0 ? 1.2 : (1/1.2);
-          if (factor < 1) controls.dollyIn(1/factor); else controls.dollyOut(factor);
-          controls.update?.();
-        }else{
-          // Fallback: move along view direction scaled by distance
-          const dir = new THREE.Vector3(); cam.getWorldDirection(dir);
-          let dist = 0;
-          try{
-            const view = v.scene?.view;
-            const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
-            dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-          }catch(_){}
-          const step = (d > 0 ? 1 : -1) * (Math.max(dist, diag/200) / 8);
-          cam.position.addScaledVector(dir, step);
-          cam.updateProjectionMatrix?.();
-        }
+      if (forwardWheel) {
+        forwardWheel(ev); // let Potree manage states/zoom
+      } else if (controls && typeof controls.dollyIn === 'function' && typeof controls.dollyOut === 'function') {
+        const factor = d > 0 ? 1.2 : (1/1.2);
+        if (factor < 1) controls.dollyIn(1/factor); else controls.dollyOut(factor);
+        controls.update?.();
+      } else {
+        // Fallback: move camera along look direction, step scales with distance to pivot
+        const dir = new THREE.Vector3(); cam.getWorldDirection(dir);
+        let dist = 0;
+        try {
+          const view = v.scene?.view;
+          const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
+          dist = (pivot && cam.position.distanceTo(pivot)) || 0;
+        } catch(_) {}
+        const step = (d > 0 ? 1 : -1) * (Math.max(dist, diag/200) / 8);
+        cam.position.addScaledVector(dir, step);
+        cam.updateProjectionMatrix?.();
         v.repaint?.();
       }
 
-      ev.preventDefault(); // needs passive:false (we set it below)
-
-      // HUD update
-      try{
-        const view = v.scene?.view;
-        const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
-        const dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-        setHUD({
-          mode: cam.isOrthographicCamera ? 'ORTHO' : 'PERSP',
-          drag: !!(controls.dragging || v.inputHandler?.dragging),
-          dist: dist.toFixed(3),
-          zs: (controls.zoomSpeed ?? 0).toFixed(2),
-          wheel: forwardWheel ? 'Potree' : 'Fallback',
-          delta: d.toFixed(1)
-        });
-      }catch(_){}
+      ev.preventDefault();
     }, { passive:false });
 
-    // Guard against “pan stuck”
+    // “Pan stuck” guard (works with either controls or input handler)
     const endDrag = () => {
-      if (controls.state !== undefined) controls.state = 0;
-      controls.dragging = false;
-      controls.update?.();
-      if (v.inputHandler){
-        v.inputHandler.drag = false;
-        v.inputHandler.dragging = false;
-        v.inputHandler.potentialDrag = null;
-        v.inputHandler.activeLabel = null;
+      if (controls) {
+        if (controls.state !== undefined) controls.state = 0;
+        controls.dragging = false;
+        controls.update?.();
       }
-      try{
-        const view = v.scene?.view;
-        const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
-        const dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-        setHUD({
-          mode: cam.isOrthographicCamera ? 'ORTHO' : 'PERSP',
-          drag: false,
-          dist: dist.toFixed(3),
-          zs: (controls.zoomSpeed ?? 0).toFixed(2)
-        });
-      }catch(_){}
+      if (input) {
+        input.drag = false;
+        input.dragging = false;
+        input.potentialDrag = null;
+        input.activeLabel = null;
+      }
     };
     ['pointerup','mouseup','mouseleave','blur'].forEach(evt => window.addEventListener(evt, endDrag, true));
-    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    el.addEventListener('contextmenu', e => e.preventDefault());
 
     // Hotkeys: [ (out) / ] (in)
     function zoomByStep(inward){
@@ -932,7 +864,7 @@ Hotkeys: [ out  ] in   (MMB = Pan)`;
         v.repaint?.();
         return;
       }
-      if (typeof controls.dollyIn === 'function'){
+      if (controls && typeof controls.dollyIn === 'function'){
         if (inward) controls.dollyIn(1/1.2); else controls.dollyOut(1.2);
         controls.update?.();
         return;
@@ -949,31 +881,14 @@ Hotkeys: [ out  ] in   (MMB = Pan)`;
       cam.updateProjectionMatrix?.();
       v.repaint?.();
     }
-
     window.addEventListener('keydown', (e) => {
-      const tag = (e.target && e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag=(e.target&&e.target.tagName||'').toLowerCase();
+      if (tag==='input'||tag==='textarea'||e.metaKey||e.ctrlKey||e.altKey) return;
       if (e.key === '[' || e.code === 'BracketLeft')  { zoomByStep(false); e.preventDefault(); }
       if (e.key === ']' || e.code === 'BracketRight') { zoomByStep(true);  e.preventDefault(); }
     }, { passive:false });
-
-    // Show HUD + finalize beacon
-    hud.style.display = 'block';
-    try{
-      const view = v.scene?.view;
-      const pivot = (view?._pivot && view._pivot.isVector3) ? view._pivot : view?.position;
-      const dist = (pivot && getCamera(v).position.distanceTo(pivot)) || 0;
-      setHUD({
-        mode: getCamera(v).isOrthographicCamera ? 'ORTHO' : 'PERSP',
-        drag: false,
-        dist: dist.toFixed(3),
-        zs: (controls.zoomSpeed ?? 0).toFixed(2),
-        wheel: '—'
-      });
-    }catch(_){}
-    beacon.textContent = 'SECTION 9 ACTIVE — inputs wired';
-    log('Section 9 wiring complete');
-  }, 100);
+  };
+  tryWire(); // first attempt
 })();
   // ===========================================================
   // ======  SECTION 10 — H TOOL (TOP-ORTHO, Z-CLAMP)  =========
