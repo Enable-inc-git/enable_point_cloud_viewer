@@ -750,66 +750,85 @@ function bumpPickResources(on){
 //=========================================================== -->
 
 (function loadProject(){
-    // Reuse the helper defined at the top of the file
-    const project = (typeof getProjectId === 'function') ? getProjectId() : null;
-    if (!project){
-      console.warn("No project id found in URL. Redirecting to index.");
-      location.href = 'index.html';
-      return;
+  // Reuse the helper defined at the top of the file
+  const project = (typeof getProjectId === 'function') ? getProjectId() : null;
+  if (!project){
+    console.warn("No project id found in URL. Redirecting to index.");
+    location.href = 'index.html';
+    return;
+  }
+
+  // Use the path already set at top (window.PROJECT_PATH), else default
+  const cloudPath = (window.PROJECT_PATH
+    ? `${window.PROJECT_PATH}/cloud.js`
+    : `pointclouds/${project}/cloud.js`
+  );
+
+  Potree.loadPointCloud(cloudPath, project, function(e){
+    const pc = e.pointcloud;
+    viewer.scene.addPointCloud(pc);
+
+    // Basic material setup
+    const mat = pc.material;
+    mat.activeAttributeName = "rgba";
+    mat.pointSizeType = Potree.PointSizeType.FIXED;
+    mat.shape = Potree.PointShape.CIRCLE;
+    mat.size = 1.0;
+
+    // Compute world BB + center
+    viewer.scene.scene.updateMatrixWorld(true);
+    pc.updateMatrixWorld(true);
+
+    const bbWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
+    const size    = new THREE.Vector3();
+    const center  = new THREE.Vector3();
+    bbWorld.getSize(size);
+    bbWorld.getCenter(center);
+
+    // Clip box with small margin
+    const margin = 1.03;
+    const sx = Math.max(size.x * margin, 0.25);
+    const sy = Math.max(size.y * margin, 0.25);
+    const sz = Math.max(size.z * margin, 0.25);
+
+    const box = new Potree.BoxVolume();
+    box.clip = true;
+    box.visible = true;
+    if (box.rotation) box.rotation.set(0, 0, 0);
+    box.position.copy(center);
+    box.scale.set(sx, sy, sz);
+
+    // ---- Make crop box visible on dark backgrounds ----
+    // Fill (subtle off-white)
+    if (box.material){
+      box.material.transparent = true;
+      box.material.opacity = 0.08;
+      box.material.color?.set("#e8e8e8");
     }
+    // Outline (bright white)
+    box.setOutlineColor?.(1, 1, 1);
+    // Some builds expose .color directly as THREE.Color
+    if (box.color?.set) box.color.set("#e8e8e8");
 
-    // Use the path already set at top (window.PROJECT_PATH), else default
-    const cloudPath = (window.PROJECT_PATH
-      ? `${window.PROJECT_PATH}/cloud.js`
-      : `pointclouds/${project}/cloud.js`
-    );
+    // Ensure helper/edges show if supported
+    if ("showHelper" in box) box.showHelper = true;
+    if ("showEdges"  in box) box.showEdges  = true;
 
-    Potree.loadPointCloud(cloudPath, project, function(e){
-      const pc = e.pointcloud;
-      viewer.scene.addPointCloud(pc);
+    viewer.scene.addVolume(box);
+    window.__clipBox = box;
 
-      // Basic material setup
-      const mat = pc.material;
-      mat.activeAttributeName = "rgba";
-      mat.pointSizeType = Potree.PointSizeType.FIXED;
-      mat.shape = Potree.PointShape.CIRCLE;
-      mat.size = 1.0;
+    viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+    viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
 
-      // Compute world BB + center
-      viewer.scene.scene.updateMatrixWorld(true);
-      pc.updateMatrixWorld(true);
+    // Ensure clipping boxes are globally enabled
+    try { viewer.setShowClippingBoxes(true); } catch(_){}
 
-      const bbWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
-      const size    = new THREE.Vector3();
-      const center  = new THREE.Vector3();
-      bbWorld.getSize(size);
-      bbWorld.getCenter(center);
-
-      // Clip box with small margin
-      const margin = 1.03;
-      const sx = Math.max(size.x * margin, 0.25);
-      const sy = Math.max(size.y * margin, 0.25);
-      const sz = Math.max(size.z * margin, 0.25);
-
-      const box = new Potree.BoxVolume();
-      box.clip = true;
-      box.visible = true;
-      if (box.rotation) box.rotation.set(0, 0, 0);
-      box.position.copy(center);
-      box.scale.set(sx, sy, sz);
-      viewer.scene.addVolume(box);
-      window.__clipBox = box;
-
-      viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
-      viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
-
-      // Fit & stabilize
-      viewer.fitToScreen();
-      viewer.repaint();
-      requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
-    });
-  })();
-
+    // Fit & stabilize
+    viewer.fitToScreen();
+    viewer.repaint();
+    requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
+  });
+})();
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
@@ -1318,5 +1337,81 @@ function stop3DQuickMeasure(showToast){
 
 
   </script>
+
+  <!-- =========================================================
+======  SECTION 16 — CONTROLS & SAFETY PATCHES (FINAL)  ======
+========================================================= -->
+<script>
+(function EnableFinalPatches(){
+  if (!window.viewer) { window.addEventListener('load', EnableFinalPatches, {once:true}); return; }
+
+  function applyControlTweaks(){
+    const v = viewer;
+    const controls = v.getControls(v.scene.view);
+    if (!controls) return;
+
+    // Fast, consistent wheel zoom
+    controls.zoomSpeed = 4.0;           // tweak to taste (2–6)
+    controls.enableDamping = false;
+
+    // Prevent “stall” when very close to geometry
+    if (v.scene.view && typeof v.scene.view.minRadius === 'number') {
+      v.scene.view.minRadius = 0.001;
+    }
+
+    // Always zoom toward cursor (cover variants)
+    try { controls.zoomToMouse  = true; } catch(_) {}
+    try { controls.zoomToCursor = true; } catch(_) {}
+    try {
+      if (controls.controls) {
+        controls.controls.zoomToMouse  = true;
+        controls.controls.zoomToCursor = true;
+      }
+    } catch(_) {}
+  }
+
+  function installStickyPanGuard(){
+    if (window.__enable_sticky_pan_guard__) return;
+    window.__enable_sticky_pan_guard__ = true;
+
+    const el = viewer.inputHandler?.domElement
+            || viewer.renderer?.domElement
+            || document.getElementById("potree_render_area")
+            || document.body;
+
+    const controls = viewer.getControls(viewer.scene.view);
+    const ih = viewer.inputHandler;
+
+    function hardStop(ev){
+      try { controls?.dispatchEvent?.({ type: "end" }); } catch(e){}
+      if (ih && "drag" in ih) ih.drag = null;
+      try { el.releasePointerCapture?.(ev?.pointerId); } catch(e){}
+    }
+
+    // If a mouseup/pointerup gets missed (or window blurs), end any drag.
+    window.addEventListener("mouseup",    hardStop, true);
+    window.addEventListener("pointerup",  hardStop, true);
+    window.addEventListener("blur",       hardStop, true);
+    el.addEventListener("mouseleave",     hardStop, true);
+  }
+
+  function runAll(){
+    applyControlTweaks();
+    installStickyPanGuard();
+  }
+
+  // Run now…
+  runAll();
+
+  // …and re-run when things might reset controls (safe, idempotent)
+  try {
+    viewer.addEventListener?.("pointcloud_added", runAll);
+    viewer.addEventListener?.("scene_changed",    runAll);
+  } catch(_) {}
+
+  // Fallback after full load
+  window.addEventListener("load", () => setTimeout(runAll, 0), {once:true});
+})();
+</script>
 </body>
 </html>
