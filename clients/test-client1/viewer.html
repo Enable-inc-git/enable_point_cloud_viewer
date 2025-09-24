@@ -231,6 +231,10 @@
   // ==========  SECTION 3 — VIEWER: INIT & DEFAULTS  ==========
   // ===========================================================
   window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
+  // Polyfill repaint so all versions are happy
+  if (typeof viewer.repaint !== "function") {
+    viewer.repaint = function(){ try{ viewer.render?.(); }catch(_){} };
+  }
   document.title = "Potree Viewer";
   viewer.setBackground("grey");
   try { viewer.renderer.setClearColor(0x0E1116, 1); } catch(e){}  // charcoal
@@ -255,6 +259,12 @@
   viewer.setFOV(60);
   viewer.setPointBudget(8_000_000);
 
+  try {
+  if (viewer.setControls && viewer.earthControls) {
+    viewer.setControls(viewer.earthControls);
+    viewer.inputHandler?.setActiveNavigationMode?.('EarthControls');
+  }
+} catch(_) {}
   // 3-decimal metre formatting everywhere (including canvas labels)
   try {
     viewer.lengthUnit = "m";
@@ -738,205 +748,104 @@
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
-(function SECTION9_INPUT_TAKEOVER(){
-  // ----- Settings you can tweak quickly -----
-  const ENABLE_EARTH_CONTROLS = false;   // set true to try EarthControls (helps crawl). See note at bottom.
-  const ZOOM_STEP_FACTOR      = 1.2;     // wheel & hotkeys multiplicative step
-  const PAN_CLAMP_DIV         = 80;      // bigger -> less clamp (faster close-up pan)
-  const WHEEL_SPEED_DIV       = 8;       // bigger -> slower wheel (perspective fallback)
-  const KEY_SPEED_DIV         = 6;       // bigger -> slower hotkeys (perspective fallback)
+(function SECTION9_PIVOT_DOLLY(){
+  const v   = window.viewer;                                   if (!v) return;
+  const el  = v.inputHandler?.domElement
+           || v.renderer?.domElement
+           || document.getElementById('potree_render_area');   if (!el) return;
+  const cam = v.scene?.getActiveCamera?.() || v.scene?.camera; if (!cam) return;
 
-  // ----- Helpers -----
-  const getViewer   = () => window.viewer || (window.Potree && Potree.viewer) || null;
-  const getRenderEl = (v) => v?.inputHandler?.domElement
-                          || document.getElementById('potree_render_area')
-                          || v?.renderer?.domElement
-                          || document.querySelector('#potree_render_area');
-  const getCamera   = (v) => v?.scene?.getActiveCamera?.()
-                          || v?.scene?.camera
-                          || v?.renderer?.camera
-                          || null;
+  // Scene scale for sensible clamps
+  const bb   = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
+  const size = new THREE.Vector3(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z);
+  const diag = Math.max(1e-6, size.length());
+  const MIN_R = diag / 5000;      // how close you can dolly in
+  const MAX_R = diag * 100;       // how far out you can dolly
+  const STEP  = 1.2;              // wheel & hotkey step
 
-  // Wait until Potree is actually ready (renderer, input element, camera exist)
-  let tries = 0;
-  (function waitUntilReady(){
-    const v = getViewer();
-    const el = getRenderEl(v);
-    const cam = getCamera(v);
-    if (v && el && cam) return wire(v, el, cam);
-    if (++tries > 300) return console.error('[SEC9] abort: viewer/canvas/camera not ready');
-    setTimeout(waitUntilReady, 100);
-  })();
-
-  function sceneDiag(v){
-    const bb = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
-    return Math.max(1e-6, Math.hypot(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z));
-  }
-
-  function activePivot(v){
+  // Current Potree pivot (target). Prefer view._pivot; fall back to view.position.
+  function getPivot(){
     const view = v.scene?.view;
-    return (view?._pivot && view._pivot.isVector3) ? view._pivot : (view?.position || null);
+    return (view && view._pivot && view._pivot.isVector3) ? view._pivot
+         : (view && view.position) ? view.position
+         : null;
   }
 
-  function wire(v, renderEl, cam){
-    // Optional: switch to EarthControls (users report it avoids close-range zoom crawl)
-    // https://github.com/potree/potree/issues/980  +  https://github.com/potree/potree/issues/614
-    if (ENABLE_EARTH_CONTROLS && typeof v.setControls === 'function' && v.earthControls){
-      try { v.setControls(v.earthControls); v.inputHandler?.setActiveNavigationMode?.('EarthControls'); } catch(_) {}
+  // Current camera–pivot radius (meters)
+  function getRadius(){
+    const pivot = getPivot() || new THREE.Vector3();
+    return cam.position.distanceTo(pivot);
+  }
+
+  // Set new radius while keeping the same pivot (true orbit dolly)
+  function setRadius(newR){
+    const view  = v.scene?.view;
+    const pivot = getPivot() || new THREE.Vector3();
+    const r     = Math.min(MAX_R, Math.max(MIN_R, newR));
+
+    // vector from pivot to camera
+    const cam2pivot = new THREE.Vector3().subVectors(cam.position, pivot);
+    if (cam2pivot.lengthSq() < 1e-12) {
+      // degenerate: push a bit along look direction
+      cam.getWorldDirection(cam2pivot).multiplyScalar(r);
+    } else {
+      cam2pivot.normalize().multiplyScalar(r);
     }
 
-    // Make sure the element receives input and browser gestures don’t interfere
-    try{
-      renderEl.style.touchAction = 'none';
-      renderEl.style.overscrollBehavior = 'contain';
-      renderEl.style.pointerEvents = 'auto';
-      renderEl.tabIndex = 0;
-    }catch(_){}
+    // place camera on the orbit sphere and keep Potree's radius consistent
+    cam.position.copy(pivot).add(cam2pivot);
+    if (view && typeof view.radius === 'number') view.radius = r;
 
-    const diag = sceneDiag(v);
+    cam.updateProjectionMatrix?.();
+    v.repaint?.();
+  }
 
-    // -------------------------------
-    // MMB PAN — CAPTURE & HANDLE OURSELVES
-    // -------------------------------
-    let mmb = false, lastX = 0, lastY = 0, activePointerId = null;
+  // -------- Wheel zoom: intercept early & orbit‑dolly --------
+  el.addEventListener('wheel', (e) => {
+    // normalize delta to px
+    let d = e.deltaY; if (e.deltaMode === 1) d *= 33; else if (e.deltaMode === 2) d *= 400;
 
-    function panPixels(dx, dy){
-      // Map pixels to world-units based on camera type & effective distance
-      const el = renderEl;
-      const w = el.clientWidth || 1;
-      const h = el.clientHeight || 1;
-
-      let sx, sy;
-      if (cam.isOrthographicCamera){
-        // Orthographic: pixels scale linearly with frustum size and zoom
-        sx = (cam.right - cam.left) / (cam.zoom * w);
-        sy = (cam.top   - cam.bottom) / (cam.zoom * h);
-      } else {
-        const view  = v.scene?.view;
-        const pivot = activePivot(v);
-        const dist  = (pivot && cam.position.distanceTo(pivot)) || (view?.radius ?? 50);
-        const dEff  = Math.max(dist, Math.max(diag / PAN_CLAMP_DIV, 0.25));
-        const vFov  = (cam.fov || 60) * Math.PI / 180;
-        const wy    = (2 * Math.tan(vFov / 2) * dEff) / h;
-        const wx    = wy * (w / h);
-        sx = wx; sy = wy;
-      }
-
-      const right = new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion);
-      const up    = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion);
-      const delta = new THREE.Vector3()
-        .addScaledVector(right, -dx * sx)
-        .addScaledVector(up,     dy * sy);
-
-      // Move camera and Potree view together so rotations remain centered
-      const view = v.scene?.view;
-      if (view && view.position){
-        view.position.add(delta);
-        if (view._pivot && view._pivot.isVector3) view._pivot.add(delta);
-      }
-      cam.position.add(delta);
-      if (cam.target && cam.target.isVector3) cam.target.add(delta);
-
-      v.repaint?.();
-    }
-
-    function onPointerDown(e){
-      if (e.button !== 1) return;             // middle button only
-      mmb = true;
-      activePointerId = e.pointerId;
-      lastX = e.clientX; lastY = e.clientY;
-      try { renderEl.setPointerCapture(e.pointerId); } catch(_) {}
-      e.preventDefault();
-      e.stopImmediatePropagation();            // stop Potree’s handler from starting its own drag
-    }
-    function onPointerMove(e){
-      if (!mmb || e.pointerId !== activePointerId) return;
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-      lastX = e.clientX; lastY = e.clientY;
-      panPixels(dx, dy);
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
-    function endMMB(e){
-      if (e && e.type === 'pointerup' && e.pointerId !== activePointerId) return;
-      mmb = false;
-      activePointerId = null;
-    }
-
-    // Attach MMB handlers in CAPTURE phase so we preempt Potree
-    const capOpts = { capture: true, passive: false };
-    renderEl.addEventListener('pointerdown',  onPointerDown, capOpts);
-    renderEl.addEventListener('pointermove',  onPointerMove, capOpts);
-    renderEl.addEventListener('pointerup',    endMMB,        capOpts);
-    renderEl.addEventListener('pointercancel',endMMB,        capOpts);
-    renderEl.addEventListener('contextmenu',  (e)=>e.preventDefault(), capOpts);
-    window.addEventListener('blur', endMMB, true);
-
-    // -------------------------------
-    // WHEEL ZOOM — TAKE OVER & NORMALIZE
-    // -------------------------------
-    function wheelZoom(e){
-      // Normalize delta to pixels
-      let d = e.deltaY;
-      if (e.deltaMode === 1) d *= 33;
-      else if (e.deltaMode === 2) d *= 400;
-
-      if (cam.isOrthographicCamera){
-        const factor = d > 0 ? ZOOM_STEP_FACTOR : (1/ZOOM_STEP_FACTOR);
-        cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom / factor));
-        cam.updateProjectionMatrix?.();
-        v.repaint?.();
-      } else {
-        // Perspective: move along view direction scaled by distance to pivot
-        const dir = new THREE.Vector3(); cam.getWorldDirection(dir);
-        const pivot = activePivot(v);
-        const dist  = (pivot && cam.position.distanceTo(pivot)) || 0;
-        const step  = (d > 0 ? 1 : -1) * (Math.max(dist, diag/200) / WHEEL_SPEED_DIV);
-        cam.position.addScaledVector(dir, step);
-        cam.updateProjectionMatrix?.();
-        v.repaint?.();
-      }
-    }
-
-    // Intercept wheel BEFORE Potree sees it (capture) and stop it
-    renderEl.addEventListener('wheel', (e) => {
-      wheelZoom(e);
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }, { capture: true, passive: false });
-
-    // -------------------------------
-    // HOTKEYS — [ (out)   ] (in)
-    // -------------------------------
-    function keyZoom(inward){
-      if (cam.isOrthographicCamera){
-        const factor = inward ? (1/ZOOM_STEP_FACTOR) : ZOOM_STEP_FACTOR;
-        cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom * factor));
-        cam.updateProjectionMatrix?.();
-        v.repaint?.();
-        return;
-      }
-      const dir = new THREE.Vector3(); cam.getWorldDirection(dir);
-      const pivot = activePivot(v);
-      const dist  = (pivot && cam.position.distanceTo(pivot)) || 0;
-      const move  = (inward ? -1 : 1) * (Math.max(dist, diag/200) / KEY_SPEED_DIV);
-      cam.position.addScaledVector(dir, move);
+    if (cam.isOrthographicCamera){
+      const factor = d > 0 ? STEP : 1/STEP;
+      cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom / factor));
       cam.updateProjectionMatrix?.();
       v.repaint?.();
+    } else {
+      const factor = d > 0 ? STEP : 1/STEP;
+      setRadius(getRadius() * factor);
     }
 
-    window.addEventListener('keydown', (e) => {
-      // avoid typing in inputs
-      const tag = (e.target && e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();   // keep Potree's handler from double‑applying
+  }, { capture: true, passive: false });
 
-      if (e.key === '[' || e.code === 'BracketLeft')  { keyZoom(false); e.preventDefault(); }
-      if (e.key === ']' || e.code === 'BracketRight') { keyZoom(true);  e.preventDefault(); }
-    }, { passive: false });
-
-    console.info('[SEC9] takeover wired on', renderEl);
+  // -------- Hotkeys: [ = out, ] = in (same dolly math) ------
+  function doKeyZoom(inward){
+    if (cam.isOrthographicCamera){
+      const factor = inward ? 1/STEP : STEP;
+      cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom * factor));
+      cam.updateProjectionMatrix?.();
+      v.repaint?.();
+      return;
+    }
+    setRadius(inward ? getRadius() / STEP : getRadius() * STEP);
   }
+
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (e.key === '[' || e.code === 'BracketLeft')  { doKeyZoom(false); e.preventDefault(); }
+    if (e.key === ']' || e.code === 'BracketRight') { doKeyZoom(true);  e.preventDefault(); }
+  }, { passive:false });
+
+  // Defensive: make sure the element accepts input & gestures don’t interfere
+  try {
+    el.style.touchAction = 'none';
+    el.style.overscrollBehavior = 'contain';
+    el.style.pointerEvents = 'auto';
+    el.tabIndex = 0;
+  } catch(_) {}
 })();
   // ===========================================================
   // ======  SECTION 10 — H TOOL (TOP-ORTHO, Z-CLAMP)  =========
