@@ -34,9 +34,9 @@
       card.className = "card";
 
       const a = document.createElement("a");
-      a.href = usePretty && CLIENT
-        ? `/${CLIENT}/${encodeURIComponent(id)}`
-        : `viewer.html?p=${encodeURIComponent(id)}`;
+      a.href = usePretty
+        ? `./${encodeURIComponent(id)}`           // => /test-client1/sheridan
+        : `viewer.html?p=${encodeURIComponent(id)}`; 
 
       a.textContent = meta.name || id;
 
