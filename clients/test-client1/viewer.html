@@ -706,6 +706,7 @@
       const center = new THREE.Vector3();
       bbWorld.getSize(size);
       bbWorld.getCenter(center);
+      window.__sceneDiag = Math.max(size.length(), 1); // <-- add this
 
       // Clip box
       const margin = 1.03;
@@ -752,12 +753,18 @@
       if (cam.isOrthographicCamera){
         sx = (cam.right - cam.left)/w;
         sy = (cam.top - cam.bottom)/h;
-      } else {
+       } else {
         const v = viewer.scene.view;
         const pivot = (v && v._pivot && v._pivot.isVector3) ? v._pivot : (v ? v.position : new THREE.Vector3());
-        const d = cam.position.distanceTo(pivot) || (v ? v.radius : 50);
+        const dActual = cam.position.distanceTo(pivot) || (v ? v.radius : 50);
+
+        // Clamp the effective distance so pan doesn't crawl when you're very close
+        const diag = (typeof window.__sceneDiag === 'number' && isFinite(window.__sceneDiag)) ? window.__sceneDiag : 10;
+        const minPanDist = Math.max(diag / 80, 0.25); // tune: smaller = faster when close
+        const dEff = Math.max(dActual, minPanDist);
+
         const vFov = (cam.fov || 60) * Math.PI/180;
-        const wy = (2*Math.tan(vFov/2) * d)/h;
+        const wy = (2*Math.tan(vFov/2) * dEff)/h;
         const wx = wy * (w/h);
         sx = wx; sy = wy;
       }
@@ -1206,5 +1213,67 @@
   })();
 
   </script>
+
+  <!-- =========================================================
+======  SECTION 16 — CONSTANT-STEP WHEEL ZOOM (CURSOR)  ======
+========================================================= -->
+<script>
+(function ConstantStepWheelZoom(){
+  if (!window.viewer) { window.addEventListener('load', ConstantStepWheelZoom, {once:true}); return; }
+
+  const v  = viewer;
+  const el = v.inputHandler?.domElement || v.renderer?.domElement || document.getElementById("potree_render_area") || document;
+
+  function sceneDiag(){ return (typeof window.__sceneDiag === 'number' && isFinite(window.__sceneDiag)) ? window.__sceneDiag : 10; }
+
+  // Use your existing robust picker if present
+  function pickAt(x,y){ try { return (typeof pickPointFromClientXY==='function') ? pickPointFromClientXY(x,y) : null; } catch(_){ return null; } }
+
+  function zoomOrtho(cam, deltaY){
+    // constant factor; negative = zoom in for typical wheels
+    const sign = (deltaY > 0) ? 1 : -1;
+    const factor = 1 + (0.08 * sign);           // tweak feel here
+    cam.zoom = Math.max(0.01, Math.min(5000, cam.zoom * factor));
+    cam.updateProjectionMatrix();
+  }
+
+  function zoomPerspective(view, deltaY){
+    // constant world step based on scene size (not radius-proportional)
+    const diag = sceneDiag();
+    const base = diag / 60;                      // ~1.7% of scene diagonal per notch
+    const mag  = Math.min(Math.abs(deltaY) / 120, 4); // tame big trackpad deltas
+    const sign = (deltaY > 0) ? +1 : -1;         // wheel down → in
+    const step = sign * base * mag;
+
+    const minR = 0.001, maxR = Math.max(diag * 5, 50);
+    view.radius = Math.min(maxR, Math.max(minR, view.radius - step));
+  }
+
+  function onWheel(e){
+    // Block native handlers so only our zoom applies
+    e.preventDefault();
+    e.stopPropagation();
+
+    const cam  = v.scene.getActiveCamera();
+    const view = v.scene.view;
+    if (!cam || !view) return;
+
+    const p = pickAt(e.clientX, e.clientY);
+    try { if (p && typeof view.setPivot === 'function') view.setPivot(p); } catch(_){}
+
+    if (cam.isOrthographicCamera) zoomOrtho(cam, e.deltaY);
+    else                           zoomPerspective(view, e.deltaY);
+
+    v.repaint && v.repaint();
+  }
+
+  // Avoid double-binding
+  if (!el.__enable_constant_step_zoom__) {
+    el.__enable_constant_step_zoom__ = true;
+    el.addEventListener('wheel', onWheel, {passive:false, capture:true});
+  }
+})();
+</script>
+
 </body>
 </html>
