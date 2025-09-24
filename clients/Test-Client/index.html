@@ -20,13 +20,31 @@
 
   <script src="projects.js"></script>
   <script>
-    const list = document.getElementById('list');
+    // Detect the client folder from the URL: .../clients/<CLIENT>/index.html
+    const parts = location.pathname.split("/").filter(Boolean);
+    const idx = parts.indexOf("clients");
+    const CLIENT = (idx >= 0 && parts[idx + 1]) ? parts[idx + 1] : "";
+
+    // Use pretty URLs on Netlify; keep old query link on localhost
+    const usePretty = !location.hostname.startsWith("localhost");
+
+    const list = document.getElementById("list");
     Object.entries(window.PROJECTS).forEach(([id, meta]) => {
-      const card = document.createElement('div'); card.className = 'card';
-      const a = document.createElement('a'); a.href = `viewer.html?p=${encodeURIComponent(id)}`;
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const a = document.createElement("a");
+      a.href = usePretty && CLIENT
+        ? `/${CLIENT}/${encodeURIComponent(id)}`
+        : `viewer.html?p=${encodeURIComponent(id)}`;
+
       a.textContent = meta.name || id;
-      const small = document.createElement('small'); small.textContent = `Folder: pointclouds/${id}`;
-      card.append(a, small); list.append(card);
+
+      const small = document.createElement("small");
+      small.textContent = `Folder: pointclouds/${id}`;
+
+      card.append(a, small);
+      list.append(card);
     });
   </script>
 </body>
