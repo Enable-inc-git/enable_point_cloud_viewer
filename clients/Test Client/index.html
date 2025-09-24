@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Test Client — Projects</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#111;color:#eee}
+    header{padding:24px;border-bottom:1px solid #333}
+    h1{margin:0;font-size:22px}
+    .grid{display:grid;gap:12px;padding:16px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+    .card{padding:16px;border:1px solid #333;border-radius:10px;background:#1a1a1a}
+    .card a{display:block;text-decoration:none;color:#eee;font-weight:600;margin-bottom:6px}
+    .card small{color:#aaa}
+  </style>
+</head>
+<body>
+  <header><h1>Test Client — Point Cloud Projects</h1></header>
+  <div class="grid" id="list"></div>
+
+  <script src="projects.js"></script>
+  <script>
+    const list = document.getElementById('list');
+    Object.entries(window.PROJECTS).forEach(([id, meta]) => {
+      const card = document.createElement('div'); card.className = 'card';
+      const a = document.createElement('a'); a.href = `viewer.html?p=${encodeURIComponent(id)}`;
+      a.textContent = meta.name || id;
+      const small = document.createElement('small'); small.textContent = `Folder: pointclouds/${id}`;
+      card.append(a, small); list.append(card);
+    });
+  </script>
+</body>
+</html>
