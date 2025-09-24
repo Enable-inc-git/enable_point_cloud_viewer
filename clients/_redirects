@@ -1,8 +1,7 @@
-# Pretty project URLs
-/:client/:project      /:client/viewer.html?p=:project    200
+# Old names → new folder (keep old bookmarks working)
+ /Test%20Client/*    /test-client1/:splat        301
+ /Test-Client/*      /test-client1/:splat        301
+ /test-client/*      /test-client1/:splat        301
 
-# Legacy "Test Client" (space) -> "Test-Client" (hyphen)
-/Test%20Client/*       /Test-Client/:splat                 301
-
-# Guard: if anything hits lowercase, bump it to the proper case
-/test-client/*         /Test-Client/:splat                 301
+# Pretty URLs: /test-client1/sheridan -> /test-client1/viewer.html?p=sheridan
+ /:client/:project    /:client/viewer.html?p=:project    200
