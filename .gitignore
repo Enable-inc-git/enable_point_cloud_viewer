@@ -1,23 +1,38 @@
-# OS junk
+# ---------- OS junk ----------
 .DS_Store
 Thumbs.db
 
-# Editors
+# ---------- Editors ----------
 .vscode/
 .idea/
 
-# Node/build (safe even if you don't use them yet)
-node_modules/
-dist/
-build/
-.cache/
-.tmp/
+# ---------- Node / build outputs (root-scoped only) ----------
+/node_modules/
+/dist/
+/build/
+/.cache/
+/.tmp/
 
-# Logs & secrets
+# ---------- Logs & secrets ----------
 *.log
 .env
 .env.*
 !.env.example
 
-# Netlify
+# ---------- Netlify ----------
 .netlify/
+
+# ---------- IMPORTANT: ensure site assets under publish root are included ----------
+# (Publish directory is /clients, keep everything there tracked)
+!clients/**
+# and specifically keep the Three/Potree libs
+!clients/libs/
+!clients/libs/**
+!clients/EnableLogo.png
+# extra safety for Three.js 'build' folder that matches the old ignore
+!clients/libs/three.js/build/
+!clients/libs/three.js/build/**
+!clients/libs/three.js/extra/
+!clients/libs/three.js/extra/**
+!clients/libs/potree/
+!clients/libs/potree/**
