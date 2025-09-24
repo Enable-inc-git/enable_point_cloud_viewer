@@ -1,7 +1,7 @@
-# Old names → new folder (keep old bookmarks working)
- /Test%20Client/*    /test-client1/:splat        301
- /Test-Client/*      /test-client1/:splat        301
- /test-client/*      /test-client1/:splat        301
+# Old names -> new folder
+/Test%20Client/*    /test-client1/:splat      301
+/Test-Client/*      /test-client1/:splat      301
+/test-client/*      /test-client1/:splat      301
 
-# Pretty URLs: /test-client1/sheridan -> /test-client1/viewer.html?p=sheridan
- /:client/:project    /:client/viewer.html?p=:project    200
+# Pretty URLs for THIS client only (do NOT catch /libs, etc.)
+/test-client1/:project   /test-client1/viewer.html   200

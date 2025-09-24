@@ -3,10 +3,30 @@
 <head>
 
   <script>
-  const id = new URLSearchParams(location.search).get('p');
-  if (!id) { location.href = 'index.html'; }      // go back to the picker if no ?p=
-  window.PROJECT_PATH = `pointclouds/${id}`;      // e.g., pointclouds/sheridan
+  function getProjectId() {
+    const url = new URL(location.href);
+
+    // A) query param ?p=...
+    const qp = url.searchParams.get('p');
+    if (qp) return qp;
+
+    // B) path form: /test-client1/<project>
+    const parts = url.pathname.replace(/\/+$/,'').split('/');   // trim trailing slash
+    const last  = parts[parts.length - 1];
+    if (last && !/\.html?$/i.test(last)) return decodeURIComponent(last);
+
+    // C) optional: /test-client1/p/<project>
+    const pIdx = parts.indexOf('p');
+    if (pIdx >= 0 && parts[pIdx + 1]) return decodeURIComponent(parts[pIdx + 1]);
+
+    return null;
+  }
+
+  const id = getProjectId();
+  if (!id) { location.href = 'index.html'; }
+  window.PROJECT_PATH = `pointclouds/${id}`;
 </script>
+
 
 
   <!-- =========================================================
