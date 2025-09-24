@@ -33,34 +33,15 @@
   ===============  SECTION 0 — HEAD & STYLES  =================
   ========================================================== -->
 <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Potree Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Potree Viewer</title>
 
-  <!-- ========= Performance hints (Point 3: Preload critical scripts) ========= -->
-  <link rel="preload" as="script" href="/libs/three.js/build/three.min.js">
-  <link rel="preload" as="script" href="/libs/potree/potree.js">
-
-  <!-- Optional: if you want to nudge CSS too -->
-  <link rel="preload" as="style" href="/libs/potree/potree.css">
-
-  <!-- ========= Libraries (Point 2: Local first, CDN fallback) ========= -->
-  <script src="/libs/three.js/build/three.min.js"></script>
-  <script>
-    if (typeof window.THREE === 'undefined') {
-      document.write('<script src="https://unpkg.com/three@0.118.3/build/three.min.js"><\\/script>');
-    }
-  </script>
-
-  <link rel="stylesheet" href="/libs/potree/potree.css">
-  <script src="/libs/potree/potree.js"></script>
-
-
-  <!-- Potree & vendor CSS -->
-  <link rel="stylesheet" href="/libs/potree/potree.css" />
-  <link rel="stylesheet" href="/libs/jquery-ui/jquery-ui.min.css" />
-  <link rel="stylesheet" href="/libs/openlayers3/ol.css" />
-  <link rel="stylesheet" href="/libs/spectrum/spectrum.css" />
-  <link rel="stylesheet" href="/libs/jstree/themes/mixed/style.css" />
+<!-- Potree & vendor CSS (relative paths!) -->
+<link rel="stylesheet" href="./libs/potree/potree.css" />
+<link rel="stylesheet" href="./libs/jquery-ui/jquery-ui.min.css" />
+<link rel="stylesheet" href="./libs/openlayers3/ol.css" />
+<link rel="stylesheet" href="./libs/spectrum/spectrum.css" />
+<link rel="stylesheet" href="./libs/jstree/themes/mixed/style.css" />
 
   <style>
     /* ================= Theme: charcoal canvas + neutral sidebar ================= */
@@ -255,36 +236,27 @@
   </div>
 
 <!-- ================= Vendor & Potree libs (ordered) ================= -->
-
 <!-- Core vendors -->
-<script src="/libs/jquery/jquery-3.1.1.min.js"></script>
-<script src="/libs/spectrum/spectrum.js"></script>
-<script src="/libs/jquery-ui/jquery-ui.min.js"></script>
+<script src="./libs/jquery/jquery-3.1.1.min.js"></script>
+<script src="./libs/spectrum/spectrum.js"></script>
+<script src="./libs/jquery-ui/jquery-ui.min.js"></script>
 
-<!-- THREE: CDN first, local fallback; must load BEFORE lines.js & potree.js -->
-<script src="https://unpkg.com/three@0.118.3/build/three.min.js"></script>
-<script>
-  if (typeof window.THREE === "undefined") {
-    document.write('<script src="/libs/three.js/build/three.min.js"><\/script>');
-    document.write('<script>if(typeof window.THREE==="undefined"){document.write(\'<script src="/libs/three.js/build/three.js"><\\/script>\');}<\/script>');
-  }
-</script>
-
-<!-- three extras (after THREE) -->
-<script src="/libs/three.js/extra/lines.js"></script>
+<!-- THREE must load BEFORE lines.js & potree.js -->
+<script src="./libs/three.js/build/three.min.js"></script>
+<script src="./libs/three.js/extra/lines.js"></script>
 
 <!-- remaining vendors -->
-<script src="/libs/other/BinaryHeap.js"></script>
-<script src="/libs/tween/tween.min.js"></script>
-<script src="/libs/d3/d3.js"></script>
-<script src="/libs/proj4/proj4.js"></script>
-<script src="/libs/openlayers3/ol.js"></script>
-<script src="/libs/i18next/i18next.js"></script>
-<script src="/libs/jstree/jstree.js"></script>
+<script src="./libs/other/BinaryHeap.js"></script>
+<script src="./libs/tween/tween.min.js"></script>
+<script src="./libs/d3/d3.js"></script>
+<script src="./libs/proj4/proj4.js"></script>
+<script src="./libs/openlayers3/ol.js"></script>
+<script src="./libs/i18next/i18next.js"></script>
+<script src="./libs/jstree/jstree.js"></script>
 
 <!-- Potree + LAS loader (after all deps) -->
-<script src="/libs/potree/potree.js"></script>
-<script src="/libs/plasio/js/laslaz.js"></script>
+<script src="./libs/potree/potree.js"></script>
+<script src="./libs/plasio/js/laslaz.js"></script>
 
   <script>
   // ===========================================================
@@ -750,88 +722,99 @@ function bumpPickResources(on){
 //=========================================================== -->
 
 (function loadProject(){
-  // Reuse the helper defined at the top of the file
-  const project = (typeof getProjectId === 'function') ? getProjectId() : null;
-  if (!project){
-    console.warn("No project id found in URL. Redirecting to index.");
-    location.href = 'index.html';
-    return;
-  }
-
-  // Use the path already set at top (window.PROJECT_PATH), else default
-  const cloudPath = (window.PROJECT_PATH
-    ? `${window.PROJECT_PATH}/cloud.js`
-    : `pointclouds/${project}/cloud.js`
-  );
-
-  Potree.loadPointCloud(cloudPath, project, function(e){
-    const pc = e.pointcloud;
-    viewer.scene.addPointCloud(pc);
-
-    // Basic material setup
-    const mat = pc.material;
-    mat.activeAttributeName = "rgba";
-    mat.pointSizeType = Potree.PointSizeType.FIXED;
-    mat.shape = Potree.PointShape.CIRCLE;
-    mat.size = 1.0;
-
-    // Compute world BB + center
-    viewer.scene.scene.updateMatrixWorld(true);
-    pc.updateMatrixWorld(true);
-
-    const bbWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
-    const size    = new THREE.Vector3();
-    const center  = new THREE.Vector3();
-    bbWorld.getSize(size);
-    bbWorld.getCenter(center);
-
-    // after: bbWorld.getSize(size); bbWorld.getCenter(center);
-    window.__sceneDiag = Math.max(size.length(), 1); // used for constant-step wheel zoom
-
-    // Clip box with small margin
-    const margin = 1.03;
-    const sx = Math.max(size.x * margin, 0.25);
-    const sy = Math.max(size.y * margin, 0.25);
-    const sz = Math.max(size.z * margin, 0.25);
-
-    const box = new Potree.BoxVolume();
-    box.clip = true;
-    box.visible = true;
-    if (box.rotation) box.rotation.set(0, 0, 0);
-    box.position.copy(center);
-    box.scale.set(sx, sy, sz);
-
-    // ---- Make crop box visible on dark backgrounds ----
-    // Fill (subtle off-white)
-    if (box.material){
-      box.material.transparent = true;
-      box.material.opacity = 0.08;
-      box.material.color?.set("#e8e8e8");
+    // Use helper from top of file
+    const project = (typeof getProjectId === 'function') ? getProjectId() : null;
+    if (!project){
+      console.warn("No project id found in URL. Redirecting to index.");
+      location.href = 'index.html';
+      return;
     }
-    // Outline (bright white)
-    box.setOutlineColor?.(1, 1, 1);
-    // Some builds expose .color directly as THREE.Color
-    if (box.color?.set) box.color.set("#e8e8e8");
 
-    // Ensure helper/edges show if supported
-    if ("showHelper" in box) box.showHelper = true;
-    if ("showEdges"  in box) box.showEdges  = true;
+    // Build path from window.PROJECT_PATH if set (your helper sets this),
+    // else fall back to the standard pointclouds/<id>/cloud.js
+    const cloudPath = (window.PROJECT_PATH
+      ? `${window.PROJECT_PATH}/cloud.js`
+      : `pointclouds/${project}/cloud.js`
+    );
 
-    viewer.scene.addVolume(box);
-    window.__clipBox = box;
+    Potree.loadPointCloud(cloudPath, project, function(e){
+      const pc = e.pointcloud;
+      viewer.scene.addPointCloud(pc);
 
-    viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
-    viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+      // Basic material setup
+      const mat = pc.material;
+      mat.activeAttributeName = "rgba";
+      mat.pointSizeType = Potree.PointSizeType.FIXED;
+      mat.shape = Potree.PointShape.CIRCLE;
+      mat.size = 1.0;
 
-    // Ensure clipping boxes are globally enabled
-    try { viewer.setShowClippingBoxes(true); } catch(_){}
+      // Compute world BB + center
+      viewer.scene.scene.updateMatrixWorld(true);
+      pc.updateMatrixWorld(true);
 
-    // Fit & stabilize
-    viewer.fitToScreen();
-    viewer.repaint();
-    requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
-  });
-})();
+      const bbWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
+      const size    = new THREE.Vector3();
+      const center  = new THREE.Vector3();
+      bbWorld.getSize(size);
+      bbWorld.getCenter(center);
+
+      // Save a scene-scale diagonal for downstream zoom logic (optional)
+      window.__sceneDiag = Math.max(size.length(), 1);
+
+      // Create clip box with small margin
+      const margin = 1.03;
+      const sx = Math.max(size.x * margin, 0.25);
+      const sy = Math.max(size.y * margin, 0.25);
+      const sz = Math.max(size.z * margin, 0.25);
+
+      const box = new Potree.BoxVolume();
+      box.clip = true;
+      box.visible = true; // ensure actually drawn
+      if (box.rotation) box.rotation.set(0, 0, 0);
+      box.position.copy(center);
+      box.scale.set(sx, sy, sz);
+
+      // ---- High-contrast styling so it shows on dark backgrounds ----
+      try {
+        if (box.material){
+          box.material.transparent = true;
+          box.material.opacity = 0.10;
+          box.material.color?.set("#f0f0f0");   // off-white fill
+        }
+        // Some Potree builds keep separate meshes for frame/box/border:
+        if (box.box?.material){
+          box.box.material.transparent = true;
+          box.box.material.opacity = 0.10;
+          box.box.material.color?.set("#ffffff");
+        }
+        if (box.frame?.material){ box.frame.material.color?.set("#ffffff"); }
+        if (box.border?.material){ box.border.material.color?.set("#ffffff"); }
+
+        box.setOutlineColor?.(1,1,1);          // white outline (API if present)
+        if (box.color?.set) box.color.set("#f0f0f0");
+
+        if ("showHelper" in box) box.showHelper = true;
+        if ("showEdges"  in box) box.showEdges  = true;
+      } catch(_) {}
+
+      // Add to scene & keep a handle
+      viewer.scene.addVolume(box);
+      window.__clipBox = box;
+
+      // Explicitly enable clipping-box visuals globally
+      try { viewer.setShowClippingBoxes(true); } catch(_) {}
+
+      // Clip method/task
+      viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+      viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+
+      // Fit & stabilize
+      viewer.fitToScreen();
+      viewer.repaint();
+      requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
+    });
+  })();
+  
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
