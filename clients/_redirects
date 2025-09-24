@@ -1,0 +1,2 @@
+/:client/:project      /:client/viewer.html?p=:project    200
+/Test%20Client/*       /Test-Client/:splat                 301
