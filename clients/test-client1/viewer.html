@@ -742,18 +742,20 @@
   const v = window.viewer;
   if (!v) return;
 
-  // ---------- Locate key objects ----------
-  const canvas =
-    v.renderer?.domElement ||
-    document.querySelector('#potree_render_area canvas') ||
-    document.querySelector('canvas');
-  const controls =
-    v.sceneControls || v.controls || (v.getControls ? v.getControls(v.scene?.view) : null);
-  const cam = v.scene?.camera || v.renderer?.camera;
+  // ---------- 0) CONFIG ----------
+  const DEBUG = true;        // turn HUD on/off
+  const BASE_SPEED = 2.0;    // base zoomSpeed for OrbitControls-like
+  const STEP_FACTOR = 1.2;   // hotkey zoom step
+  const ALLOW_OVERLAY_UI = true; // set false to disable pointer-events on most overlays while debugging
 
+  // ---------- 1) GET ESSENTIALS ----------
+  const canvas = v.renderer?.domElement ||
+                 document.querySelector('#potree_render_area canvas') ||
+                 document.querySelector('canvas');
+  const controls = v.sceneControls || v.controls || (v.getControls ? v.getControls(v.scene?.view) : null);
+  const cam = v.scene?.camera || v.renderer?.camera;
   if (!canvas || !controls || !cam) return;
 
-  // ---------- Scene scale (for sensible steps) ----------
   const bb = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
   const diag = Math.max(1e-6, Math.hypot(
     bb.max.x - bb.min.x,
@@ -761,139 +763,202 @@
     bb.max.z - bb.min.z
   ));
 
-  // ---------- Controls: sane limits & speeds (not aggressive) ----------
-  if ('minDistance' in controls) controls.minDistance = diag / 10000;  // let you get close
+  // ---------- 2) BASELINE CONTROLS (NO CUSTOM SHIMS) ----------
+  // Make sure the canvas actually receives input
+  canvas.style.pointerEvents = 'auto';
+  canvas.tabIndex = 0; // ensure it can focus
+
+  // Map MMB => PAN.
+  try {
+    if (controls.mouseButtons) {
+      // Newer style
+      if ('PAN' in controls.mouseButtons) {
+        controls.mouseButtons.LEFT   = controls.mouseButtons.ROTATE ?? 'ROTATE';
+        controls.mouseButtons.MIDDLE = controls.mouseButtons.PAN;
+        controls.mouseButtons.RIGHT  = controls.mouseButtons.DOLLY ?? 'DOLLY';
+      } else {
+        // Fallback to numeric mouse mapping; MMB pan is default behavior in OrbitControls
+        const M = (window.THREE && THREE.MOUSE) ? THREE.MOUSE : {LEFT:0, MIDDLE:1, RIGHT:2};
+        controls.mouseButtons = { LEFT: M.LEFT, MIDDLE: M.MIDDLE, RIGHT: M.RIGHT };
+      }
+    }
+  } catch(_) {}
+
+  // Reasonable limits & speeds (not over-clamped)
+  if ('minDistance' in controls) controls.minDistance = diag / 10000;
   if ('maxDistance' in controls) controls.maxDistance = diag * 100;
-  if ('zoomSpeed'   in controls) controls.zoomSpeed   = 2.0;
+  if ('zoomSpeed'   in controls) controls.zoomSpeed   = BASE_SPEED;
   if ('panSpeed'    in controls) controls.panSpeed    = 1.0;
   if ('rotateSpeed' in controls) controls.rotateSpeed = 0.9;
   if ('enableDamping' in controls) { controls.enableDamping = true; controls.dampingFactor = 0.08; }
   if ('zoomToCursor' in controls) controls.zoomToCursor = true;
+  controls.update?.();
 
-  // ---------- Map MMB => PAN (restore middle-mouse panning) ----------
-  // Works for OrbitControls-like APIs
-  try {
-    if (controls.mouseButtons) {
-      // Prefer: LEFT rotate, MIDDLE pan, RIGHT dolly (wheel still zooms)
-      // THREE.MOUSE constants exist on THREE.MOUSE; if not, use numeric fallback.
-      const MOUSE = (window.THREE && THREE.MOUSE) ? THREE.MOUSE : { LEFT:0, MIDDLE:1, RIGHT:2 };
-      if ('PAN' in controls.mouseButtons || 'ROTATE' in controls.mouseButtons || 'DOLLY' in controls.mouseButtons) {
-        controls.mouseButtons.LEFT   = controls.mouseButtons.ROTATE ?? 'ROTATE';
-        controls.mouseButtons.MIDDLE = controls.mouseButtons.PAN    ?? 'PAN';
-        controls.mouseButtons.RIGHT  = controls.mouseButtons.DOLLY  ?? 'DOLLY';
-      } else {
-        // Older API style:
-        controls.mouseButtons = { LEFT: MOUSE.LEFT, MIDDLE: MOUSE.MIDDLE, RIGHT: MOUSE.RIGHT };
-        // Some builds require explicit states; if so, PAN on MMB is default behavior then.
-      }
-      controls.update?.();
+  // ---------- 3) OPTIONAL: DISABLE DECORATIVE OVERLAYS ----------
+  if (!ALLOW_OVERLAY_UI) {
+    document.querySelectorAll('*').forEach(el => {
+      // keep core viewer + sidebar interactive; everything else inert
+      const keep =
+        el.closest('#potree_render_area') ||
+        el.closest('#potree_sidebar_container') ||
+        el.id === 'potree_render_area' ||
+        el.id === 'potree_sidebar_container';
+      if (!keep) el.style.pointerEvents = 'none';
+    });
+  }
+
+  // ---------- 4) WHEEL: POTREE-FIRST, WITH PASSIVE:FALSE ----------
+  const nativeWheel = v.inputHandler && (v.inputHandler.onMouseWheel || v.inputHandler.wheel);
+  const forwardWheel = typeof nativeWheel === 'function' ? nativeWheel.bind(v.inputHandler) : null;
+
+  // Remove any browser gestures interfering
+  const style = document.createElement('style');
+  style.textContent = `
+    #potree_render_area, #potree_render_area canvas, canvas {
+      touch-action: none; overscroll-behavior: contain;
     }
-  } catch(e){ /* harmless if unsupported */ }
+  `;
+  document.head.appendChild(style);
 
-  // ---------- Reliable wheel zoom (non-passive) ----------
-  // We forward to Potree’s own handler if present; otherwise use a distance-aware fallback.
-  const potreeWheel = v.inputHandler && (v.inputHandler.onMouseWheel || v.inputHandler.wheel);
-  const forwardWheel = typeof potreeWheel === 'function' ? potreeWheel.bind(v.inputHandler) : null;
+  // Hud setup
+  let hud=null, hudLines={};
+  if (DEBUG) {
+    hud = document.createElement('div');
+    hud.style.cssText = `
+      position:fixed; right:12px; bottom:12px; z-index:99999;
+      font:12px/1.25 system-ui,Segoe UI,Arial; color:#eee; background:#111a; 
+      border:1px solid #444; padding:8px 10px; border-radius:8px; min-width:260px;
+      pointer-events:none; white-space:pre;
+    `;
+    const add = (k, label) => {
+      const line = document.createElement('div');
+      line.textContent = `${label}: —`;
+      hud.appendChild(line);
+      hudLines[k] = (val) => line.textContent = `${label}: ${val}`;
+    };
+    add('mode',   'Cam');
+    add('dist',   'Dist/Pivot');
+    add('zspd',   'ZoomSpeed');
+    add('we',     'Wheel');
+    add('delta',  'ΔY(px)');
+    add('tgt',    'EventTarget');
+    add('stick',  'Dragging');
+    const legend = document.createElement('div');
+    legend.style.opacity = 0.7;
+    legend.textContent = 'Hotkeys: [ out, ] in  • MMB=Pan';
+    hud.appendChild(legend);
+    document.body.appendChild(hud);
+  }
+  function hudUpdate(wheelInfo){
+    if (!DEBUG) return;
+    const view = v.scene?.view;
+    const pivot = view?._pivot && view._pivot.isVector3 ? view._pivot : view?.position;
+    const dist = (pivot && cam.position.distanceTo(pivot)) || 0;
+    const isOrtho = !!cam.isOrthographicCamera;
+    hudLines.mode?.(isOrtho ? 'ORTHO' : 'PERSP');
+    hudLines.dist?.(dist.toFixed(3));
+    hudLines.zspd?.((controls.zoomSpeed ?? 0).toFixed(2));
+    if (wheelInfo){
+      hudLines.we?.(wheelInfo.which);
+      hudLines.delta?.(wheelInfo.delta);
+      hudLines.tgt?.(wheelInfo.target);
+    }
+    const dragging = !!(controls.dragging || v.inputHandler?.dragging);
+    hudLines.stick?.(dragging ? 'YES' : 'no');
+  }
 
-  // Do NOT add a capturing stopPropagation layer — let the canvas see events.
+  // Wheel listener
   canvas.addEventListener('wheel', (ev) => {
-    // Normalize deltas to pixels
     let deltaY = ev.deltaY;
-    if (ev.deltaMode === 1) deltaY *= 33;     // lines -> px
-    else if (ev.deltaMode === 2) deltaY *= 400; // pages -> px
+    if (ev.deltaMode === 1) deltaY *= 33;      // lines -> px
+    else if (ev.deltaMode === 2) deltaY *= 400;// pages -> px
 
+    // 1) Try Potree’s native wheel first (keeps internal states right)
     if (forwardWheel) {
-      // Call Potree’s native wheel so internal states stay consistent
       forwardWheel(ev);
     } else {
-      // Fallback zoom: use dolly if available, else move along view direction.
-      const factor = deltaY > 0 ? 1.15 : 0.87;
-      if (typeof controls.dollyIn === 'function' && typeof controls.dollyOut === 'function') {
-        if (factor < 1) controls.dollyIn(1 / factor); else controls.dollyOut(factor);
-        controls.update?.();
+      // 2) Fallback: implement ourselves
+      if (cam.isOrthographicCamera) {
+        // Ortho: adjust zoom multiplicatively, clamp to avoid crawl
+        const factor = deltaY > 0 ? STEP_FACTOR : (1/STEP_FACTOR);
+        const newZoom = Math.min(1e5, Math.max(1e-5, cam.zoom / factor));
+        cam.zoom = newZoom;
+        cam.updateProjectionMatrix?.();
       } else {
-        const dir = new THREE.Vector3();
-        cam.getWorldDirection(dir);
-        // Step scales with distance to pivot if available; else scale with scene.
-        let dist = 0;
-        try {
+        // Perspective: use dolly if available
+        if (typeof controls.dollyIn === 'function' && typeof controls.dollyOut === 'function') {
+          const factor = deltaY > 0 ? STEP_FACTOR : (1/STEP_FACTOR);
+          if (factor < 1) controls.dollyIn(1/factor); else controls.dollyOut(factor);
+          controls.update?.();
+        } else {
+          // Fallback: move along view direction scaled by distance
+          const dir = new THREE.Vector3();
+          cam.getWorldDirection(dir);
           const view = v.scene?.view;
           const pivot = view?._pivot && view._pivot.isVector3 ? view._pivot : view?.position;
-          dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-        } catch(_) {}
-        const step = (deltaY > 0 ? 1 : -1) * (Math.max(dist, diag/200) / 12);
-        cam.position.addScaledVector(dir, step);
-        cam.updateProjectionMatrix?.();
-        v.repaint?.();
+          const dist = (pivot && cam.position.distanceTo(pivot)) || 0;
+          const step = (deltaY > 0 ? 1 : -1) * (Math.max(dist, diag/200) / 8);
+          cam.position.addScaledVector(dir, step);
+          cam.updateProjectionMatrix?.();
+        }
       }
+      v.repaint?.();
     }
-    ev.preventDefault(); // requires passive:false to actually work
+
+    ev.preventDefault(); // passive:false ensures this takes
+    hudUpdate({ which: forwardWheel ? 'Potree' : 'Fallback', delta: deltaY.toFixed(1), target: (ev.target && ev.target.tagName) || '—' });
   }, { passive: false });
 
-  // ---------- Guard against overlays swallowing input ----------
-  // Only disable pointer events for obviously decorative overlays you may have:
-  document.querySelectorAll('.viewer-overlay, .hud-overlay').forEach(el => { el.style.pointerEvents = 'none'; });
-
-  // Keep real UI interactive:
-  ['#potree_sidebar_container', '.potree_measure_panel'].forEach(sel => {
-    const el = document.querySelector(sel);
-    if (el) el.style.pointerEvents = 'auto';
-  });
-
-  // ---------- “Pan stuck” fix ----------
+  // ---------- 5) PAN STUCK GUARD ----------
   const endDrag = () => {
-    // OrbitControls-like
     if (controls.state !== undefined) controls.state = 0;
     controls.dragging = false;
     controls.update?.();
-    // Potree inputHandler (varies by version)
     if (v.inputHandler) {
       v.inputHandler.drag = false;
       v.inputHandler.dragging = false;
       v.inputHandler.potentialDrag = null;
       v.inputHandler.activeLabel = null;
     }
+    hudUpdate();
   };
   ['pointerup','mouseup','mouseleave','blur'].forEach(evt => window.addEventListener(evt, endDrag, true));
   canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-  // ---------- Hotkeys: [ (out) and ] (in) ----------
-  const zoomByStep = (inward) => {
-    const step = 1.2; // mild step
-    if (typeof controls.dollyIn === 'function') {
-      if (inward) controls.dollyIn(1/step); else controls.dollyOut(step);
-      controls.update?.();
-    } else {
-      const dir = new THREE.Vector3();
-      cam.getWorldDirection(dir);
-      let dist = 0;
-      try {
-        const view = v.scene?.view;
-        const pivot = view?._pivot && view._pivot.isVector3 ? view._pivot : view?.position;
-        dist = (pivot && cam.position.distanceTo(pivot)) || 0;
-      } catch(_) {}
-      const move = (inward ? -1 : 1) * (Math.max(dist, diag/200) / 8);
-      cam.position.addScaledVector(dir, move);
+  // ---------- 6) HOTKEYS: [ (out) / ] (in) ----------
+  function zoomByStep(inward){
+    if (cam.isOrthographicCamera) {
+      const factor = inward ? (1/STEP_FACTOR) : STEP_FACTOR;
+      cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom * factor));
       cam.updateProjectionMatrix?.();
       v.repaint?.();
+      return;
     }
-  };
+    if (typeof controls.dollyIn === 'function') {
+      if (inward) controls.dollyIn(1/STEP_FACTOR); else controls.dollyOut(STEP_FACTOR);
+      controls.update?.();
+      return;
+    }
+    const dir = new THREE.Vector3();
+    cam.getWorldDirection(dir);
+    const view = v.scene?.view;
+    const pivot = view?._pivot && view._pivot.isVector3 ? view._pivot : view?.position;
+    const dist = (pivot && cam.position.distanceTo(pivot)) || 0;
+    const move = (inward ? -1 : 1) * (Math.max(dist, diag/200) / 6);
+    cam.position.addScaledVector(dir, move);
+    cam.updateProjectionMatrix?.();
+    v.repaint?.();
+  }
 
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
-
-    // Support both printable keys and physical codes
     if (e.key === '[' || e.code === 'BracketLeft')  { zoomByStep(false); e.preventDefault(); }
     if (e.key === ']' || e.code === 'BracketRight') { zoomByStep(true);  e.preventDefault(); }
   }, { passive: false });
 
-  // ---------- Touch/trackpad gesture sanity ----------
-  const style = document.createElement('style');
-  style.textContent = `
-    #potree_render_area, #potree_render_area canvas, canvas { touch-action: none; overscroll-behavior: contain; }
-  `;
-  document.head.appendChild(style);
+  // ---------- 7) HUD heartbeat ----------
+  setInterval(() => hudUpdate(), 250);
 })();
 
   // ===========================================================
