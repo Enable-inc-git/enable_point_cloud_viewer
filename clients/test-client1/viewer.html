@@ -235,18 +235,26 @@
     <div id="hudToast" aria-live="polite"></div>
   </div>
 
-  <!-- Vendor libs -->
+<!-- ================= Vendor & Potree libs (ordered) ================= -->
+
+<!-- Core vendors -->
 <script src="/libs/jquery/jquery-3.1.1.min.js"></script>
 <script src="/libs/spectrum/spectrum.js"></script>
 <script src="/libs/jquery-ui/jquery-ui.min.js"></script>
-<!-- Three.js (try min first, fall back to non-min) -->
-<script src="/libs/three.js/build/three.min.js"></script>
+
+<!-- THREE: CDN first, local fallback; must load BEFORE lines.js & potree.js -->
+<script src="https://unpkg.com/three@0.118.3/build/three.min.js"></script>
 <script>
-  if (typeof THREE === "undefined") {
-    document.write('<script src="/libs/three.js/build/three.js"><\/script>');
+  if (typeof window.THREE === "undefined") {
+    document.write('<script src="/libs/three.js/build/three.min.js"><\/script>');
+    document.write('<script>if(typeof window.THREE==="undefined"){document.write(\'<script src="/libs/three.js/build/three.js"><\\/script>\');}<\/script>');
   }
 </script>
+
+<!-- three extras (after THREE) -->
 <script src="/libs/three.js/extra/lines.js"></script>
+
+<!-- remaining vendors -->
 <script src="/libs/other/BinaryHeap.js"></script>
 <script src="/libs/tween/tween.min.js"></script>
 <script src="/libs/d3/d3.js"></script>
@@ -254,6 +262,8 @@
 <script src="/libs/openlayers3/ol.js"></script>
 <script src="/libs/i18next/i18next.js"></script>
 <script src="/libs/jstree/jstree.js"></script>
+
+<!-- Potree + LAS loader (after all deps) -->
 <script src="/libs/potree/potree.js"></script>
 <script src="/libs/plasio/js/laslaz.js"></script>
 
