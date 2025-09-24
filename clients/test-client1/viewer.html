@@ -747,50 +747,47 @@ function bumpPickResources(on){
   }
 })();
 
-  // ===========================================================
-  // =========  SECTION 8 — LOAD CLOUD & CLIP BOX  =============
-  // ===========================================================
- (function loadProjectFromURL(){
-    // Prefer /p/<project>; fall back to ?p=<project>
-    function getProjectSlug(){
-      const m = location.pathname.match(/\/p\/([^\/?#]+)/);
-      if (m) return decodeURIComponent(m[1]);
-      return new URL(location.href).searchParams.get("p");
-    }
+ //<!-- ===========================================================
+//=========  SECTION 8 — LOAD CLOUD & CLIP BOX  =================
+//=========================================================== -->
 
-    const project = getProjectSlug();
-
+(function loadProject(){
+    // Reuse the helper defined at the top of the file
+    const project = (typeof getProjectId === 'function') ? getProjectId() : null;
     if (!project){
-      console.warn("No project specified. Use /p/<project> or set a redirect from / to /p/<default>.");
-      // Optional: show a small toast so users understand what to do
-      try { toast("No project specified. Use /p/<project>."); } catch(_) {}
+      console.warn("No project id found in URL. Redirecting to index.");
+      location.href = 'index.html';
       return;
     }
 
-    const cloudPath = `pointclouds/${project}/cloud.js`;
+    // Use the path already set at top (window.PROJECT_PATH), else default
+    const cloudPath = (window.PROJECT_PATH
+      ? `${window.PROJECT_PATH}/cloud.js`
+      : `pointclouds/${project}/cloud.js`
+    );
 
     Potree.loadPointCloud(cloudPath, project, function(e){
       const pc = e.pointcloud;
       viewer.scene.addPointCloud(pc);
 
-      // Material (same as before)
+      // Basic material setup
       const mat = pc.material;
       mat.activeAttributeName = "rgba";
       mat.pointSizeType = Potree.PointSizeType.FIXED;
       mat.shape = Potree.PointShape.CIRCLE;
       mat.size = 1.0;
 
-      // Compute world BB and center (same as before)
+      // Compute world BB + center
       viewer.scene.scene.updateMatrixWorld(true);
       pc.updateMatrixWorld(true);
 
       const bbWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
-      const size   = new THREE.Vector3();
-      const center = new THREE.Vector3();
+      const size    = new THREE.Vector3();
+      const center  = new THREE.Vector3();
       bbWorld.getSize(size);
       bbWorld.getCenter(center);
 
-      // Clip box with small margin (same as before)
+      // Clip box with small margin
       const margin = 1.03;
       const sx = Math.max(size.x * margin, 0.25);
       const sy = Math.max(size.y * margin, 0.25);
@@ -805,16 +802,16 @@ function bumpPickResources(on){
       viewer.scene.addVolume(box);
       window.__clipBox = box;
 
-      // Clip settings (same as before)
       viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
       viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
 
-      // View settle + picking stabilization (same as before)
+      // Fit & stabilize
       viewer.fitToScreen();
       viewer.repaint();
       requestAnimationFrame(()=>requestAnimationFrame(stabilizePicking));
     });
   })();
+
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
