@@ -1,7 +1,12 @@
-# Old names -> new folder
-/Test%20Client/*    /test-client1/:splat      301
-/Test-Client/*      /test-client1/:splat      301
-/test-client/*      /test-client1/:splat      301
+# Pretty project URLs:
+# /test-client1/sheridan  ->  /test-client1/viewer.html?p=sheridan
+/:client/:project    /:client/viewer.html?p=:project    200
 
-# Pretty URLs for THIS client only (do NOT catch /libs, etc.)
-/test-client1/:project   /test-client1/viewer.html   200
+# Pretty client home:
+# /test-client1  ->  /test-client1/index.html
+/:client          /:client/index.html                   200
+
+# IMPORTANT: allow direct access to real files (don’t rewrite them)
+# (These keep /:client/index.html and /:client/viewer.html from being eaten)
+/:client/index.html     /:client/index.html             200
+/:client/viewer.html    /:client/viewer.html            200
