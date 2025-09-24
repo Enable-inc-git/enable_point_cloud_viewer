@@ -384,7 +384,6 @@
   // ==========  SECTION 4 — GUI: SIDEBAR & HOTKEYS  ===========
   // ===========================================================
 (function(){
-  // One-shot guard if this runs multiple times
   let APPLIED = false;
 
   function openAccordion($h){
@@ -403,9 +402,9 @@
   function applyEnableUI(){
     if (APPLIED) return;
     const $side = $("#potree_sidebar_container");
-    if (!$side.length) return; // GUI not in DOM yet
+    if (!$side.length) return;
 
-    // Brand header (replace potree links row if present, else prepend)
+    // --- Brand header ------------------------------------------------------
     (function brandHeader(){
       const logoURL = "/EnableLogo.png?v=" + Date.now();
       const html = `
@@ -421,19 +420,17 @@
       if ($hdrRow && $hdrRow.length) { $hdrRow.html(html); } else { $side.prepend(html); }
     })();
 
-    // Choose a destination body to host our minimal panel:
-    // prefer Tools content, else Appearance content, else sidebar root.
+    // Prefer Tools panel as our host
     const $toolsH = $("#menu_tools");
-    let   $dst    = $toolsH.next();
-    if (!$dst || !$dst.length) $dst = $("#menu_appearance").next();
-    if (!$dst || !$dst.length) $dst = $side;
-
-    // Ensure the likely hosts are opened so their DOM exists/visible
+    let   $host   = $toolsH.next();
     openAccordion($toolsH);
-    openAccordion($("#menu_navigation"));
-    openAccordion($("#menu_appearance"));
 
-    // Inject Hotkeys + 6 view buttons + tips (id-guarded to avoid duplicates)
+    // If Tools body missing (template variant), create a simple host div
+    if (!$host || !$host.length){
+      $host = $('<div id="enableHost"></div>').appendTo($side);
+    }
+
+    // --- Inject minimal content (guarded) ---------------------------------
     if (!document.getElementById("hotkeysHelp")){
       const $hotkeys = $(`
         <section id="hotkeysHelp" class="hk-card">
@@ -455,19 +452,17 @@
              style="margin:6px 0 2px; padding:6px 8px;
                     background:#222; color:var(--text-0);
                     font:12px/1.35 system-ui,Segoe UI,Roboto,Arial,sans-serif; opacity:.95;">
-          <div style="margin:2px 0;">Left mouse: rotate • Middle drag: pan • Wheel: zoom</div>
+          <div style="margin:2px 0;">Left mouse: rotate (about cursor) • Middle drag: pan • Wheel: zoom</div>
           <div style="margin:2px 0;">Refresh to clear dimensions</div>
         </div>`);
 
-      $dst.prepend($tips).prepend($views).prepend($navTitle).prepend($hotkeys);
+      $host.prepend($tips).prepend($views).prepend($navTitle).prepend($hotkeys);
 
       // Harvest the 6 view buttons from anywhere in the sidebar
-      const $pool = $side; // search the whole sidebar
-      function clickable($el){
-        const $wrap = $el.closest("a,button"); return $wrap.length ? $wrap : $el;
-      }
+      const $pool = $side;
+      function clickable($el){ const $w=$el.closest("a,button"); return $w.length?$w:$el; }
       function findViewBtn(name){
-        const n = name.toLowerCase();
+        const n=name.toLowerCase();
         let $el = $pool.find('[title],[aria-label],img[alt]').filter(function(){
           const t=(this.getAttribute('title')||'').toLowerCase();
           const a=(this.getAttribute('aria-label')||'').toLowerCase();
@@ -481,32 +476,50 @@
         return $el.length ? clickable($el) : $();
       }
       ["front","back","left","right","top","bottom"].forEach(n=>{
-        const $b = findViewBtn(n);
-        if ($b.length) $b.detach().appendTo($views);
+        const $b=findViewBtn(n); if($b.length) $b.detach().appendTo($views);
       });
+    }
 
-      // Hide Navigation accordion after harvesting (if present)
-      $("#menu_navigation").hide().next().hide();
+    // --- Hide EVERYTHING else ---------------------------------------------
+    // Hide whole accordions we don’t want
+    $("#menu_navigation, #menu_scene, #menu_appearance, #menu_edl, #menu_background, #menu_filters, #menu_about, #menu_other, #menu_clipping, #menu_measurements")
+      .each(function(){ const $h=$(this); if($h.length){ $h.hide(); $h.next().hide(); } });
 
-      // Optionally hide the clutter (leave Appearance collapsed but present)
-      $("#menu_scene, #menu_edl, #menu_background, #menu_filters, #menu_about, #menu_other")
-        .each(function(){ const $h=$(this); $h.hide(); $h.next().hide(); });
+    // Inside Tools panel, keep only our blocks
+    const keep = new Set(["hotkeysHelp","enableNavTitle","enableViews","enableNavTips"]);
+    const $toolsBody = $toolsH.next();
+    if ($toolsBody && $toolsBody.length){
+      $toolsBody.children().each(function(){
+        const hasKeep = $(this).find("#hotkeysHelp, #enableNavTitle, #enableViews, #enableNavTips").length>0;
+        if (!keep.has(this.id) && !hasKeep) $(this).hide();
+      });
     }
 
     APPLIED = true;
+
+    // -------- Rotate about cursor (set pivot at mouse down) ---------------
+    function setPivotAtClientXY(x,y){
+      try{
+        const p = pickPointFromClientXY(x,y);
+        if (!p) return;
+        const view = viewer?.scene?.view;
+        if (view && typeof view.setPivot === "function") view.setPivot(p);
+      }catch(_){}
+    }
+    const renderEl = viewer?.inputHandler?.domElement || document.getElementById("potree_render_area") || document;
+    renderEl.addEventListener("pointerdown", function(e){
+      // Left button only, ignore when measuring inserter is active
+      if (e.button!==0) return;
+      if (H_ACTIVE || V_ACTIVE || N_ACTIVE || M_MEAS) return;
+      setPivotAtClientXY(e.clientX, e.clientY);
+    }, {capture:true, passive:true});
   }
 
-  // Load GUI and attach in a way that works across Potree variants:
-  // 1) legacy callback
-  // 2) promise form
-  // 3) timed fallback if neither triggers (or DOM race)
+  // Load GUI (callback or promise) + timed fallback
   try{
-    const maybePromise = viewer.loadGUI && viewer.loadGUI(function(){ applyEnableUI(); });
-    if (maybePromise && typeof maybePromise.then === "function"){
-      maybePromise.then(applyEnableUI);
-    }
+    const maybe = viewer.loadGUI && viewer.loadGUI(function(){ applyEnableUI(); });
+    if (maybe && typeof maybe.then==="function"){ maybe.then(applyEnableUI); }
   }catch(_){}
-  // Timed fallback (in case callback didn’t fire due to template differences)
   setTimeout(applyEnableUI, 600);
   setTimeout(applyEnableUI, 1200);
 })();
