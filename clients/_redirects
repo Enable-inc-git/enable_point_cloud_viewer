@@ -1,2 +1,8 @@
+# Pretty project URLs
 /:client/:project      /:client/viewer.html?p=:project    200
+
+# Legacy "Test Client" (space) -> "Test-Client" (hyphen)
 /Test%20Client/*       /Test-Client/:splat                 301
+
+# Guard: if anything hits lowercase, bump it to the proper case
+/test-client/*         /Test-Client/:splat                 301
