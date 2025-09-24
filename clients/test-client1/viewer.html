@@ -738,62 +738,116 @@
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
-  (function enableGlobalMMBPan(){
-    const renderEl = viewer.inputHandler?.domElement || document.getElementById("potree_render_area");
-    const canvasEl = viewer.renderer?.domElement || null;
-    let mmb = false, px = 0, py = 0;
+  (() => {
+  // Expect viewer to be globally reachable (you usually do: window.viewer = viewer)
+  const getViewer   = () => window.viewer || window?.Potree?.viewer || null;
+  const getControls = () => {
+    const v = getViewer();
+    return v?.sceneControls || v?.controls || (v?.getControls ? v.getControls(v.scene?.view) : null);
+  };
+  const getCamera = () => getViewer()?.scene?.camera || getViewer()?.renderer?.camera || null;
+  const getCanvas = () =>
+    getViewer()?.renderer?.domElement ||
+    document.querySelector('#potree_render_area canvas') ||
+    document.querySelector('canvas');
 
-    function panPixels(dx, dy){
-      const cam = viewer.scene.getActiveCamera(); if (!cam) return;
-      const el = renderEl || canvasEl; if (!el) return;
-      const w = el.clientWidth, h = el.clientHeight;
+  const v = getViewer();
+  const controls = getControls();
+  const camera   = getCamera();
+  const canvas   = getCanvas();
+  if (!v || !controls || !camera || !canvas) return;
 
-      let sx, sy;
-      if (cam.isOrthographicCamera){
-        sx = (cam.right - cam.left)/w;
-        sy = (cam.top - cam.bottom)/h;
-       } else {
-      const v = viewer.scene.view;
-      const pivot = (v && v._pivot && v._pivot.isVector3) ? v._pivot : (v ? v.position : new THREE.Vector3());
-      const dActual = cam.position.distanceTo(pivot) || (v ? v.radius : 50);
+  // ---- scale-aware distances & speeds (prevents close-up crawl)
+  const bb = v.scene?.boundingBox || { min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10} };
+  const dx = bb.max.x - bb.min.x, dy = bb.max.y - bb.min.y, dz = bb.max.z - bb.min.z;
+  const diag = Math.max(1e-6, Math.hypot(dx, dy, dz));
 
-      // Clamp effective distance so pan doesn’t crawl when very close
-      const diag = (typeof window.__sceneDiag === 'number' && isFinite(window.__sceneDiag)) ? window.__sceneDiag : 10;
-      const dEff = Math.max(dActual, Math.max(diag / 80, 0.25)); // tune here
+  if ('minDistance' in controls) controls.minDistance = diag / 5000;
+  if ('maxDistance' in controls) controls.maxDistance = diag * 50;
+  if ('zoomSpeed'   in controls) controls.zoomSpeed   = 1.5;
+  if ('panSpeed'    in controls) controls.panSpeed    = 1.0;
+  if ('rotateSpeed' in controls) controls.rotateSpeed = 0.9;
+  if ('enableDamping' in controls) { controls.enableDamping = true; controls.dampingFactor = 0.08; }
+  if ('zoomToCursor' in controls) controls.zoomToCursor = true;
 
-      const vFov = (cam.fov || 60) * Math.PI/180;
-      const wy = (2*Math.tan(vFov/2) * dEff)/h;
-      const wx = wy * (w/h);
-      sx = wx; sy = wy;
-      }
+  // ---- force a non-passive wheel handler & normalize deltas
+  canvas.addEventListener('wheel', (ev) => ev.stopPropagation(), { capture: true });
+  canvas.addEventListener('wheel', (ev) => {
+    const mode = ev.deltaMode; // 0 px, 1 line, 2 page
+    let delta = ev.deltaY;
+    if (mode === 1) delta *= 33;
+    else if (mode === 2) delta *= 400;
 
-      const right = new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion);
-      const up    = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion);
-      const delta = new THREE.Vector3().addScaledVector(right, -dx*sx).addScaledVector(up, dy*sy);
+    const useOrbitDolly = typeof controls.dollyIn === 'function' && typeof controls.dollyOut === 'function';
+    const factor = delta > 0 ? 1.15 : 0.87;
 
-      const view = viewer.scene.view;
-      if (view && view.position){ view.position.add(delta); if (view._pivot && view._pivot.isVector3) view._pivot.add(delta); }
-      cam.position.add(delta);
-      if (cam.target && cam.target.isVector3) cam.target.add(delta);
-      viewer.repaint();
+    if (useOrbitDolly) {
+      if (factor < 1) controls.dollyIn(1 / factor); else controls.dollyOut(factor);
+      controls.update?.();
+    } else {
+      // fallback: move camera along its look direction
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      const step = (factor < 1 ? -1 : 1) * (diag / 500);
+      camera.position.addScaledVector(dir, step);
+      camera.updateProjectionMatrix?.();
     }
 
-    function onPD(e){ if (e.button!==1) return; mmb=true; px=e.clientX; py=e.clientY; e.stopImmediatePropagation(); e.preventDefault(); }
-    function onPM(e){ if (!mmb) return; const dx=e.clientX-px, dy=e.clientY-py; px=e.clientX; py=e.clientY; panPixels(dx,dy); e.stopImmediatePropagation(); e.preventDefault(); }
-    function onPU(e){ if (e.button!==1) return; mmb=false; e.stopImmediatePropagation(); e.preventDefault(); }
+    ev.preventDefault();
+  }, { passive: false });
 
-    const opts = {capture:true, passive:false};
-    (renderEl||document).addEventListener('pointerdown', onPD, opts);
-    (renderEl||document).addEventListener('pointermove', onPM,  opts);
-    (renderEl||document).addEventListener('pointerup',   onPU,  opts);
-    (renderEl||document).addEventListener('pointercancel', onPU, opts);
-    if (canvasEl && canvasEl !== renderEl){
-      canvasEl.addEventListener('pointerdown', onPD, opts);
-      canvasEl.addEventListener('pointermove', onPM,  opts);
-      canvasEl.addEventListener('pointerup',   onPU,  opts);
-      canvasEl.addEventListener('pointercancel', onPU, opts);
+  // ---- prevent decorative overlays from swallowing input
+  ['#potree_sidebar_container .sidebar_header',
+   '#potree_sidebar_container .sidebar',
+   '.potree_measure_panel'
+  ].forEach(sel => { const el = document.querySelector(sel); if (el) el.style.pointerEvents = 'auto'; });
+  document.querySelectorAll('.viewer-overlay, .hud-overlay').forEach(el => { el.style.pointerEvents = 'none'; });
+
+  // ---- fix “pan gets stuck” (e.g., mouseup off-canvas)
+  const endDrag = () => {
+    if (controls.state !== undefined) controls.state = 0; // OrbitControls internal state reset
+    controls.dragging = false;
+    controls.update?.();
+    if (v?.inputHandler) {
+      v.inputHandler.drag = false;
+      v.inputHandler.dragging = false;
+      v.inputHandler.potentialDrag = null;
+      v.inputHandler.activeLabel = null;
     }
-  })();
+  };
+  ['mouseup','mouseleave','blur'].forEach(evt => window.addEventListener(evt, endDrag, true));
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  // ---- hotkeys: [ = zoom out, ] = zoom in
+  const zoomStep = 1.15;
+  const doZoom = (inward) => {
+    if (typeof controls.dollyIn === 'function') {
+      if (inward) controls.dollyIn(1/zoomStep); else controls.dollyOut(zoomStep);
+      controls.update?.();
+    } else {
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      const step = (inward ? -1 : 1) * (diag / 400);
+      camera.position.addScaledVector(dir, step);
+      camera.updateProjectionMatrix?.();
+    }
+  };
+
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === '[') { doZoom(false); e.preventDefault(); }
+    if (e.key === ']') { doZoom(true);  e.preventDefault(); }
+  }, { passive: false });
+
+  // ---- nudge for touch/trackpads to avoid browser gestures
+  const style = document.createElement('style');
+  style.textContent = `#potree_render_area canvas, canvas { touch-action: none; }`;
+  document.head.appendChild(style);
+
+  // OPTIONAL tweak you can toggle live:
+  // controls.zoomSpeed = 2.5;
+})();
 
   // ===========================================================
   // ======  SECTION 10 — H TOOL (TOP-ORTHO, Z-CLAMP)  =========
