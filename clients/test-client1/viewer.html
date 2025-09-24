@@ -239,7 +239,13 @@
 <script src="/libs/jquery/jquery-3.1.1.min.js"></script>
 <script src="/libs/spectrum/spectrum.js"></script>
 <script src="/libs/jquery-ui/jquery-ui.min.js"></script>
+<!-- Three.js (try min first, fall back to non-min) -->
 <script src="/libs/three.js/build/three.min.js"></script>
+<script>
+  if (typeof THREE === "undefined") {
+    document.write('<script src="/libs/three.js/build/three.js"><\/script>');
+  }
+</script>
 <script src="/libs/three.js/extra/lines.js"></script>
 <script src="/libs/other/BinaryHeap.js"></script>
 <script src="/libs/tween/tween.min.js"></script>
@@ -375,7 +381,7 @@ viewer.loadGUI(function(){
 
   // ---- Logo ---------------------------------------------------------------
   (function brandHeader(){
-  const logoURL = "../../EnableLogo.png?v=" + Date.now();
+  const logoURL = "/EnableLogo.png?v=" + Date.now();
   const html = `
     <div id="brandHeader">
       <img src="${logoURL}" alt="Logo">
