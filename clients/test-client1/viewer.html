@@ -264,6 +264,14 @@
     viewer.setControls(viewer.earthControls);
     viewer.inputHandler?.setActiveNavigationMode?.('EarthControls');
   }
+
+  window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
+
+  // Polyfill repaint so all Potree builds are happy
+  if (typeof viewer.repaint !== "function") {
+    viewer.repaint = function(){ try{ viewer.render?.(); }catch(_){} };
+  }
+
 } catch(_) {}
   // 3-decimal metre formatting everywhere (including canvas labels)
   try {
@@ -748,104 +756,114 @@
   // ===========================================================
   // =======  SECTION 9 — GLOBAL MMB (MIDDLE MOUSE) PAN  =======
   // ===========================================================
-(function SECTION9_PIVOT_DOLLY(){
-  const v   = window.viewer;                                   if (!v) return;
-  const el  = v.inputHandler?.domElement
-           || v.renderer?.domElement
-           || document.getElementById('potree_render_area');   if (!el) return;
-  const cam = v.scene?.getActiveCamera?.() || v.scene?.camera; if (!cam) return;
+(function SECTION9_PATCH_POTREE_WHEEL(){
+  const v = window.viewer; if (!v) return;
 
-  // Scene scale for sensible clamps
-  const bb   = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
-  const size = new THREE.Vector3(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z);
-  const diag = Math.max(1e-6, size.length());
-  const MIN_R = diag / 5000;      // how close you can dolly in
-  const MAX_R = diag * 100;       // how far out you can dolly
-  const STEP  = 1.2;              // wheel & hotkey step
-
-  // Current Potree pivot (target). Prefer view._pivot; fall back to view.position.
-  function getPivot(){
+  // ---- accessors that tolerate Potree variants ----
+  const getCam = () => (v.scene?.getActiveCamera?.() || v.scene?.camera || v.renderer?.camera || null);
+  const getPivot = () => {
     const view = v.scene?.view;
-    return (view && view._pivot && view._pivot.isVector3) ? view._pivot
-         : (view && view.position) ? view.position
-         : null;
-  }
+    return (view && view._pivot && view._pivot.isVector3) ? view._pivot :
+           (view && view.position) ? view.position : null;
+  };
+  const getDiag = () => {
+    const bb = v.scene?.boundingBox || {min:{x:0,y:0,z:0}, max:{x:10,y:10,z:10}};
+    const dx = bb.max.x - bb.min.x, dy = bb.max.y - bb.min.y, dz = bb.max.z - bb.min.z;
+    return Math.max(1e-6, Math.hypot(dx,dy,dz));
+  };
 
-  // Current camera–pivot radius (meters)
-  function getRadius(){
+  // Sane bounds relative to scene scale
+  const DIAG = getDiag();
+  const MIN_R = DIAG / 5000;     // how close you can dolly in
+  const MAX_R = DIAG * 100;      // how far you can dolly out
+  const STEP  = 1.2;             // wheel/hotkey zoom step
+
+  // True orbit-dolly: set camera position on a sphere around pivot and
+  // keep Potree's view.radius consistent.
+  function setRadius(rNew){
+    const cam = getCam(); if (!cam) return;
+    const view = v.scene?.view;
     const pivot = getPivot() || new THREE.Vector3();
-    return cam.position.distanceTo(pivot);
-  }
+    const r = Math.min(MAX_R, Math.max(MIN_R, rNew));
 
-  // Set new radius while keeping the same pivot (true orbit dolly)
-  function setRadius(newR){
-    const view  = v.scene?.view;
-    const pivot = getPivot() || new THREE.Vector3();
-    const r     = Math.min(MAX_R, Math.max(MIN_R, newR));
+    const dir = new THREE.Vector3().subVectors(cam.position, pivot);
+    if (dir.lengthSq() < 1e-12) cam.getWorldDirection(dir);
+    dir.normalize().multiplyScalar(r);
 
-    // vector from pivot to camera
-    const cam2pivot = new THREE.Vector3().subVectors(cam.position, pivot);
-    if (cam2pivot.lengthSq() < 1e-12) {
-      // degenerate: push a bit along look direction
-      cam.getWorldDirection(cam2pivot).multiplyScalar(r);
-    } else {
-      cam2pivot.normalize().multiplyScalar(r);
-    }
-
-    // place camera on the orbit sphere and keep Potree's radius consistent
-    cam.position.copy(pivot).add(cam2pivot);
+    cam.position.copy(pivot).add(dir);
     if (view && typeof view.radius === 'number') view.radius = r;
 
     cam.updateProjectionMatrix?.();
     v.repaint?.();
   }
 
-  // -------- Wheel zoom: intercept early & orbit‑dolly --------
-  el.addEventListener('wheel', (e) => {
-    // normalize delta to px
-    let d = e.deltaY; if (e.deltaMode === 1) d *= 33; else if (e.deltaMode === 2) d *= 400;
+  function getRadius(){
+    const cam = getCam(); if (!cam) return DIAG;
+    const pivot = getPivot() || new THREE.Vector3();
+    return cam.position.distanceTo(pivot);
+  }
+
+  // ----- Patch Potree's wheel at the source (no DOM gymnastics) -----
+  const ih = v.inputHandler;
+  if (!ih) return;
+
+  // Keep original in case we ever need to restore or compare
+  ih.__origWheel = ih.__origWheel || ih.onMouseWheel || ih.wheel;
+
+  ih.onMouseWheel = function patchedWheel(ev){
+    // Normalize delta to pixels
+    let d = ev?.deltaY ?? 0;
+    if (ev && ev.deltaMode === 1) d *= 33;
+    else if (ev && ev.deltaMode === 2) d *= 400;
+
+    const cam = getCam();
+    if (!cam) return;
 
     if (cam.isOrthographicCamera){
-      const factor = d > 0 ? STEP : 1/STEP;
+      // Ortho: zoom is camera.zoom (multiplicative)
+      const factor = d > 0 ? STEP : (1/STEP);
       cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom / factor));
       cam.updateProjectionMatrix?.();
       v.repaint?.();
     } else {
-      const factor = d > 0 ? STEP : 1/STEP;
+      // Perspective: orbit-dolly by adjusting radius about the pivot
+      const factor = d > 0 ? STEP : (1/STEP);
       setRadius(getRadius() * factor);
     }
 
-    e.preventDefault();
-    e.stopImmediatePropagation();   // keep Potree's handler from double‑applying
-  }, { capture: true, passive: false });
+    // Prevent the internal handler from applying a second zoom
+    if (ev && ev.preventDefault) ev.preventDefault();
+    return false;
+  };
 
-  // -------- Hotkeys: [ = out, ] = in (same dolly math) ------
-  function doKeyZoom(inward){
+  // Some builds use 'wheel' instead of 'onMouseWheel'
+  ih.wheel = ih.onMouseWheel;
+
+  // ----- Zoom hotkeys: [ = out, ] = in -----
+  function keyZoom(inward){
+    const cam = getCam(); if (!cam) return;
     if (cam.isOrthographicCamera){
-      const factor = inward ? 1/STEP : STEP;
+      const factor = inward ? (1/STEP) : STEP;
       cam.zoom = Math.min(1e5, Math.max(1e-5, cam.zoom * factor));
       cam.updateProjectionMatrix?.();
       v.repaint?.();
-      return;
+    } else {
+      setRadius(inward ? getRadius()/STEP : getRadius()*STEP);
     }
-    setRadius(inward ? getRadius() / STEP : getRadius() * STEP);
   }
 
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
-
-    if (e.key === '[' || e.code === 'BracketLeft')  { doKeyZoom(false); e.preventDefault(); }
-    if (e.key === ']' || e.code === 'BracketRight') { doKeyZoom(true);  e.preventDefault(); }
+    if (e.key === '[' || e.code === 'BracketLeft')  { keyZoom(false); e.preventDefault(); }
+    if (e.key === ']' || e.code === 'BracketRight') { keyZoom(true);  e.preventDefault(); }
   }, { passive:false });
 
-  // Defensive: make sure the element accepts input & gestures don’t interfere
-  try {
-    el.style.touchAction = 'none';
-    el.style.overscrollBehavior = 'contain';
-    el.style.pointerEvents = 'auto';
-    el.tabIndex = 0;
-  } catch(_) {}
+  // Small safety: ensure the real input element accepts events
+  try{
+    const el = ih.domElement || v.renderer?.domElement || document.getElementById('potree_render_area');
+    if (el){ el.style.pointerEvents='auto'; el.style.touchAction='none'; el.style.overscrollBehavior='contain'; el.tabIndex = (el.tabIndex||0); }
+  }catch(_){}
 })();
   // ===========================================================
   // ======  SECTION 10 — H TOOL (TOP-ORTHO, Z-CLAMP)  =========
