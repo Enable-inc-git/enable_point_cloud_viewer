@@ -785,6 +785,9 @@ function bumpPickResources(on){
     bbWorld.getSize(size);
     bbWorld.getCenter(center);
 
+    // after: bbWorld.getSize(size); bbWorld.getCenter(center);
+    window.__sceneDiag = Math.max(size.length(), 1); // used for constant-step wheel zoom
+
     // Clip box with small margin
     const margin = 1.03;
     const sx = Math.max(size.x * margin, 0.25);
@@ -1411,6 +1414,95 @@ function stop3DQuickMeasure(showToast){
 
   // Fallback after full load
   window.addEventListener("load", () => setTimeout(runAll, 0), {once:true});
+})();
+</script>
+
+<!-- =========================================================
+======  SECTION 16 — CONSTANT-STEP WHEEL ZOOM (CURSOR)  ======
+========================================================= -->
+<script>
+(function ConstantStepWheelZoom(){
+  if (!window.viewer) { window.addEventListener('load', ConstantStepWheelZoom, {once:true}); return; }
+
+  const v  = viewer;
+  const el = v.inputHandler?.domElement || v.renderer?.domElement || document.getElementById("potree_render_area") || document.body;
+
+  // 1) Disable OrbitControls' built-in wheel zoom (it scales with radius)
+  try {
+    const ctrls = v.getControls(v.scene.view);
+    if (ctrls) ctrls.enableZoom = false;
+  } catch(_) {}
+
+  // Helper: pick point under cursor (we already have a robust picker)
+  function pickAtClient(x, y){
+    try { return pickPointFromClientXY(x, y); } catch(_) { return null; }
+  }
+
+  // Move camera & view by a fixed world distance toward (+) / away from (-) target
+  function dollyToward(point, step){
+    const cam  = v.scene.getActiveCamera();
+    const view = v.scene.view;
+    if (!cam || !view) return;
+
+    // Direction: from camera to target (or view pivot if no point)
+    const target = (point && point.isVector3) ? point : (view._pivot && view._pivot.isVector3 ? view._pivot : view.position);
+    const dir = new THREE.Vector3().subVectors(target, cam.position).normalize();
+
+    const delta = dir.multiplyScalar(step);
+
+    // Shift camera and the view's position/pivot coherently
+    cam.position.add(delta);
+    if (view.position) view.position.add(delta);
+    if (view._pivot && view._pivot.isVector3) view._pivot.add(delta);
+    if (cam.target && cam.target.isVector3) cam.target.add(delta);
+
+    v.repaint();
+  }
+
+  // Choose a constant step based on scene size; feel free to tweak divisor
+  function computeStep(pixelDeltaY){
+    const diag = (typeof window.__sceneDiag === 'number' && isFinite(window.__sceneDiag)) ? window.__sceneDiag : 10;
+    const base = diag / 80;                 // ≈ 1.25% of scene diagonal per tick
+    const sign = (pixelDeltaY > 0) ? +1 : -1; // wheel down → move forward
+    // Make trackpads with large deltaY not insane: clamp magnitude
+    return sign * Math.min(Math.abs(pixelDeltaY) * (base / 100), base * 4);
+  }
+
+  function onWheel(e){
+    // Block native wheel zoom so only our dolly applies
+    e.preventDefault();
+    e.stopPropagation();
+
+    const step = computeStep(e.deltaY);
+
+    // Try to zoom to cursor; if pick fails, still move forward/back along view dir
+    const p = pickAtClient(e.clientX, e.clientY);
+
+    // If we got a cursor point, set pivot there so orbiting remains nice
+    try {
+      if (p && v.scene.view && typeof v.scene.view.setPivot === 'function') {
+        v.scene.view.setPivot(p);
+      }
+    } catch(_){}
+
+    dollyToward(p, step);
+  }
+
+  // Install (avoid double-bind)
+  if (!el.__enable_constant_step_zoom__) {
+    el.__enable_constant_step_zoom__ = true;
+    el.addEventListener('wheel', onWheel, {passive:false, capture:true});
+  }
+
+  // If anything later re-enables controls.zoom, turn it back off
+  function reassert(){
+    try { const c = v.getControls(v.scene.view); if (c) c.enableZoom = false; } catch(_){}
+  }
+  try {
+    v.addEventListener?.('pointcloud_added', reassert);
+    v.addEventListener?.('scene_changed',    reassert);
+  } catch(_){}
+  window.addEventListener('load', () => setTimeout(reassert, 0), {once:true});
 })();
 </script>
 </body>
