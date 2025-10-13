@@ -1,2 +1,34 @@
 [build]
-  publish = "."
+  # Only publish the static site folder
+  publish = "site"
+
+  # Copy compiled/runtime assets from potree/ into site/ before publish
+  command = """
+    set -e
+
+    # Create target dirs
+    mkdir -p site/clients/libs/potree
+    mkdir -p site/clients/libs/three/build
+    mkdir -p site/clients/libs/jquery-ui
+    mkdir -p site/clients/libs/spectrum
+    mkdir -p site/clients/libs/jstree/themes/mixed
+    mkdir -p site/clients/libs/openlayers3
+
+    # Potree runtime (compiled files)
+    cp -r potree/build/potree/*               site/clients/libs/potree/
+    cp -r potree/resources                    site/clients/libs/potree/
+    cp -r potree/workers                      site/clients/libs/potree/
+
+    # Three.js lives under three.js/ in your repo
+    cp -r potree/libs/three.js/build/three.min.js site/clients/libs/three/build/  || true
+    # (keep this fallback if you ever move it)
+    cp -r libs/three/build/three.min.js        site/clients/libs/three/build/    || true
+
+
+    # Vendor libs (copy if present in your repo)
+    cp -r libs/jquery-ui/*                    site/clients/libs/jquery-ui/     || true
+    cp -r libs/spectrum/*                     site/clients/libs/spectrum/      || true
+    cp -r libs/jstree/*                       site/clients/libs/jstree/        || true
+
+
+  """
