@@ -1,12 +1,9 @@
 # Pretty project URLs:
-# /test-client1/sheridan  ->  /test-client1/viewer.html?p=sheridan
-/:client/:project    /:client/viewer.html?p=:project    200
+/clients/:client/:project     /clients/:client/viewer.html?p=:project    200
 
 # Pretty client home:
-# /test-client1  ->  /test-client1/index.html
-/:client          /:client/index.html                   200
+/clients/:client              /clients/:client/index.html                200
 
-# IMPORTANT: allow direct access to real files (don’t rewrite them)
-# (These keep /:client/index.html and /:client/viewer.html from being eaten)
-/:client/index.html     /:client/index.html             200
-/:client/viewer.html    /:client/viewer.html            200
+# Allow direct access to the real files (no rewrite):
+/clients/:client/index.html   /clients/:client/index.html                200
+/clients/:client/viewer.html  /clients/:client/viewer.html               200
