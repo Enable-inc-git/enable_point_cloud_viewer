@@ -1,8 +1,5 @@
 [build]
-  # Only publish the static site folder
   publish = "site"
-
-  # Copy compiled/runtime assets from potree/ into site/ before publish
   command = """
     set -e
 
@@ -13,22 +10,77 @@
     mkdir -p site/clients/libs/spectrum
     mkdir -p site/clients/libs/jstree/themes/mixed
     mkdir -p site/clients/libs/openlayers3
+    mkdir -p site/clients/libs/jquery
+    mkdir -p site/clients/libs/other
+    mkdir -p site/clients/libs/tween
+    mkdir -p site/clients/libs/d3
+    mkdir -p site/clients/libs/proj4
+    mkdir -p site/clients/libs/i18next
+    mkdir -p site/clients/libs/plasio
 
-    # Potree runtime (compiled files)
-    cp -r potree/build/potree/*               site/clients/libs/potree/
-    cp -r potree/resources                    site/clients/libs/potree/
-    cp -r potree/workers                      site/clients/libs/potree/
+    # ---- Potree runtime (try multiple likely locations; all guarded) ----
+    cp -r potree/build/potree/*            site/clients/libs/potree/   || true
+    cp -r potree/resources                 site/clients/libs/potree/   || true
+    cp -r potree/workers                   site/clients/libs/potree/   || true
+    # fallback if you keep a libs/potree in repo
+    cp -r libs/potree/*                    site/clients/libs/potree/   || true
 
-    # Three.js lives under three.js/ in your repo
-    cp -r potree/libs/three.js/build/three.min.js site/clients/libs/three/build/  || true
-    # (keep this fallback if you ever move it)
-    cp -r libs/three/build/three.min.js        site/clients/libs/three/build/    || true
+    # ---- three.js (your repo uses three.js/, not three/) ----
+    cp -r potree/libs/three.js/build/three.min.js  site/clients/libs/three/build/  || true
+    cp -r libs/three/build/three.min.js            site/clients/libs/three/build/  || true
 
-
-    # Vendor libs (copy if present in your repo)
-    cp -r libs/jquery-ui/*                    site/clients/libs/jquery-ui/     || true
-    cp -r libs/spectrum/*                     site/clients/libs/spectrum/      || true
-    cp -r libs/jstree/*                       site/clients/libs/jstree/        || true
-
-
+    # ---- Vendor libs (only copy if present) ----
+    cp -r libs/jquery-ui/*                  site/clients/libs/jquery-ui/     || true
+    cp -r libs/spectrum/*                   site/clients/libs/spectrum/      || true
+    cp -r libs/jstree/*                     site/clients/libs/jstree/        || true
+    cp -r libs/openlayers3/*                site/clients/libs/openlayers3/   || true
+    cp -r libs/jquery/*                     site/clients/libs/jquery/        || true
+    cp -r libs/other/*                      site/clients/libs/other/         || true
+    cp -r libs/tween/*                      site/clients/libs/tween/         || true
+    cp -r libs/d3/*                         site/clients/libs/d3/            || true
+    cp -r libs/proj4/*                      site/clients/libs/proj4/         || true
+    cp -r libs/i18next/*                    site/clients/libs/i18next/       || true
+    cp -r libs/plasio/*                     site/clients/libs/plasio/        || true
   """
+
+# (optional) long-cache static libs, don't cache HTML
+[[headers]]
+  for = "/libs/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*/pointclouds/*/data/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*/pointclouds/*/cloud.js"
+  [headers.values]
+    Cache-Control = "public, max-age=600"
+
+[[headers]]
+  for = "/*/index.html"
+  [headers.values]
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/*/viewer.html"
+  [headers.values]
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/EnableLogo.png"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"
+
+# Pretty URLs (make sure these match your site/ layout)
+[[redirects]]
+  from = "/clients/:client/:project"
+  to = "/clients/:client/viewer.html?p=:project"
+  status = 200
+
+[[redirects]]
+  from = "/clients/:client"
+  to = "/clients/:client/index.html"
+  status = 200
