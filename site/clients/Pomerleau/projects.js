@@ -1,6 +1,6 @@
 window.PROJECTS = {
-  "sheridan": {
-    name: "Sheridan",
-    folder: "pointclouds/sheridan"
+  "hart_house": {
+    name: "hart_house",
+    folder: "pointclouds/hart_house"
   }
 };
