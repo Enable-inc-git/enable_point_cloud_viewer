@@ -98,5 +98,10 @@ a, .link{
   display: none !important;
 }
 
+/* Hide the "Background" title row that sits right above it */
+#potree_menu .divider:has(+ li > selectgroup#background_options) {
+  display: none !important;
+}
+
 /* Optional: tighten spacing after removing it */
 #menu_tools { margin-top: 0 !important; }
