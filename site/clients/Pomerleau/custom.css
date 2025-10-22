@@ -86,3 +86,12 @@ html, body, #potree_render_area{
 a, .link{
   color: var(--accent);
 }
+
+/* Remove the entire Appearance section (header + its panel) */
+#menu_appearance,
+#menu_appearance + div {
+  display: none !important;
+}
+
+/* Optional: tighten spacing after removing it */
+#menu_tools { margin-top: 0 !important; }
