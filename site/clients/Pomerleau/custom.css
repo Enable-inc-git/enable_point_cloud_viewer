@@ -3,7 +3,7 @@
 /* Your theme palette */
 :root{
   --bg:            #1d1d1d;   /* main page background */
-  --sidebar-bg:    #6b6b6b;   /* sidebar panel bg */
+  --sidebar-bg:    #363636;   /* sidebar panel bg */
   --sidebar-text:  #fbfbfb;   /* sidebar text */
   --accent:        #4db6ff;   /* buttons / highlights */
   --muted:         #9aa3b2;   /* secondary text */
