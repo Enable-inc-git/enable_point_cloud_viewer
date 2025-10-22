@@ -162,6 +162,28 @@
           }
         });
       }
+
+      // --- Force Background = None (use CSS page color) ---
+      try {
+        // make the WebGL canvas transparent so CSS background shows
+        if (viewer.renderer?.setClearAlpha) viewer.renderer.setClearAlpha(0);
+      } catch (_) {}
+
+      try {
+        // tell Potree to use "None" (matches the GUI radio value 'null')
+        viewer.setBackground("null");
+      } catch (_) {}
+
+      // reflect it visually in the sidebar pills
+      try {
+        const $bgFieldset = $("#potree_menu fieldset legend").filter(function () {
+          return $(this).text().trim().toLowerCase() === "background";
+        }).closest("fieldset");
+
+        $bgFieldset.find("input[name=background_options][value=null]")
+          .prop("checked", true)
+          .button("refresh");
+      } catch (_) {}
     });
 
     // ----- load the point cloud -----
