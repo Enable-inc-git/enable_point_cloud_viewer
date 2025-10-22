@@ -3,8 +3,8 @@
 /* Your theme palette */
 :root{
   --bg:            #0f1115;   /* main page background */
-  --sidebar-bg:    #151822;   /* sidebar panel bg */
-  --sidebar-text:  #e8eaf0;   /* sidebar text */
+  --sidebar-bg:    #242527;   /* sidebar panel bg */
+  --sidebar-text:  #fbfbfb;   /* sidebar text */
   --accent:        #4db6ff;   /* buttons / highlights */
   --muted:         #9aa3b2;   /* secondary text */
   --panel-bg:      #1a1f2b;   /* inner cards/panels */
