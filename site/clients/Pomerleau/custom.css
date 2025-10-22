@@ -2,12 +2,12 @@
 
 /* Your theme palette */
 :root{
-  --bg:            #fbfbfb;   /* main page background */
-  --sidebar-bg:    #fbfbfb;   /* sidebar panel bg */
+  --bg:            #2b2b2b;   /* main page background */
+  --sidebar-bg:    #6b6b6b;   /* sidebar panel bg */
   --sidebar-text:  #fbfbfb;   /* sidebar text */
   --accent:        #4db6ff;   /* buttons / highlights */
   --muted:         #9aa3b2;   /* secondary text */
-  --panel-bg:      #fbfbfb;   /* inner cards/panels */
+  --panel-bg:      #6b6b6b;   /* inner cards/panels */
   --border:        #000102;   /* hairlines */
 }
 
