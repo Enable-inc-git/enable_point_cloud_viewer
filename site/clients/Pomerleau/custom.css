@@ -2,7 +2,7 @@
 
 /* Your theme palette */
 :root{
-  --bg:            #2b2b2b;   /* main page background */
+  --bg:            #1d1d1d;   /* main page background */
   --sidebar-bg:    #6b6b6b;   /* sidebar panel bg */
   --sidebar-text:  #fbfbfb;   /* sidebar text */
   --accent:        #4db6ff;   /* buttons / highlights */
