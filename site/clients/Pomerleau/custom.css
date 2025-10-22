@@ -93,5 +93,10 @@ a, .link{
   display: none !important;
 }
 
+/* Hide the fieldset that contains the background radio buttons */
+#potree_menu fieldset:has(input[name="background_options"]) {
+  display: none !important;
+}
+
 /* Optional: tighten spacing after removing it */
 #menu_tools { margin-top: 0 !important; }
