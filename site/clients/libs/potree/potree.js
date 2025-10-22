@@ -90814,24 +90814,26 @@ ENDSEC
 }));
 //# sourceMappingURL=potree.js.map
 
-// --- Enable-INC patch: force transparent canvas + Background=None on startup ---
+// === Enable patch: force background = None, make canvas transparent ===
 (function () {
   var P = window.Potree;
   if (!P || !P.Viewer) return;
-  var proto = P.Viewer.prototype;
 
-  var _initThree = proto.initThree;
-  proto.initThree = function initThree_patched() {
+  // 1) Make the WebGL canvas transparent so your CSS page color shows
+  var _initThree = P.Viewer.prototype.initThree;
+  P.Viewer.prototype.initThree = function () {
     var out = _initThree.apply(this, arguments);
-    try {
-      // Make WebGL clear alpha transparent so your CSS background shows
-      if (this.renderer && this.renderer.setClearAlpha) this.renderer.setClearAlpha(0);
-    } catch (e) {}
-    try {
-      // Force Potree background to "None" (same as the GUI's 'None' pill)
-      this.setBackground("null");
-    } catch (e) {}
+    try { this.renderer && this.renderer.setClearAlpha && this.renderer.setClearAlpha(0); } catch(e){}
     return out;
   };
+
+  // 2) Hard-override setBackground so any attempt becomes "null"
+  var _setBackground = P.Viewer.prototype.setBackground;
+  P.Viewer.prototype.setBackground = function (style) {
+    // lock to None
+    style = "null";
+    return _setBackground.call(this, style);
+  };
 })();
+
 
