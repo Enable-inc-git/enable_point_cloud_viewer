@@ -90039,7 +90039,7 @@ ENDSEC
 				if(viewer.background === "skybox"){
 					renderer.setClearColor(0xff0000, 1);
 				}else if(viewer.background === "gradient"){
-					renderer.setClearColor(0x1d1d1d, 1);
+					renderer.setClearColor(0x112233, 1);
 				}else if(viewer.background === "black"){
 					renderer.setClearColor(0x000000, 1);
 				}else if(viewer.background === "white"){
@@ -90813,3 +90813,25 @@ ENDSEC
 
 }));
 //# sourceMappingURL=potree.js.map
+
+// --- Enable-INC patch: force transparent canvas + Background=None on startup ---
+(function () {
+  var P = window.Potree;
+  if (!P || !P.Viewer) return;
+  var proto = P.Viewer.prototype;
+
+  var _initThree = proto.initThree;
+  proto.initThree = function initThree_patched() {
+    var out = _initThree.apply(this, arguments);
+    try {
+      // Make WebGL clear alpha transparent so your CSS background shows
+      if (this.renderer && this.renderer.setClearAlpha) this.renderer.setClearAlpha(0);
+    } catch (e) {}
+    try {
+      // Force Potree background to "None" (same as the GUI's 'None' pill)
+      this.setBackground("null");
+    } catch (e) {}
+    return out;
+  };
+})();
+
