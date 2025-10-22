@@ -90836,4 +90836,35 @@ ENDSEC
   };
 })();
 
+// --- Enable patch: remove the "Background" fieldset (and the old Appearance header if present)
+(function () {
+  var P = window.Potree;
+  if (!P || !P.Viewer) return;
+
+  var _loadGUI = P.Viewer.prototype.loadGUI;
+  P.Viewer.prototype.loadGUI = function (cb) {
+    return _loadGUI.call(this, function () {
+      try {
+        // 1) Remove the old "Appearance" accordion header + its panel body (if still present)
+        var hdr = document.getElementById('menu_appearance');
+        if (hdr) {
+          if (hdr.nextElementSibling) hdr.nextElementSibling.remove(); // panel body
+          hdr.remove();                                                // header
+        }
+
+        // 2) Remove the "Background" fieldset anywhere in the sidebar
+        var legends = document.querySelectorAll('#potree_menu fieldset > legend');
+        legends.forEach(function (leg) {
+          if (leg.textContent.trim().toLowerCase() === 'background') {
+            var fs = leg.closest('fieldset');
+            if (fs) fs.remove();
+          }
+        });
+      } catch (e) {}
+
+      if (typeof cb === 'function') cb();
+    });
+  };
+})();
+
 
