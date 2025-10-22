@@ -7,8 +7,8 @@
   --sidebar-text:  #fbfbfb;   /* sidebar text */
   --accent:        #4db6ff;   /* buttons / highlights */
   --muted:         #9aa3b2;   /* secondary text */
-  --panel-bg:      #1a1f2b;   /* inner cards/panels */
-  --border:        #2a3140;   /* hairlines */
+  --panel-bg:      #fbfbfb;   /* inner cards/panels */
+  --border:        #000102;   /* hairlines */
 }
 
 /* Page background */
