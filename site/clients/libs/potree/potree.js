@@ -90836,6 +90836,35 @@ ENDSEC
   };
 })();
 
+// --- Enable patch: remove the "Background" legend/fieldset from the sidebar ---
+(function () {
+  function removeBackgroundFieldset() {
+    var legends = document.querySelectorAll('#potree_menu fieldset > legend');
+    var removed = false;
+    legends.forEach(function (leg) {
+      if (leg.textContent.trim().toLowerCase() === 'background') {
+        var fs = leg.parentElement;
+        if (fs) { fs.remove(); removed = true; }
+      }
+    });
+    return removed;
+  }
 
+  function start() {
+    if (removeBackgroundFieldset()) return; // gone already
+    // watch until the GUI builds and then nuke it
+    var target = document.getElementById('potree_menu') || document.body;
+    var obs = new MutationObserver(function () {
+      if (removeBackgroundFieldset()) obs.disconnect();
+    });
+    obs.observe(target, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
 
 
