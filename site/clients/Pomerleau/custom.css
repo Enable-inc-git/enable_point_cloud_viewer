@@ -1,0 +1,88 @@
+/* custom.css */
+
+/* Your theme palette */
+:root{
+  --bg:            #0f1115;   /* main page background */
+  --sidebar-bg:    #151822;   /* sidebar panel bg */
+  --sidebar-text:  #e8eaf0;   /* sidebar text */
+  --accent:        #4db6ff;   /* buttons / highlights */
+  --muted:         #9aa3b2;   /* secondary text */
+  --panel-bg:      #1a1f2b;   /* inner cards/panels */
+  --border:        #2a3140;   /* hairlines */
+}
+
+/* Page background */
+html, body, #potree_render_area{
+  background: var(--bg);
+}
+
+/* Sidebar container */
+#potree_sidebar, #potree_menu{
+  background: var(--sidebar-bg) !important;
+  color: var(--sidebar-text);
+  border-right: 1px solid var(--border);
+}
+
+/* Menu headings & links */
+#potree_menu .accordion-header,
+#potree_menu .ui-accordion-header{
+  background: transparent !important;
+  color: var(--sidebar-text) !important;
+  border-bottom: 1px solid var(--border);
+}
+
+#potree_menu a, #potree_menu label, #potree_menu span, #potree_menu input, #potree_menu select{
+  color: var(--sidebar-text) !important;
+}
+
+#potree_menu .description, #potree_menu .help, #potree_menu .subtle{
+  color: var(--muted) !important;
+}
+
+/* Buttons / toggles */
+#potree_menu .button, .ui-button{
+  background: var(--panel-bg) !important;
+  color: var(--sidebar-text) !important;
+  border: 1px solid var(--border) !important;
+}
+#potree_menu .button:hover, .ui-button:hover{
+  outline: 1px solid var(--accent);
+}
+
+/* Sliders, inputs, selects */
+#potree_menu input[type="text"],
+#potree_menu input[type="number"],
+#potree_menu select{
+  background: var(--panel-bg) !important;
+  color: var(--sidebar-text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* Checkboxes / active accents */
+.ui-state-active, .ui-slider-range, .ui-slider-handle{
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Header / brand area */
+#potree_header{
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--border);
+}
+#potree_header .potree_logo,
+#brand_logo{
+  height: 24px; /* adjust to taste */
+  filter: none; /* remove if you want it monochrome */
+}
+
+/* Panels/cards inside sidebar */
+.potree_panel, .pv-panel, .pv-card{
+  background: var(--panel-bg) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--sidebar-text) !important;
+}
+
+/* Optional: links & highlights */
+a, .link{
+  color: var(--accent);
+}
