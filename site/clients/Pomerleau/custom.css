@@ -211,3 +211,70 @@ html, body, #potree_render_area{
   color: var(--section-text) !important;
   border-color: var(--section-border) !important;
 }
+
+/* ===== HARD OVERRIDES: logo strip + section bars ===== */
+
+/* 1) Logo strip (anything in the sidebar that directly contains a logo <img>) */
+#potree_sidebar :is(#potree_header, .logo, #logo, .pv-header, .potree_header, .brand){
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_sidebar :is(#potree_header, .logo, #logo, .pv-header, .potree_header, .brand) img{
+  display:block; margin:8px auto; background:transparent !important; box-shadow:none !important;
+}
+
+/* Fallbacks if your build uses a plain container above the menu */
+#potree_sidebar > *:has(> img){               /* any direct child that holds an <img> */
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_sidebar > *:has(> img) img{
+  display:block; margin:8px auto; background:transparent !important; box-shadow:none !important;
+}
+
+/* 2) Section bars: “Tools”, “Scene”, “About”, etc. (cover all common variants) */
+#potree_menu :is(
+  h3.ui-accordion-header,
+  .ui-accordion-header,
+  .accordion-header,
+  .section_header,
+  .menu_header,
+  .panelTitle,
+  h3
+){
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+
+/* Active/hover states too */
+#potree_menu :is(
+  h3.ui-accordion-header,
+  .ui-accordion-header,
+  .accordion-header,
+  .section_header,
+  .menu_header,
+  .panelTitle,
+  h3
+).ui-state-active,
+#potree_menu :is(
+  h3.ui-accordion-header,
+  .ui-accordion-header,
+  .accordion-header,
+  .section_header,
+  .menu_header,
+  .panelTitle,
+  h3
+).ui-state-hover{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
+
+/* 3) Last-resort catch-alls (kept narrow to the sidebar so we don't theme the whole app) */
+#potree_sidebar [role="heading"],
+#potree_sidebar .ui-widget-header{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
