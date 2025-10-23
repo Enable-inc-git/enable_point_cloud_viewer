@@ -292,3 +292,8 @@ html, body, #potree_render_area{
   background:transparent !important;
   box-shadow:none !important;
 }
+
+.enable-logo-strip{
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}

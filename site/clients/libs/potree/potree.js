@@ -90899,4 +90899,25 @@ ENDSEC
   };
 })();
 
+// Tag the element before #potree_menu so CSS can style it reliably
+(function () {
+  function tagLogoStrip() {
+    var menu = document.getElementById('potree_menu');
+    if (menu && menu.previousElementSibling) {
+      menu.previousElementSibling.classList.add('enable-logo-strip');
+      return true;
+    }
+    return false;
+  }
+  function boot() {
+    if (tagLogoStrip()) return;
+    var obs = new MutationObserver(function () {
+      if (tagLogoStrip()) obs.disconnect();
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
+  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot();
+})();
+
+
 
