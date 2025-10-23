@@ -16,7 +16,7 @@
   --logo-panel-bg:    #ffffff;   /* strip behind the logo */
   --section-bg:       #252525;   /* bars: Tools / Scene / About */
   --section-text:     #e8eaf0;
-  --section-border:   #ffffff;
+  --section-border:   #a0a0a0;
 
   /* NEW: fieldset/legend controls (small caption boxes) */
   --fieldset-bg:      #3e3e3e;
@@ -277,4 +277,18 @@ html, body, #potree_render_area{
   background: var(--section-bg) !important;
   color: var(--section-text) !important;
   border-color: var(--section-border) !important;
+}
+
+/* Logo strip = the element immediately BEFORE the menu */
+#potree_sidebar *:has(+ #potree_menu){
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* Keep the logo image clean & centered */
+#potree_sidebar *:has(+ #potree_menu) img{
+  display:block;
+  margin:8px auto;
+  background:transparent !important;
+  box-shadow:none !important;
 }
