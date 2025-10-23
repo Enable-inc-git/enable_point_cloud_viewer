@@ -13,8 +13,8 @@
   --border:           #000102;   /* hairlines */
 
   /* NEW: header/section controls */
-  --logo-panel-bg:    #2b343b;   /* strip behind the logo */
-  --section-bg:       #344750;   /* bars: Tools / Scene / About */
+  --logo-panel-bg:    #ffffff;   /* strip behind the logo */
+  --section-bg:       #252525;   /* bars: Tools / Scene / About */
   --section-text:     #e8eaf0;
   --section-border:   #1f2a30;
 
