@@ -90943,8 +90943,8 @@ ENDSEC
     if (!shell) shell = menu;
 
     // Inline paint so it beats any library CSS
-    const bg = cssVar('--sidebar-bg', '#252b30');
-    const br = cssVar('--section-border', '#2a3140');
+    const bg = cssVar('--sidebar-bg', '#ffffffff');
+    const br = cssVar('--section-border', '#ffffffff');
 
     shell.style.setProperty('background', bg, 'important');
     shell.style.setProperty('border-top', `0 solid ${br}`, 'important'); // harmless guard
