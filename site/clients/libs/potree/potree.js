@@ -90919,5 +90919,55 @@ ENDSEC
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot();
 })();
 
+// === Enable override: repaint the real sidebar container (kills the blue/green) ===
+(function () {
+  function cssVar(name, fb){
+    try{
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fb;
+    }catch(_){ return fb; }
+  }
+
+  function paintSidebarShell() {
+    const sidebar = document.getElementById('potree_sidebar');
+    const menu = document.getElementById('potree_menu');
+    if (!sidebar || !menu) return false;
+
+    // Find the direct child of #potree_sidebar that *contains* the menu.
+    // This is the shell that often carries the default background color.
+    let shell = menu;
+    while (shell && shell.parentElement !== sidebar) {
+      shell = shell.parentElement;
+    }
+    // Fallback: if somehow the menu is a direct child already, use it
+    if (!shell) shell = menu;
+
+    // Inline paint so it beats any library CSS
+    const bg = cssVar('--sidebar-bg', '#252b30');
+    const br = cssVar('--section-border', '#2a3140');
+
+    shell.style.setProperty('background', bg, 'important');
+    shell.style.setProperty('border-top', `0 solid ${br}`, 'important'); // harmless guard
+    shell.style.setProperty('border-bottom', `1px solid ${br}`, 'important');
+
+    // Also ensure the outer sidebar doesn’t reintroduce another color
+    sidebar.style.setProperty('background', bg, 'important');
+
+    return true;
+  }
+
+  function boot() {
+    if (paintSidebarShell()) return;
+    // If GUI mounts later, watch and repaint once it exists
+    const obs = new MutationObserver(() => {
+      if (paintSidebarShell()) obs.disconnect();
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
+
+  (document.readyState === 'loading')
+    ? document.addEventListener('DOMContentLoaded', boot)
+    : boot();
+})();
 
 
