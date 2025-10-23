@@ -90867,4 +90867,36 @@ ENDSEC
   }
 })();
 
+// === Enable: add stable classes for styling (logo strip + section bars)
+(function () {
+  var P = window.Potree;
+  if (!P || !P.Viewer) return;
+
+  var _loadGUI = P.Viewer.prototype.loadGUI;
+  P.Viewer.prototype.loadGUI = function (cb) {
+    return _loadGUI.call(this, () => {
+      try {
+        // 1) Tag all accordion headers (Tools / Scene / About)
+        document
+          .querySelectorAll('#potree_menu h3, #potree_menu .ui-accordion-header, #potree_menu .accordion-header')
+          .forEach(el => el.classList.add('enable-section-bar'));
+
+        // 2) Tag the strip that contains the logo image near the top of the sidebar
+        var sidebar = document.getElementById('potree_sidebar');
+        if (sidebar) {
+          // first image in the sidebar is our logo area in your build
+          var logoImg = sidebar.querySelector('img');
+          if (logoImg) {
+            // prefer a semantic wrapper if present; otherwise, take the nearest block
+            var logoBlock = logoImg.closest('#potree_header, .logo, #logo, .pv-header, .potree_header') || logoImg.parentElement;
+            if (logoBlock) logoBlock.classList.add('enable-logo-strip');
+          }
+        }
+      } catch (e) {}
+
+      if (typeof cb === 'function') cb();
+    });
+  };
+})();
+
 

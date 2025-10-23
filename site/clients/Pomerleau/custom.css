@@ -190,3 +190,24 @@ html, body, #potree_render_area{
 #potree_sidebar::-webkit-scrollbar-thumb{
   background: #444;
 }
+
+/* Logo strip (the bar behind the logo image) */
+.enable-logo-strip{
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* Section bars: "Tools", "Scene", "About" */
+.enable-section-bar{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+
+/* Active/hover state to match your bar color (prevents odd blue flash) */
+.enable-section-bar.ui-state-active,
+.enable-section-bar.ui-state-hover{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
