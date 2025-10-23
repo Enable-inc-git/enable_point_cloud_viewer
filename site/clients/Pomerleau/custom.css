@@ -297,3 +297,46 @@ html, body, #potree_render_area{
   background: var(--logo-panel-bg) !important;
   border-bottom: 1px solid var(--section-border) !important;
 }
+
+/* ===== Sidebar & container backgrounds (kill the default blue) ===== */
+
+/* Page + render area */
+html, body { background: var(--bg) !important; }
+#potree_render_area { background: var(--bg) !important; }
+
+/* Potree wrappers that can carry a default background */
+#potree_container,
+.potree_container,
+#potree_scene_container {
+  background: var(--bg) !important;
+}
+
+/* The actual sidebar + its internal jQuery-UI containers */
+#potree_sidebar,
+#potree_menu,
+#potree_sidebar .ui-widget,
+#potree_sidebar .ui-widget-content,
+#potree_sidebar .ui-accordion,
+#potree_sidebar .ui-accordion .ui-accordion-content {
+  background: var(--sidebar-bg) !important;
+  color: var(--sidebar-text) !important;
+}
+
+/* Section bars themselves (you already themed these, but keep them here too) */
+#potree_menu h3.ui-accordion-header,
+#potree_menu .ui-accordion-header {
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+
+/* If any element directly above the menu is acting as a header area, match sidebar */
+#potree_sidebar > *:has(+ #potree_menu) {
+  background: var(--sidebar-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* Just in case some nested widget injects its own blue background */
+#potree_sidebar * {
+  background-clip: padding-box; /* prevents weird bleed from child borders */
+}
