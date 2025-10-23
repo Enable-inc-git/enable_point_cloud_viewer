@@ -1,55 +1,91 @@
-/* custom.css */
+/* =========================
+   custom.css  (per-client)
+   ========================= */
 
-/* Your theme palette */
+/* ---- Theme palette (keep your values or tweak) ---- */
 :root{
-  --bg:            #1d1d1d;   /* main page background */
-  --sidebar-bg:    #363636;   /* sidebar panel bg */
-  --sidebar-text:  #fbfbfb;   /* sidebar text */
-  --accent:        #4db6ff;   /* buttons / highlights */
-  --muted:         #9aa3b2;   /* secondary text */
-  --panel-bg:      #6b6b6b;   /* inner cards/panels */
-  --border:        #000102;   /* hairlines */
+  --bg:               #1d1d1d;   /* main page background */
+  --sidebar-bg:       #363636;   /* sidebar container */
+  --sidebar-text:     #fbfbfb;   /* default text */
+  --accent:           #4db6ff;   /* active pills / highlights */
+  --muted:            #9aa3b2;   /* secondary text */
+  --panel-bg:         #6b6b6b;   /* inner cards/panels / inputs */
+  --border:           #000102;   /* hairlines */
+
+  /* NEW: header/section controls */
+  --logo-panel-bg:    #2b343b;   /* strip behind the logo */
+  --section-bg:       #344750;   /* bars: Tools / Scene / About */
+  --section-text:     #e8eaf0;
+  --section-border:   #1f2a30;
+
+  /* NEW: fieldset/legend controls (small caption boxes) */
+  --fieldset-bg:      #3e3e3e;
+  --fieldset-border:  #23272d;
+  --legend-bg:        #313943;
+  --legend-text:      #e8eaf0;
+  --legend-border:    #23272d;
 }
 
-/* Page background */
+/* ---- Page / canvas background (shows when BG=None) ---- */
 html, body, #potree_render_area{
-  background: var(--bg);
+  background: var(--bg) !important;
 }
 
-/* Sidebar container */
+/* ---- Sidebar container ---- */
 #potree_sidebar, #potree_menu{
   background: var(--sidebar-bg) !important;
-  color: var(--sidebar-text);
-  border-right: 1px solid var(--border);
+  color: var(--sidebar-text) !important;
+  border-right: 1px solid var(--border) !important;
 }
 
-/* Menu headings & links */
+/* ---- Section headers: Tools / Scene / About ---- */
+#potree_menu h3.ui-accordion-header,
+#potree_menu .ui-accordion-header,
 #potree_menu .accordion-header,
-#potree_menu .ui-accordion-header{
-  background: transparent !important;
-  color: var(--sidebar-text) !important;
-  border-bottom: 1px solid var(--border);
+#potree_menu .section_header,
+#potree_menu .menu_header,
+#potree_menu .panelTitle{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+#potree_menu .ui-accordion-header.ui-state-active,
+#potree_menu .ui-accordion-header.ui-state-hover{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
 }
 
-#potree_menu a, #potree_menu label, #potree_menu span, #potree_menu input, #potree_menu select{
-  color: var(--sidebar-text) !important;
+/* ---- Fieldset/legend groups (e.g., Measurement, Navigation) ---- */
+#potree_menu fieldset{
+  background: var(--fieldset-bg) !important;
+  border: 1px solid var(--fieldset-border) !important;
+}
+#potree_menu fieldset legend{
+  background: var(--legend-bg) !important;
+  color: var(--legend-text) !important;
+  border: 1px solid var(--legend-border) !important;
+  padding: 2px 6px !important;
 }
 
-#potree_menu .description, #potree_menu .help, #potree_menu .subtle{
-  color: var(--muted) !important;
-}
-
-/* Buttons / toggles */
-#potree_menu .button, .ui-button{
+/* ---- Buttons / toggles ---- */
+#potree_menu .button,
+.ui-button{
   background: var(--panel-bg) !important;
   color: var(--sidebar-text) !important;
   border: 1px solid var(--border) !important;
 }
-#potree_menu .button:hover, .ui-button:hover{
-  outline: 1px solid var(--accent);
+#potree_menu .button:hover,
+.ui-button:hover{
+  outline: 1px solid var(--accent) !important;
+}
+#potree_menu .ui-button.ui-state-active{
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #000 !important;
 }
 
-/* Sliders, inputs, selects */
+/* ---- Inputs / selects ---- */
 #potree_menu input[type="text"],
 #potree_menu input[type="number"],
 #potree_menu select{
@@ -58,50 +94,99 @@ html, body, #potree_render_area{
   border: 1px solid var(--border) !important;
 }
 
-/* Checkboxes / active accents */
-.ui-state-active, .ui-slider-range, .ui-slider-handle{
-  background: var(--accent) !important;
-  border-color: var(--accent) !important;
-}
-
-/* Header / brand area */
-#potree_header{
-  background: var(--sidebar-bg);
-  border-bottom: 1px solid var(--border);
-}
-#potree_header .potree_logo,
-#brand_logo{
-  height: 24px; /* adjust to taste */
-  filter: none; /* remove if you want it monochrome */
-}
-
-/* Panels/cards inside sidebar */
-.potree_panel, .pv-panel, .pv-card{
-  background: var(--panel-bg) !important;
+/* ---- Sliders ---- */
+#potree_menu .ui-slider{
+  background: #2c2c2c !important;
   border: 1px solid var(--border) !important;
+}
+#potree_menu .ui-slider-range{
+  background: var(--accent) !important;
+}
+#potree_menu .ui-slider-handle{
+  background: var(--accent) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* ---- Links ---- */
+#potree_menu a{ color: var(--accent) !important; }
+
+/* ---- Subtle separators inside groups ---- */
+#potree_menu hr, #potree_menu .separator{
+  border: none !important;
+  border-top: 1px solid var(--border) !important;
+  opacity: 0.9;
+}
+
+/* =========================
+   Header / Logo strip
+   ========================= */
+#potree_header,
+#potree_sidebar .logo,
+#potree_sidebar #logo,
+#potree_sidebar .brand,
+#potree_sidebar .pv-header,
+#potree_sidebar .potree_header,
+/* Fallback: any direct child containing only an <img> */
+#potree_sidebar > *:has(> img){
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_header img,
+#potree_sidebar .logo img,
+#potree_sidebar #logo img,
+#potree_sidebar img{
+  display:block;
+  margin: 8px auto;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* =========================
+   Remove Background controls
+   ========================= */
+/* Hide the entire Appearance accordion (header + body), if still present */
+#menu_appearance,
+#menu_appearance + div{
+  display: none !important;
+}
+
+/* Hide the Background selector buttons */
+#potree_menu selectgroup#background_options{
+  display: none !important;
+}
+
+/* Hide the "Background" divider row that sits right above it */
+#potree_menu .divider:has(+ li > selectgroup#background_options){
+  display: none !important;
+}
+
+/* Tighten spacing after removing it */
+#menu_tools{ margin-top: 0 !important; }
+
+/* =========================
+   Misc small refinements
+   ========================= */
+/* Ensure text inside the menu stays readable */
+#potree_menu label, #potree_menu span, #potree_menu p{
   color: var(--sidebar-text) !important;
 }
 
-/* Optional: links & highlights */
-a, .link{
-  color: var(--accent);
+/* jstree icons/text in Scene panel */
+#jstree_scene, #jstree_scene *{
+  color: var(--sidebar-text) !important;
+}
+#jstree_scene .jstree-anchor.jstree-clicked{
+  background: rgba(77,182,255,0.15) !important;
+  border-radius: 4px;
 }
 
-/* Remove the entire Appearance section (header + its panel) */
-#menu_appearance,
-#menu_appearance + div {
-  display: none !important;
+/* scrollbars (WebKit) */
+#potree_sidebar::-webkit-scrollbar{
+  width: 10px;
 }
-
-/* Hide the fieldset that contains the background radio buttons */
-#potree_menu fieldset:has(input[name="background_options"]) {
-  display: none !important;
+#potree_sidebar::-webkit-scrollbar-track{
+  background: #222;
 }
-
-/* Hide the "Background" title row that sits right above it */
-#potree_menu .divider:has(+ li > selectgroup#background_options) {
-  display: none !important;
+#potree_sidebar::-webkit-scrollbar-thumb{
+  background: #444;
 }
-
-/* Optional: tighten spacing after removing it */
-#menu_tools { margin-top: 0 !important; }
