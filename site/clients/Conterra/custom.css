@@ -1,0 +1,342 @@
+/* =========================
+   custom.css  (per-client)
+   ========================= */
+
+/* ---- Theme palette (keep your values or tweak) ---- */
+:root{
+  --bg:               #1d1d1d;   /* main page background */
+  --sidebar-bg:       #363636;   /* sidebar container */
+  --sidebar-text:     #fbfbfb;   /* default text */
+  --accent:           #4db6ff;   /* active pills / highlights */
+  --muted:            #9aa3b2;   /* secondary text */
+  --panel-bg:         #6b6b6b;   /* inner cards/panels / inputs */
+  --border:           #000102;   /* hairlines */
+
+  /* NEW: header/section controls */
+  --logo-panel-bg:    #ffffff;   /* strip behind the logo */
+  --section-bg:       #252525;   /* bars: Tools / Scene / About */
+  --section-text:     #e8eaf0;
+  --section-border:   #a0a0a0;
+
+  /* NEW: fieldset/legend controls (small caption boxes) */
+  --fieldset-bg:      #3e3e3e;
+  --fieldset-border:  #23272d;
+  --legend-bg:        #313943;
+  --legend-text:      #e8eaf0;
+  --legend-border:    #23272d;
+}
+
+/* ---- Page / canvas background (shows when BG=None) ---- */
+html, body, #potree_render_area{
+  background: var(--bg) !important;
+}
+
+/* ---- Sidebar container ---- */
+#potree_sidebar, #potree_menu{
+  background: var(--sidebar-bg) !important;
+  color: var(--sidebar-text) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+/* ---- Section headers: Tools / Scene / About ---- */
+#potree_menu h3.ui-accordion-header,
+#potree_menu .ui-accordion-header,
+#potree_menu .accordion-header,
+#potree_menu .section_header,
+#potree_menu .menu_header,
+#potree_menu .panelTitle{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+#potree_menu .ui-accordion-header.ui-state-active,
+#potree_menu .ui-accordion-header.ui-state-hover{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
+
+/* ---- Fieldset/legend groups (e.g., Measurement, Navigation) ---- */
+#potree_menu fieldset{
+  background: var(--fieldset-bg) !important;
+  border: 1px solid var(--fieldset-border) !important;
+}
+#potree_menu fieldset legend{
+  background: var(--legend-bg) !important;
+  color: var(--legend-text) !important;
+  border: 1px solid var(--legend-border) !important;
+  padding: 2px 6px !important;
+}
+
+/* ---- Buttons / toggles ---- */
+#potree_menu .button,
+.ui-button{
+  background: var(--panel-bg) !important;
+  color: var(--sidebar-text) !important;
+  border: 1px solid var(--border) !important;
+}
+#potree_menu .button:hover,
+.ui-button:hover{
+  outline: 1px solid var(--accent) !important;
+}
+#potree_menu .ui-button.ui-state-active{
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #000 !important;
+}
+
+/* ---- Inputs / selects ---- */
+#potree_menu input[type="text"],
+#potree_menu input[type="number"],
+#potree_menu select{
+  background: var(--panel-bg) !important;
+  color: var(--sidebar-text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* ---- Sliders ---- */
+#potree_menu .ui-slider{
+  background: #2c2c2c !important;
+  border: 1px solid var(--border) !important;
+}
+#potree_menu .ui-slider-range{
+  background: var(--accent) !important;
+}
+#potree_menu .ui-slider-handle{
+  background: var(--accent) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* ---- Links ---- */
+#potree_menu a{ color: var(--accent) !important; }
+
+/* ---- Subtle separators inside groups ---- */
+#potree_menu hr, #potree_menu .separator{
+  border: none !important;
+  border-top: 1px solid var(--border) !important;
+  opacity: 0.9;
+}
+
+/* =========================
+   Header / Logo strip
+   ========================= */
+#potree_header,
+#potree_sidebar .logo,
+#potree_sidebar #logo,
+#potree_sidebar .brand,
+#potree_sidebar .pv-header,
+#potree_sidebar .potree_header,
+/* Fallback: any direct child containing only an <img> */
+#potree_sidebar > *:has(> img){
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_header img,
+#potree_sidebar .logo img,
+#potree_sidebar #logo img,
+#potree_sidebar img{
+  display:block;
+  margin: 8px auto;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* =========================
+   Remove Background controls
+   ========================= */
+/* Hide the entire Appearance accordion (header + body), if still present */
+#menu_appearance,
+#menu_appearance + div{
+  display: none !important;
+}
+
+/* Hide the Background selector buttons */
+#potree_menu selectgroup#background_options{
+  display: none !important;
+}
+
+/* Hide the "Background" divider row that sits right above it */
+#potree_menu .divider:has(+ li > selectgroup#background_options){
+  display: none !important;
+}
+
+/* Tighten spacing after removing it */
+#menu_tools{ margin-top: 0 !important; }
+
+/* =========================
+   Misc small refinements
+   ========================= */
+/* Ensure text inside the menu stays readable */
+#potree_menu label, #potree_menu span, #potree_menu p{
+  color: var(--sidebar-text) !important;
+}
+
+/* jstree icons/text in Scene panel */
+#jstree_scene, #jstree_scene *{
+  color: var(--sidebar-text) !important;
+}
+#jstree_scene .jstree-anchor.jstree-clicked{
+  background: rgba(77,182,255,0.15) !important;
+  border-radius: 4px;
+}
+
+/* scrollbars (WebKit) */
+#potree_sidebar::-webkit-scrollbar{
+  width: 10px;
+}
+#potree_sidebar::-webkit-scrollbar-track{
+  background: #222;
+}
+#potree_sidebar::-webkit-scrollbar-thumb{
+  background: #444;
+}
+
+/* Logo strip (the bar behind the logo image) */
+.enable-logo-strip{
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* Section bars: "Tools", "Scene", "About" */
+.enable-section-bar{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+
+/* Active/hover state to match your bar color (prevents odd blue flash) */
+.enable-section-bar.ui-state-active,
+.enable-section-bar.ui-state-hover{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
+
+/* ===== HARD OVERRIDES: logo strip + section bars ===== */
+
+/* 1) Logo strip (anything in the sidebar that directly contains a logo <img>) */
+#potree_sidebar :is(#potree_header, .logo, #logo, .pv-header, .potree_header, .brand){
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_sidebar :is(#potree_header, .logo, #logo, .pv-header, .potree_header, .brand) img{
+  display:block; margin:8px auto; background:transparent !important; box-shadow:none !important;
+}
+
+/* Fallbacks if your build uses a plain container above the menu */
+#potree_sidebar > *:has(> img){               /* any direct child that holds an <img> */
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_sidebar > *:has(> img) img{
+  display:block; margin:8px auto; background:transparent !important; box-shadow:none !important;
+}
+
+/* 2) Section bars: “Tools”, “Scene”, “About”, etc. (cover all common variants) */
+#potree_menu :is(
+  h3.ui-accordion-header,
+  .ui-accordion-header,
+  .accordion-header,
+  .section_header,
+  .menu_header,
+  .panelTitle,
+  h3
+){
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+
+/* Active/hover states too */
+#potree_menu :is(
+  h3.ui-accordion-header,
+  .ui-accordion-header,
+  .accordion-header,
+  .section_header,
+  .menu_header,
+  .panelTitle,
+  h3
+).ui-state-active,
+#potree_menu :is(
+  h3.ui-accordion-header,
+  .ui-accordion-header,
+  .accordion-header,
+  .section_header,
+  .menu_header,
+  .panelTitle,
+  h3
+).ui-state-hover{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
+
+/* 3) Last-resort catch-alls (kept narrow to the sidebar so we don't theme the whole app) */
+#potree_sidebar [role="heading"],
+#potree_sidebar .ui-widget-header{
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
+
+/* Logo strip = the element immediately BEFORE the menu */
+#potree_sidebar *:has(+ #potree_menu){
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* Keep the logo image clean & centered */
+#potree_sidebar *:has(+ #potree_menu) img{
+  display:block;
+  margin:8px auto;
+  background:transparent !important;
+  box-shadow:none !important;
+}
+
+.enable-logo-strip{
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* ===== Sidebar & container backgrounds (kill the default blue) ===== */
+
+/* Page + render area */
+html, body { background: var(--bg) !important; }
+#potree_render_area { background: var(--bg) !important; }
+
+/* Potree wrappers that can carry a default background */
+#potree_container,
+.potree_container,
+#potree_scene_container {
+  background: var(--bg) !important;
+}
+
+/* The actual sidebar + its internal jQuery-UI containers */
+#potree_sidebar,
+#potree_menu,
+#potree_sidebar .ui-widget,
+#potree_sidebar .ui-widget-content,
+#potree_sidebar .ui-accordion,
+#potree_sidebar .ui-accordion .ui-accordion-content {
+  background: var(--sidebar-bg) !important;
+  color: var(--sidebar-text) !important;
+}
+
+/* Section bars themselves (you already themed these, but keep them here too) */
+#potree_menu h3.ui-accordion-header,
+#potree_menu .ui-accordion-header {
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+
+/* If any element directly above the menu is acting as a header area, match sidebar */
+#potree_sidebar > *:has(+ #potree_menu) {
+  background: var(--sidebar-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* Just in case some nested widget injects its own blue background */
+#potree_sidebar * {
+  background-clip: padding-box; /* prevents weird bleed from child borders */
+}
