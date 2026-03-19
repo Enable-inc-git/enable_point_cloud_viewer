@@ -1,0 +1,1941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Potree Viewer</title>
+
+  <!-- ===================== CSS ===================== -->
+  <link rel="stylesheet" href="../libs/potree/potree.css">
+  <link rel="stylesheet" href="../libs/jquery-ui/jquery-ui.min.css">
+  <link rel="stylesheet" href="../libs/spectrum/spectrum.css">
+  <link rel="stylesheet" href="../libs/jstree/themes/mixed/style.css">
+  <link rel="stylesheet" href="./custom.css">
+
+  <style>
+    /* Layout */
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      background: #0f1318;
+    }
+    .potree_container { position: absolute; inset: 0; }
+    #potree_render_area, #potree_sidebar_container { position: absolute; top: 0; bottom: 0; }
+
+    /* Your widths (unchanged) */
+    #potree_render_area       { left: 300px; right: 0; }
+    #potree_sidebar_container { left: 0; right: auto; width: 360px; overflow-y: auto; }
+
+    /* Sidebar logo header */
+    #potree_sidebar_container::before{
+      content:"";
+      display:block;
+      height:84px;
+      margin:12px 12px 8px;
+      background-image:url("../EnableLogo.png");
+      background-repeat:no-repeat;
+      background-position:center;
+      background-size:contain;
+      border-bottom:1px solid rgba(255,255,255,.08);
+    }
+
+    /* Ensure panels are always open (belt + suspenders) */
+    #potree_menu .ui-accordion-content,
+    #potree_menu > div {
+      display: block !important;
+      height: auto !important;
+      overflow: visible !important;
+    }
+    #potree_menu h3,
+    #potree_menu .ui-accordion-header,
+    #potree_menu .accordion-header {
+      cursor: default !important;
+      user-select: text;
+    }
+
+    /* Hide map UI completely */
+    #potree_toggle_map, .potree_toggle_map, .mapToggle,
+    #menu_map, #map, #potree_map_container,
+    .ol-viewport, .ol-overlaycontainer { display: none !important; }
+
+    /* Slightly tighter sidebar spacing */
+    #potree_sidebar_container .accordion > div { padding: 6px 10px; }
+
+    /* ===== Mark mode cursor ===== */
+    body.mark-mode #potree_render_area { cursor: crosshair !important; }
+    body.mark-mode #potree_render_area canvas { cursor: crosshair !important; }
+
+    /* ===== Mark tool buttons ===== */
+    #enable-mark-buttons { margin: 6px 0; display: flex; gap: 6px; }
+    #enable-mark-buttons button {
+      flex: 1; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-mark-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-mark-buttons button.active {
+      background: var(--accent, #4db6ff) !important;
+      color: #000 !important; border-color: var(--accent, #4db6ff) !important;
+    }
+
+    /* ===== Toast notification ===== */
+    #enable-toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.8); color: #fff; padding: 8px 20px;
+      border-radius: 6px; font: 14px/1.4 sans-serif; z-index: 99999;
+      opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    }
+    #enable-toast.show { opacity: 1; }
+
+    /* ===== Constraint tool cursor ===== */
+    body.constraint-pick-mode #potree_render_area { cursor: crosshair !important; }
+    body.constraint-pick-mode #potree_render_area canvas { cursor: crosshair !important; }
+
+    /* ===== Constraint tool buttons ===== */
+    #enable-constraint-buttons { margin: 6px 0; display: flex; gap: 6px; }
+    #enable-constraint-buttons button {
+      flex: 1; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-constraint-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-constraint-buttons button.active {
+      background: var(--accent, #4db6ff) !important;
+      color: #000 !important; border-color: var(--accent, #4db6ff) !important;
+    }
+
+    /* ===== Constraint list ===== */
+    #enable-constraint-list { margin: 4px 0; }
+    .constraint-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 3px 6px; border-radius: 3px; margin: 2px 0;
+      font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb);
+      background: rgba(255,255,255,0.05);
+    }
+    .constraint-row.active { background: rgba(57,255,20,0.15); }
+    .constraint-row .constraint-name {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .constraint-row button {
+      padding: 2px 6px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .constraint-row button:hover { outline: 1px solid var(--accent, #4db6ff); }
+
+    /* ===== Constraint status ===== */
+    #enable-constraint-status {
+      font: 12px/1.3 sans-serif; color: #39ff14;
+      margin: 4px 0; min-height: 16px;
+    }
+
+    /* ===== Constraint drag cursor ===== */
+    body.constraint-drag #potree_render_area { cursor: grabbing !important; }
+    body.constraint-drag #potree_render_area canvas { cursor: grabbing !important; }
+
+    /* ===== Constraint visibility toggle ===== */
+    .constraint-row .btn-vis {
+      padding: 2px 5px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .constraint-row .btn-vis:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .constraint-row .btn-vis.hidden { opacity: 0.35; }
+    .constraint-row .btn-lock {
+      padding: 2px 5px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .constraint-row .btn-lock:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .constraint-row .btn-lock.locked { opacity: 1; background: rgba(255,165,0,0.3); }
+
+    /* ===== Member tool cursor ===== */
+    body.member-pick-mode #potree_render_area { cursor: crosshair !important; }
+    body.member-pick-mode #potree_render_area canvas { cursor: crosshair !important; }
+
+    /* ===== Member buttons ===== */
+    #enable-member-buttons { margin: 6px 0; display: flex; gap: 6px; }
+    #enable-member-buttons button {
+      flex: 1; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-member-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-member-buttons button.active {
+      background: var(--accent, #4db6ff) !important;
+      color: #000 !important; border-color: var(--accent, #4db6ff) !important;
+    }
+
+    /* ===== Member list ===== */
+    #enable-member-list { margin: 4px 0; }
+    .member-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 3px 6px; border-radius: 3px; margin: 2px 0;
+      font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb);
+      background: rgba(255,255,255,0.05);
+    }
+    .member-row .member-name {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      cursor: pointer;
+    }
+    .member-row .member-name:hover { text-decoration: underline; }
+    .member-row button {
+      padding: 2px 6px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .member-row button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .member-row .btn-vis.hidden { opacity: 0.35; }
+
+    /* ===== Member drag cursor ===== */
+    body.member-drag #potree_render_area { cursor: grabbing !important; }
+    body.member-drag #potree_render_area canvas { cursor: grabbing !important; }
+
+    /* ===== DXF export button ===== */
+    #enable-member-buttons-export { margin: 4px 0; }
+    #enable-member-buttons-export button {
+      width: 100%; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-member-buttons-export button:hover { outline: 1px solid var(--accent, #4db6ff); }
+
+    /* ===== Measurement panel overrides ===== */
+    /* Hide native raw XYZ + native distance table in measurement panel */
+    .measurement_content .coordinates_table_container,
+    .measurement_content .coordinates_table_container + br,
+    .measurement_content #distances_table { display: none !important; }
+
+    /* ===== Persistent measurement list ===== */
+    #enable-measurement-list { margin: 4px 0; }
+    .enable-meas-item {
+      padding: 4px 6px; border-radius: 3px; margin: 3px 0;
+      font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb);
+      background: rgba(255,255,255,0.05);
+    }
+    .enable-meas-item .meas-header {
+      display: flex; align-items: center; gap: 4px; margin-bottom: 2px;
+    }
+    .enable-meas-item .meas-title { flex: 1; font-weight: 600; font-size: 11px; color: var(--muted,#9aa3b2); }
+    .enable-meas-item .meas-delete {
+      padding: 1px 5px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .enable-meas-item .meas-delete:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .enable-meas-seg {
+      display: flex; gap: 6px; padding: 1px 0; font-variant-numeric: tabular-nums;
+    }
+    .enable-meas-seg .seg-name { white-space: nowrap; font-weight: 500; min-width: 56px; }
+    .enable-meas-seg .seg-vals { color: rgba(251,251,251,0.7); }
+    .enable-meas-seg.seg-total { border-top: 1px solid rgba(255,255,255,0.15); padding-top: 3px; margin-top: 2px; font-weight: 700; }
+
+    /* Export all measurements button */
+    #enable-measurement-buttons-export { margin: 4px 0; }
+    #enable-measurement-buttons-export button {
+      width: 100%; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-measurement-buttons-export button:hover { outline: 1px solid var(--accent, #4db6ff); }
+  </style>
+</head>
+
+<body>
+  <!-- ===================== CONTAINER ===================== -->
+  <div class="potree_container">
+    <div id="potree_render_area"></div>
+    <div id="potree_sidebar_container"></div>
+  </div>
+
+  <!-- Toast element -->
+  <div id="enable-toast"></div>
+
+  <!-- ===================== VENDOR + POTREE JS (order matters) ===================== -->
+  <script src="../libs/jquery/jquery-3.1.1.min.js"></script>
+  <script src="../libs/spectrum/spectrum.js"></script>
+  <script src="../libs/jquery-ui/jquery-ui.min.js"></script>
+  <script src="../libs/other/BinaryHeap.js"></script>
+  <script src="../libs/tween/tween.min.js"></script>
+  <script src="../libs/d3/d3.js"></script>
+  <script src="../libs/proj4/proj4.js"></script>
+  <script src="../libs/i18next/i18next.js"></script>
+  <script src="../libs/jstree/jstree.js"></script>
+
+  <script src="../libs/three/build/three.min.js"></script>
+  <script src="../libs/potree/potree.js"></script>
+  <script src="../libs/plasio/js/laslaz.js"></script>
+
+  <!-- Per-client project registry -->
+  <script src="projects.js"></script>
+
+  <!-- ===================== APP ===================== -->
+  <script>
+  (function () {
+    // ----- read ?p=<PointCloudID> and lookup in projects.js -----
+    const params = new URLSearchParams(location.search);
+    const pointCloudID = params.get('p');
+    if (!pointCloudID) { alert('Missing ?p=<PointCloudID> in URL'); return; }
+    const meta = (window.PROJECTS || {})[pointCloudID];
+    if (!meta || !meta.folder) { alert('PointCloudID "' + pointCloudID + '" not found in projects.js'); return; }
+    const cloudURL = meta.folder.replace(/\/+$/, '') + '/cloud.js';
+
+    // ----- init Potree viewer -----
+    const renderArea = document.getElementById('potree_render_area');
+    const viewer = new Potree.Viewer(renderArea, { useDefaultRenderLoop: true, showBoundingBox: false });
+
+    // sensible defaults
+    viewer.setEDLEnabled(true);
+    viewer.setFOV(60);
+    viewer.setPointBudget(2_000_000);
+    viewer.setDescription(meta.name || pointCloudID);
+    viewer.loadSettingsFromURL(); // allow ? overrides
+
+    // -- Fix: Right-click always pans, even during measurement tool use --
+    // During measurement insertion Potree's drag system is permanently
+    // occupied by a measurement sphere, so right-click can never start a
+    // navigation drag through InputHandler. We intercept ALL right-click
+    // mouse events on the canvas, prevent Potree from seeing them, and
+    // handle panning by directly updating OrbitControls.panDelta.
+    (function() {
+      var rightDragPrev = null;
+      var domEl = viewer.renderer.domElement;
+
+      domEl.addEventListener('mousedown', function(e) {
+        if (e.button === 2) {
+          e.stopImmediatePropagation();
+          rightDragPrev = { x: e.clientX, y: e.clientY };
+        }
+      }, true);
+
+      domEl.addEventListener('mousemove', function(e) {
+        if (!rightDragPrev || !(e.buttons & 2)) {
+          if (rightDragPrev) rightDragPrev = null;
+          return;
+        }
+        e.stopImmediatePropagation();
+        var dx = e.clientX - rightDragPrev.x;
+        var dy = e.clientY - rightDragPrev.y;
+        rightDragPrev = { x: e.clientX, y: e.clientY };
+        var controls = viewer.getControls();
+        if (controls && controls.panDelta) {
+          controls.panDelta.x += dx / domEl.clientWidth;
+          controls.panDelta.y += dy / domEl.clientHeight;
+          if (controls.stopTweens) controls.stopTweens();
+        }
+      }, true);
+
+      domEl.addEventListener('mouseup', function(e) {
+        if (e.button === 2) {
+          e.stopImmediatePropagation();
+          rightDragPrev = null;
+        }
+      }, true);
+    })();
+
+    // ----- load GUI and force "always open" sidebar -----
+    viewer.loadGUI(() => {
+      viewer.setLanguage('en');
+
+      const $menu = $("#potree_menu");
+
+      // Kill any accordion instance & remove its traces
+      try { $menu.accordion("destroy"); } catch(e) {}
+      $menu.removeClass("ui-accordion ui-widget ui-helper-reset")
+           .removeData("uiAccordion").removeData("ui-accordion");
+
+      // Unbind header toggles and make them inert
+      $menu.find("h3, .accordion-header, .ui-accordion-header")
+           .off("click").css("cursor","default");
+
+      // Force all section bodies visible
+      $menu.children("div")
+           .show().attr("aria-hidden","false")
+           .css({display:"block", height:"auto", overflow:"visible"});
+
+      // Legacy 'ui-accordion-content' blocks open
+      $menu.find(".ui-accordion-content")
+           .css({display:"block", height:"auto", overflow:"visible"})
+           .attr("aria-hidden","false");
+
+      // Remove map bits
+      $(".potree_toggle_map, #potree_toggle_map, .mapToggle").remove();
+      $("#menu_map, #map, #potree_map_container").remove();
+
+      // Keep it that way if something tries to reattach accordion later
+      const mo = new MutationObserver(() => {
+        if ($menu.data("uiAccordion") || $menu.hasClass("ui-accordion")) {
+          try { $menu.accordion("destroy"); } catch(e) {}
+          $menu.removeClass("ui-accordion").removeData("uiAccordion").removeData("ui-accordion");
+        }
+        $menu.children("div").css({display:"block", height:"auto", overflow:"visible"})
+             .attr("aria-hidden","false");
+        $menu.find(".ui-accordion-content")
+             .css({display:"block", height:"auto", overflow:"visible"})
+             .attr("aria-hidden","false");
+      });
+      mo.observe($menu[0], {attributes:true, childList:true, subtree:true});
+
+      // Optional: silence benign sidebar DOM warnings
+      const sb = viewer.sidebar;
+      if (sb) {
+        ["initReturnFilters","initFilters","onReturnNumberChanged"].forEach(fn => {
+          if (typeof sb[fn] === "function") {
+            const orig = sb[fn].bind(sb);
+            sb[fn] = function(...args){ try { return orig(...args); } catch(e){ /* ignore missing DOM */ } };
+          }
+        });
+      }
+
+      // --- Force Background = None (use CSS page color) ---
+      try {
+        // make the WebGL canvas transparent so CSS background shows
+        if (viewer.renderer?.setClearAlpha) viewer.renderer.setClearAlpha(0);
+      } catch (_) {}
+
+      try {
+        // tell Potree to use "None" (matches the GUI radio value 'null')
+        viewer.setBackground("null");
+      } catch (_) {}
+
+      // reflect it visually in the sidebar pills
+      try {
+        const $bgFieldset = $("#potree_menu fieldset legend").filter(function () {
+          return $(this).text().trim().toLowerCase() === "background";
+        }).closest("fieldset");
+
+        $bgFieldset.find("input[name=background_options][value=null]")
+          .prop("checked", true)
+          .button("refresh");
+      } catch (_) {}
+
+      // (measurement setup runs outside loadGUI via polling — see below)
+    });
+
+    // ===== MARK POINT TOOL =====
+
+    // -- State --
+    let MARK_MODE = false;
+    const markedPoints = [];
+    const markerScene = new THREE.Scene();  // separate scene, rendered manually AFTER EDL
+    markerScene.name = "EnableMarkerScene";
+    let ringOuterRadius = 0.12;   // large ring visible when zoomed out
+    let ringMiddleRadius = 0.025; // medium ring
+    let ringInnerRadius = 0.006;  // tightest ring, ~point-sized
+    const RING_SEGMENTS = 48;
+
+    // -- Shared material (outline-only ring, no fill) --
+    const ringMaterial = new THREE.LineBasicMaterial({
+      color: 0xff2020,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.9,
+      linewidth: 3
+    });
+
+    // -- Build a circle geometry (line loop) at origin in XY plane --
+    function createCircleGeometry(radius, segments) {
+      const pts = [];
+      for (let i = 0; i <= segments; i++) {
+        const angle = (i / segments) * Math.PI * 2;
+        pts.push(Math.cos(angle) * radius, Math.sin(angle) * radius, 0);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      return geo;
+    }
+
+    // -- Render markers in the perspective_overlay pass (AFTER EDL + depth clear) --
+    // Same hook Potree's own measurement/annotation tools use.
+    viewer.addEventListener("render.pass.perspective_overlay", function(e) {
+      if (markerScene.children.length === 0) return;
+
+      // Billboard: make every ring face the camera
+      const camera = viewer.scene.getActiveCamera();
+      for (let i = 0; i < markerScene.children.length; i++) {
+        markerScene.children[i].quaternion.copy(camera.quaternion);
+      }
+
+      viewer.renderer.render(markerScene, camera);
+    });
+
+    // -- Toast notification --
+    let toastTimer = null;
+    function showToast(msg, duration) {
+      duration = duration || 2000;
+      const el = document.getElementById('enable-toast');
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+    }
+
+    // -- Place a marker at a 3D position --
+    function placeMarker(position) {
+      // Group positioned at the picked point; billboarded each frame
+      const group = new THREE.Group();
+      group.name = "marker-" + markedPoints.length;
+      group.position.copy(position);
+
+      // Outer ring (visible from far away)
+      const outerGeo = createCircleGeometry(ringOuterRadius, RING_SEGMENTS);
+      const outerRing = new THREE.Line(outerGeo, ringMaterial);
+      group.add(outerRing);
+
+      // Middle ring
+      const middleGeo = createCircleGeometry(ringMiddleRadius, RING_SEGMENTS);
+      const middleRing = new THREE.Line(middleGeo, ringMaterial);
+      group.add(middleRing);
+
+      // Inner ring (tightest, ~actual point size)
+      const innerGeo = createCircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      const innerRing = new THREE.Line(innerGeo, ringMaterial);
+      group.add(innerRing);
+
+      markerScene.add(group);
+      markedPoints.push(group);
+      showToast("Marked point (" + markedPoints.length + " total)");
+    }
+
+    // -- Clear all markers --
+    function clearAllMarkers() {
+      while (markerScene.children.length > 0) {
+        const child = markerScene.children[0];
+        child.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+        });
+        markerScene.remove(child);
+      }
+      markedPoints.length = 0;
+      showToast("Cleared all markers");
+    }
+
+    // ===== CONSTRAINT MEASUREMENT TOOL =====
+
+    // -- State --
+    const constraints = [];
+    let nextConstraintId = 1;
+    let activeConstraintId = null;
+    let constraintPickMode = false;
+    let constraintPickPoints = [];
+    let constraintPickTarget = 0;
+    let constraintPickType = null;
+    const constraintScene = new THREE.Scene();
+    constraintScene.name = "EnableConstraintScene";
+    let constraintDragActive = false;
+    let constraintDragInfo = null; // { constraint, pointIndex }
+    let constraintPickMarkers = []; // temporary markers shown while picking
+
+    // ===== MEMBER SKETCHING TOOL =====
+    const members = [];
+    let nextMemberId = 1;
+    let memberPickMode = false;
+    let memberPickPoints = [];
+    let memberPickMarkers = [];
+    const memberScene = new THREE.Scene();
+    memberScene.name = "EnableMemberScene";
+    let memberDragActive = false;
+    let memberDragInfo = null; // { member, pointIndex }
+
+    // ===== MEASUREMENT POINT LABELS =====
+    const measurePointLabels = new Map(); // Map<Measure, TextSprite[]>
+    const measureLabelScene = new THREE.Scene();
+    measureLabelScene.name = "EnableMeasureLabelScene";
+    let nextPointNumber = 1;                    // global P-number, never resets
+    const measurePointNumbers = new Map();      // Map<Measure, number[]> — P-numbers per measurement
+
+    // -- Monkey-patch point picking to apply active constraint --
+    const _origPick = Potree.Utils.getMousePointCloudIntersection;
+    Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
+      const result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
+      if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive) {
+        result.location = projectPoint(result.location);
+      }
+      return result;
+    };
+
+    // -- Project a point onto the active constraint --
+    function projectPoint(point) {
+      const c = constraints.find(function(con) { return con.id === activeConstraintId; });
+      if (!c) return point;
+      if (c.type === 'plane') {
+        const target = new THREE.Vector3();
+        c.plane.projectPoint(point, target);
+        return target;
+      } else if (c.type === 'axis') {
+        const v = new THREE.Vector3().subVectors(point, c.origin);
+        const t = v.dot(c.direction);
+        return new THREE.Vector3().copy(c.origin).addScaledVector(c.direction, t);
+      }
+      return point;
+    }
+
+    // -- Start constraint pick mode --
+    function startConstraintPick(type) {
+      if (MARK_MODE) toggleMarkMode(true);
+      if (memberPickMode) cancelMemberPick();
+      constraintPickMode = true;
+      constraintPickPoints = [];
+      constraintPickType = type;
+      constraintPickTarget = type === 'plane' ? 3 : 2;
+      document.body.classList.add('constraint-pick-mode');
+      showToast('Pick point (1/' + constraintPickTarget + ') for ' + type, 5000);
+      var btn = document.getElementById(type === 'plane' ? 'btn-set-plane' : 'btn-set-axis');
+      if (btn) btn.classList.add('active');
+    }
+
+    // -- Place a temporary neon-green concentric ring marker during picking --
+    function placePickMarker(position) {
+      var ptGroup = new THREE.Group();
+      ptGroup.position.copy(position);
+      ptGroup.userData.isDefinitionPoint = true;
+      var mat = new THREE.LineBasicMaterial({
+        color: 0x39ff14, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, linewidth: 3
+      });
+      ptGroup.add(new THREE.Line(createCircleGeometry(ringOuterRadius, RING_SEGMENTS), mat.clone()));
+      ptGroup.add(new THREE.Line(createCircleGeometry(ringMiddleRadius, RING_SEGMENTS), mat.clone()));
+      ptGroup.add(new THREE.Line(createCircleGeometry(ringInnerRadius, RING_SEGMENTS), mat.clone()));
+      constraintScene.add(ptGroup);
+      constraintPickMarkers.push(ptGroup);
+    }
+
+    // -- Remove all temporary pick markers --
+    function clearPickMarkers() {
+      for (var i = 0; i < constraintPickMarkers.length; i++) {
+        var m = constraintPickMarkers[i];
+        m.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+        constraintScene.remove(m);
+      }
+      constraintPickMarkers.length = 0;
+    }
+
+    // -- Handle a picked point during constraint definition --
+    function handleConstraintPick(position) {
+      constraintPickPoints.push(position.clone());
+      placePickMarker(position);
+      var count = constraintPickPoints.length;
+      if (count < constraintPickTarget) {
+        showToast('Pick point (' + (count + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
+      } else {
+        finalizeConstraint();
+      }
+    }
+
+    // -- Cancel constraint pick mode --
+    function cancelConstraintPick() {
+      constraintPickMode = false;
+      constraintPickPoints = [];
+      constraintPickType = null;
+      constraintPickTarget = 0;
+      clearPickMarkers();
+      document.body.classList.remove('constraint-pick-mode');
+      document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
+      showToast('Constraint picking cancelled');
+    }
+
+    // -- Finalize constraint from picked points --
+    function finalizeConstraint() {
+      var type = constraintPickType;
+      var pts = constraintPickPoints;
+      var constraint = null;
+
+      if (type === 'plane') {
+        var v1 = new THREE.Vector3().subVectors(pts[1], pts[0]);
+        var v2 = new THREE.Vector3().subVectors(pts[2], pts[0]);
+        var normal = new THREE.Vector3().crossVectors(v1, v2);
+        if (normal.length() < 0.001) {
+          showToast('Points are collinear \u2014 cannot define plane');
+          cancelConstraintPick();
+          return;
+        }
+        normal.normalize();
+        var plane = new THREE.Plane();
+        plane.setFromNormalAndCoplanarPoint(normal, pts[0]);
+        var centroid = new THREE.Vector3().add(pts[0]).add(pts[1]).add(pts[2]).divideScalar(3);
+        constraint = {
+          id: nextConstraintId++,
+          type: 'plane',
+          name: 'Plane ' + (nextConstraintId - 1),
+          plane: plane,
+          normal: normal,
+          centroid: centroid,
+          points: pts,
+          visual: null,
+          visible: true
+        };
+      } else if (type === 'axis') {
+        var dir = new THREE.Vector3().subVectors(pts[1], pts[0]);
+        if (dir.length() < 0.001) {
+          showToast('Points are coincident \u2014 cannot define axis');
+          cancelConstraintPick();
+          return;
+        }
+        dir.normalize();
+        constraint = {
+          id: nextConstraintId++,
+          type: 'axis',
+          name: 'Axis ' + (nextConstraintId - 1),
+          origin: pts[0].clone(),
+          direction: dir,
+          points: pts,
+          visual: null,
+          visible: true
+        };
+      }
+
+      clearPickMarkers();
+
+      if (constraint) {
+        buildConstraintVisual(constraint);
+        constraints.push(constraint);
+        rebuildConstraintList();
+        showToast(constraint.name + ' created');
+      }
+
+      constraintPickMode = false;
+      constraintPickPoints = [];
+      constraintPickType = null;
+      constraintPickTarget = 0;
+      document.body.classList.remove('constraint-pick-mode');
+      document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
+    }
+
+    // -- Build 3D visual for a constraint --
+    function buildConstraintVisual(constraint) {
+      var group = new THREE.Group();
+      group.name = 'constraint-' + constraint.id;
+
+      if (constraint.type === 'plane') {
+        var pts = constraint.points;
+        var maxDist = 0;
+        for (var i = 0; i < pts.length; i++) {
+          for (var j = i + 1; j < pts.length; j++) {
+            var d = pts[i].distanceTo(pts[j]);
+            if (d > maxDist) maxDist = d;
+          }
+        }
+        var quadSize = Math.max(maxDist * 3, 1);
+        var planeGeo = new THREE.PlaneGeometry(quadSize, quadSize);
+        var planeMat = new THREE.MeshBasicMaterial({
+          color: 0x39ff14, transparent: true, opacity: 0.15,
+          side: THREE.DoubleSide, depthTest: false, depthWrite: false
+        });
+        var planeMesh = new THREE.Mesh(planeGeo, planeMat);
+        planeMesh.position.copy(constraint.centroid);
+        var up = new THREE.Vector3(0, 0, 1);
+        var quat = new THREE.Quaternion().setFromUnitVectors(up, constraint.normal);
+        planeMesh.quaternion.copy(quat);
+        group.add(planeMesh);
+
+        var edgeGeo = new THREE.EdgesGeometry(planeGeo);
+        var edgeMat = new THREE.LineBasicMaterial({
+          color: 0x39ff14, transparent: true, opacity: 0.4,
+          depthTest: false, depthWrite: false
+        });
+        var edgeLine = new THREE.LineSegments(edgeGeo, edgeMat);
+        edgeLine.position.copy(constraint.centroid);
+        edgeLine.quaternion.copy(quat);
+        group.add(edgeLine);
+      } else if (constraint.type === 'axis') {
+        var axDir = constraint.direction;
+        var axOrigin = constraint.origin;
+        var span = constraint.points[0].distanceTo(constraint.points[1]);
+        var extend = Math.max(span * 5, 10);
+        var p1 = new THREE.Vector3().copy(axOrigin).addScaledVector(axDir, -extend);
+        var p2 = new THREE.Vector3().copy(axOrigin).addScaledVector(axDir, extend);
+        var lineGeo = new THREE.BufferGeometry().setFromPoints([p1, p2]);
+        var lineMat = new THREE.LineBasicMaterial({
+          color: 0x39ff14, transparent: true, opacity: 0.6,
+          depthTest: false, depthWrite: false
+        });
+        group.add(new THREE.Line(lineGeo, lineMat));
+      }
+
+      // Definition point markers (triple concentric blue circles, like mark tool)
+      for (var k = 0; k < constraint.points.length; k++) {
+        var pt = constraint.points[k];
+        var ptGroup = new THREE.Group();
+        ptGroup.position.copy(pt);
+        ptGroup.userData.isDefinitionPoint = true;
+        ptGroup.userData.pointIndex = k;
+
+        var outerGeo = createCircleGeometry(ringOuterRadius, RING_SEGMENTS);
+        var outerRing = new THREE.Line(outerGeo, new THREE.LineBasicMaterial({
+          color: 0x39ff14, depthTest: false, depthWrite: false,
+          transparent: true, opacity: 0.9, linewidth: 3
+        }));
+        outerRing.userData.isDefPointRing = true;
+        ptGroup.add(outerRing);
+
+        var middleGeo = createCircleGeometry(ringMiddleRadius, RING_SEGMENTS);
+        var middleRing = new THREE.Line(middleGeo, new THREE.LineBasicMaterial({
+          color: 0x39ff14, depthTest: false, depthWrite: false,
+          transparent: true, opacity: 0.9, linewidth: 3
+        }));
+        middleRing.userData.isDefPointRing = true;
+        ptGroup.add(middleRing);
+
+        var innerGeo = createCircleGeometry(ringInnerRadius, RING_SEGMENTS);
+        var innerRing = new THREE.Line(innerGeo, new THREE.LineBasicMaterial({
+          color: 0x39ff14, depthTest: false, depthWrite: false,
+          transparent: true, opacity: 0.9, linewidth: 3
+        }));
+        innerRing.userData.isDefPointRing = true;
+        ptGroup.add(innerRing);
+
+        group.add(ptGroup);
+      }
+
+      constraint.visual = group;
+      constraintScene.add(group);
+      if (constraint.visible === false) group.visible = false;
+      updateConstraintVisuals();
+    }
+
+    // -- Update visual opacity based on active state --
+    function updateConstraintVisuals() {
+      for (var ci = 0; ci < constraints.length; ci++) {
+        var c = constraints[ci];
+        if (!c.visual) continue;
+        var isActive = c.id === activeConstraintId;
+        c.visual.traverse(function(obj) {
+          if (obj.material) {
+            if (obj.userData && obj.userData.isDefPointRing) {
+              obj.material.opacity = 0.9;
+            } else if (obj.isMesh) {
+              obj.material.opacity = isActive ? 0.2 : 0.08;
+            } else if (obj.isLine || obj.isLineSegments) {
+              obj.material.opacity = isActive ? 0.7 : 0.25;
+            }
+          }
+        });
+      }
+    }
+
+    // -- Rebuild constraint sidebar list --
+    function rebuildConstraintList() {
+      var listEl = document.getElementById('enable-constraint-list');
+      if (!listEl) return;
+      listEl.innerHTML = '';
+
+      for (var ci = 0; ci < constraints.length; ci++) {
+        (function(c) {
+          var row = document.createElement('div');
+          row.className = 'constraint-row' + (c.id === activeConstraintId ? ' active' : '');
+
+          var nameSpan = document.createElement('span');
+          nameSpan.className = 'constraint-name';
+          nameSpan.textContent = c.name;
+          row.appendChild(nameSpan);
+
+          var visBtn = document.createElement('button');
+          visBtn.className = 'btn-vis' + (c.visible === false ? ' hidden' : '');
+          visBtn.textContent = '\uD83D\uDC41';
+          visBtn.title = 'Toggle visibility';
+          visBtn.addEventListener('click', function() {
+            c.visible = !c.visible;
+            if (c.visual) c.visual.visible = c.visible;
+            visBtn.classList.toggle('hidden', !c.visible);
+          });
+          row.appendChild(visBtn);
+
+          var lockBtn = document.createElement('button');
+          lockBtn.className = 'btn-lock' + (c.locked ? ' locked' : '');
+          lockBtn.textContent = c.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+          lockBtn.title = c.locked ? 'Unlock points' : 'Lock points';
+          lockBtn.addEventListener('click', function() {
+            c.locked = !c.locked;
+            lockBtn.textContent = c.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+            lockBtn.title = c.locked ? 'Unlock points' : 'Lock points';
+            lockBtn.classList.toggle('locked', c.locked);
+          });
+          row.appendChild(lockBtn);
+
+          var activateBtn = document.createElement('button');
+          activateBtn.textContent = c.id === activeConstraintId ? 'Active' : 'Activate';
+          activateBtn.addEventListener('click', function() {
+            if (activeConstraintId === c.id) {
+              activeConstraintId = null;
+            } else {
+              activeConstraintId = c.id;
+            }
+            rebuildConstraintList();
+            updateConstraintVisuals();
+          });
+          row.appendChild(activateBtn);
+
+          var deleteBtn = document.createElement('button');
+          deleteBtn.textContent = '\u00d7';
+          deleteBtn.title = 'Delete constraint';
+          deleteBtn.addEventListener('click', function() {
+            deleteConstraint(c.id);
+          });
+          row.appendChild(deleteBtn);
+
+          listEl.appendChild(row);
+        })(constraints[ci]);
+      }
+      updateConstraintStatus();
+    }
+
+    // -- Delete a constraint --
+    function deleteConstraint(id) {
+      var idx = -1;
+      for (var i = 0; i < constraints.length; i++) {
+        if (constraints[i].id === id) { idx = i; break; }
+      }
+      if (idx === -1) return;
+      var c = constraints[idx];
+      if (c.visual) {
+        c.visual.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+        constraintScene.remove(c.visual);
+      }
+      if (activeConstraintId === id) activeConstraintId = null;
+      constraints.splice(idx, 1);
+      rebuildConstraintList();
+      updateConstraintVisuals();
+    }
+
+    // -- Update constraint status display --
+    function updateConstraintStatus() {
+      var el = document.getElementById('enable-constraint-status');
+      if (!el) return;
+      if (!activeConstraintId) { el.textContent = ''; return; }
+      var c = null;
+      for (var i = 0; i < constraints.length; i++) {
+        if (constraints[i].id === activeConstraintId) { c = constraints[i]; break; }
+      }
+      if (c) el.textContent = c.name + ' constraint active';
+    }
+
+    // -- Find nearest definition point to mouse (screen-space hit test) --
+    function findNearestDefinitionPoint(mousePixel) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 25; // pixel threshold
+      var bestResult = null;
+      for (var ci = 0; ci < constraints.length; ci++) {
+        var c = constraints[ci];
+        if (c.locked) continue;
+        for (var pi = 0; pi < c.points.length; pi++) {
+          var pt = c.points[pi].clone().project(camera);
+          var screenX = (pt.x * 0.5 + 0.5) * rect.width;
+          var screenY = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+          var dx = screenX - mousePixel.x;
+          var dy = screenY - mousePixel.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestResult = { constraint: c, pointIndex: pi };
+          }
+        }
+      }
+      return bestResult;
+    }
+
+    // -- Recompute constraint geometry after a point is moved --
+    function recomputeConstraint(c) {
+      if (c.type === 'plane') {
+        var v1 = new THREE.Vector3().subVectors(c.points[1], c.points[0]);
+        var v2 = new THREE.Vector3().subVectors(c.points[2], c.points[0]);
+        var normal = new THREE.Vector3().crossVectors(v1, v2);
+        if (normal.length() < 0.001) return false;
+        normal.normalize();
+        c.normal = normal;
+        c.plane = new THREE.Plane();
+        c.plane.setFromNormalAndCoplanarPoint(normal, c.points[0]);
+        c.centroid = new THREE.Vector3().add(c.points[0]).add(c.points[1]).add(c.points[2]).divideScalar(3);
+      } else if (c.type === 'axis') {
+        var dir = new THREE.Vector3().subVectors(c.points[1], c.points[0]);
+        if (dir.length() < 0.001) return false;
+        dir.normalize();
+        c.direction = dir;
+        c.origin = c.points[0].clone();
+      }
+      return true;
+    }
+
+    // -- Rebuild visual for a single constraint (dispose old, build new) --
+    function rebuildConstraintVisual(c) {
+      if (c.visual) {
+        c.visual.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+        constraintScene.remove(c.visual);
+        c.visual = null;
+      }
+      buildConstraintVisual(c);
+    }
+
+    // ===== MEMBER SKETCHING FUNCTIONS =====
+
+    // -- Start member pick mode --
+    function startMemberPick() {
+      if (MARK_MODE) toggleMarkMode(true);
+      if (constraintPickMode) cancelConstraintPick();
+      memberPickMode = true;
+      memberPickPoints = [];
+      clearMemberPickMarkers();
+      document.body.classList.add('member-pick-mode');
+      showToast('Pick endpoint (1/2) for member', 5000);
+      var btn = document.getElementById('btn-add-member');
+      if (btn) btn.classList.add('active');
+    }
+
+    // -- Handle a picked point during member definition --
+    function handleMemberPick(position) {
+      memberPickPoints.push(position.clone());
+      placeMemberPickMarker(position);
+      if (memberPickPoints.length < 2) {
+        showToast('Pick endpoint (2/2) for member', 5000);
+      } else {
+        finalizeMember();
+      }
+    }
+
+    // -- Cancel member pick mode --
+    function cancelMemberPick() {
+      memberPickMode = false;
+      memberPickPoints = [];
+      clearMemberPickMarkers();
+      document.body.classList.remove('member-pick-mode');
+      var btn = document.getElementById('btn-add-member');
+      if (btn) btn.classList.remove('active');
+      showToast('Member picking cancelled');
+    }
+
+    // -- Place temporary orange marker during member picking --
+    function placeMemberPickMarker(position) {
+      var ptGroup = new THREE.Group();
+      ptGroup.position.copy(position);
+      ptGroup.userData.isMemberPickMarker = true;
+      var mat = new THREE.LineBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, linewidth: 3
+      });
+      ptGroup.add(new THREE.Line(createCircleGeometry(ringOuterRadius, RING_SEGMENTS), mat.clone()));
+      ptGroup.add(new THREE.Line(createCircleGeometry(ringMiddleRadius, RING_SEGMENTS), mat.clone()));
+      ptGroup.add(new THREE.Line(createCircleGeometry(ringInnerRadius, RING_SEGMENTS), mat.clone()));
+      memberScene.add(ptGroup);
+      memberPickMarkers.push(ptGroup);
+    }
+
+    // -- Remove temporary member pick markers --
+    function clearMemberPickMarkers() {
+      for (var i = 0; i < memberPickMarkers.length; i++) {
+        var m = memberPickMarkers[i];
+        m.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+        memberScene.remove(m);
+      }
+      memberPickMarkers.length = 0;
+    }
+
+    // -- Finalize member from 2 picked points --
+    function finalizeMember() {
+      clearMemberPickMarkers();
+      var member = {
+        id: nextMemberId++,
+        name: 'M' + (nextMemberId - 1),
+        points: [memberPickPoints[0].clone(), memberPickPoints[1].clone()],
+        visual: null,
+        visible: true
+      };
+      buildMemberVisual(member);
+      members.push(member);
+      rebuildMemberList();
+      showToast(member.name + ' created');
+
+      memberPickMode = false;
+      memberPickPoints = [];
+      document.body.classList.remove('member-pick-mode');
+      var btn = document.getElementById('btn-add-member');
+      if (btn) btn.classList.remove('active');
+    }
+
+    // -- Create a label sprite with text --
+    function createLabelSprite(text, position) {
+      var canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 64;
+      var ctx = canvas.getContext('2d');
+      ctx.font = 'bold 36px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, 64, 32);
+      var texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      var mat = new THREE.SpriteMaterial({
+        map: texture, depthTest: false, depthWrite: false,
+        transparent: true, sizeAttenuation: false
+      });
+      var sprite = new THREE.Sprite(mat);
+      sprite.position.copy(position);
+      sprite.scale.set(0.08, 0.04, 1);
+      sprite.userData.isMemberLabel = true;
+      return sprite;
+    }
+
+    // -- Build 3D visual for a member --
+    function buildMemberVisual(member) {
+      var group = new THREE.Group();
+      group.name = 'member-' + member.id;
+
+      // Line between endpoints
+      var lineGeo = new THREE.BufferGeometry().setFromPoints(member.points);
+      var lineMat = new THREE.LineBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, linewidth: 2
+      });
+      group.add(new THREE.Line(lineGeo, lineMat));
+
+      // Endpoint markers (triple concentric circles in orange)
+      var endpointMat = new THREE.LineBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, linewidth: 3
+      });
+      for (var k = 0; k < 2; k++) {
+        var ptGroup = new THREE.Group();
+        ptGroup.position.copy(member.points[k]);
+        ptGroup.userData.isMemberEndpoint = true;
+        ptGroup.userData.pointIndex = k;
+        ptGroup.add(new THREE.Line(createCircleGeometry(ringOuterRadius, RING_SEGMENTS), endpointMat.clone()));
+        ptGroup.add(new THREE.Line(createCircleGeometry(ringMiddleRadius, RING_SEGMENTS), endpointMat.clone()));
+        ptGroup.add(new THREE.Line(createCircleGeometry(ringInnerRadius, RING_SEGMENTS), endpointMat.clone()));
+        group.add(ptGroup);
+      }
+
+      // Label sprite at midpoint
+      var midpoint = new THREE.Vector3().addVectors(member.points[0], member.points[1]).multiplyScalar(0.5);
+      var label = createLabelSprite(member.name, midpoint);
+      group.add(label);
+
+      member.visual = group;
+      if (member.visible === false) group.visible = false;
+      memberScene.add(group);
+    }
+
+    // -- Rebuild visual for a member (dispose old, build new) --
+    function recomputeMemberVisual(m) {
+      if (m.visual) {
+        m.visual.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        });
+        memberScene.remove(m.visual);
+        m.visual = null;
+      }
+      buildMemberVisual(m);
+    }
+
+    // -- Rebuild member sidebar list --
+    function rebuildMemberList() {
+      var listEl = document.getElementById('enable-member-list');
+      if (!listEl) return;
+      listEl.innerHTML = '';
+
+      for (var mi = 0; mi < members.length; mi++) {
+        (function(m) {
+          var row = document.createElement('div');
+          row.className = 'member-row';
+
+          var nameSpan = document.createElement('span');
+          nameSpan.className = 'member-name';
+          nameSpan.textContent = m.name;
+          nameSpan.title = 'Click to rename';
+          nameSpan.addEventListener('click', function() {
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.value = m.name;
+            input.style.cssText = 'width:60px;font:12px/1.3 sans-serif;background:#333;color:#fff;border:1px solid #666;border-radius:2px;padding:1px 3px;';
+            nameSpan.replaceWith(input);
+            input.focus();
+            input.select();
+            function commit() {
+              var val = input.value.trim();
+              if (val && val !== m.name) {
+                m.name = val;
+                recomputeMemberVisual(m);
+              }
+              rebuildMemberList();
+            }
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', function(ev) {
+              if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+              if (ev.key === 'Escape') { ev.preventDefault(); rebuildMemberList(); }
+            });
+          });
+          row.appendChild(nameSpan);
+
+          var visBtn = document.createElement('button');
+          visBtn.className = 'btn-vis' + (m.visible === false ? ' hidden' : '');
+          visBtn.textContent = '\uD83D\uDC41';
+          visBtn.title = 'Toggle visibility';
+          visBtn.addEventListener('click', function() {
+            m.visible = !m.visible;
+            if (m.visual) m.visual.visible = m.visible;
+            visBtn.classList.toggle('hidden', !m.visible);
+          });
+          row.appendChild(visBtn);
+
+          var deleteBtn = document.createElement('button');
+          deleteBtn.textContent = '\u00d7';
+          deleteBtn.title = 'Delete member';
+          deleteBtn.addEventListener('click', function() {
+            deleteMember(m.id);
+          });
+          row.appendChild(deleteBtn);
+
+          listEl.appendChild(row);
+        })(members[mi]);
+      }
+    }
+
+    // -- Delete a member --
+    function deleteMember(id) {
+      var idx = -1;
+      for (var i = 0; i < members.length; i++) {
+        if (members[i].id === id) { idx = i; break; }
+      }
+      if (idx === -1) return;
+      var m = members[idx];
+      if (m.visual) {
+        m.visual.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        });
+        memberScene.remove(m.visual);
+      }
+      members.splice(idx, 1);
+      rebuildMemberList();
+    }
+
+    // -- Find nearest member endpoint to mouse (screen-space hit test) --
+    function findNearestMemberEndpoint(mousePixel) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 25;
+      var bestResult = null;
+      for (var mi = 0; mi < members.length; mi++) {
+        var m = members[mi];
+        if (!m.visible) continue;
+        for (var pi = 0; pi < m.points.length; pi++) {
+          var pt = m.points[pi].clone().project(camera);
+          var screenX = (pt.x * 0.5 + 0.5) * rect.width;
+          var screenY = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+          var dx = screenX - mousePixel.x;
+          var dy = screenY - mousePixel.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestResult = { member: m, pointIndex: pi };
+          }
+        }
+      }
+      return bestResult;
+    }
+
+    // -- Export members as DXF --
+    function exportMembersDXF() {
+      if (members.length === 0) {
+        showToast('No members to export');
+        return;
+      }
+      var lines = [];
+      lines.push('0', 'SECTION', '2', 'TABLES');
+      lines.push('0', 'TABLE', '2', 'LAYER', '70', '' + members.length);
+      for (var i = 0; i < members.length; i++) {
+        lines.push('0', 'LAYER', '2', members[i].name, '70', '0', '62', '7', '6', 'CONTINUOUS');
+      }
+      lines.push('0', 'ENDTAB');
+      lines.push('0', 'ENDSEC');
+      lines.push('0', 'SECTION', '2', 'ENTITIES');
+      for (var j = 0; j < members.length; j++) {
+        var m = members[j];
+        lines.push('0', 'LINE', '8', m.name);
+        lines.push('10', '' + m.points[0].x, '20', '' + m.points[0].y, '30', '' + m.points[0].z);
+        lines.push('11', '' + m.points[1].x, '21', '' + m.points[1].y, '31', '' + m.points[1].z);
+      }
+      lines.push('0', 'ENDSEC');
+      lines.push('0', 'EOF');
+      var content = lines.join('\n');
+      var blob = new Blob([content], { type: 'application/dxf' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'members.dxf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Exported ' + members.length + ' member(s) to DXF');
+    }
+
+    // -- Render constraint + member visuals in overlay pass --
+    viewer.addEventListener("render.pass.perspective_overlay", function(e) {
+      var camera = viewer.scene.getActiveCamera();
+
+      // Constraint visuals
+      if (constraintScene.children.length > 0) {
+        for (var ci = 0; ci < constraints.length; ci++) {
+          var c = constraints[ci];
+          if (!c.visual) continue;
+          c.visual.traverse(function(obj) {
+            if (obj.userData && obj.userData.isDefinitionPoint) {
+              obj.quaternion.copy(camera.quaternion);
+            }
+          });
+        }
+        viewer.renderer.render(constraintScene, camera);
+      }
+
+      // Member visuals
+      if (memberScene.children.length > 0) {
+        for (var mi = 0; mi < members.length; mi++) {
+          var m = members[mi];
+          if (!m.visual) continue;
+          m.visual.traverse(function(obj) {
+            if (obj.userData && obj.userData.isMemberEndpoint) {
+              obj.quaternion.copy(camera.quaternion);
+            }
+          });
+        }
+        // Billboard pick markers too
+        for (var pi = 0; pi < memberPickMarkers.length; pi++) {
+          memberPickMarkers[pi].quaternion.copy(camera.quaternion);
+        }
+        viewer.renderer.render(memberScene, camera);
+      }
+
+      // Measurement point labels — offset above point, scale, render
+      if (measureLabelScene.children.length > 0) {
+        var cw = viewer.renderer.getSize(new THREE.Vector2()).width;
+        var ch = viewer.renderer.getSize(new THREE.Vector2()).height;
+        measurePointLabels.forEach(function(labels, measure) {
+          for (var li = 0; li < labels.length; li++) {
+            var lbl = labels[li];
+            var pt = measure.points[li];
+            if (!pt) continue;
+            var worldPos = pt.position ? pt.position : pt;
+            var dist = camera.position.distanceTo(worldPos);
+            var pr = Potree.Utils.projectedRadius(1, camera, dist, cw, ch);
+            var s = (70 / pr);
+            lbl.scale.set(s, s, s);
+
+            // Offset label above the point in screen space
+            var screenPos = worldPos.clone().project(camera);
+            screenPos.x = (screenPos.x + 1) * cw / 2;
+            screenPos.y = (-screenPos.y + 1) * ch / 2;
+            screenPos.y -= 30; // 30 pixels above the dot
+            var labelPos = new THREE.Vector3(
+              (screenPos.x / cw) * 2 - 1,
+              -(screenPos.y / ch) * 2 + 1,
+              0.5);
+            labelPos.unproject(camera);
+            var dir = labelPos.sub(camera.position).normalize();
+            lbl.position.copy(camera.position.clone().add(dir.multiplyScalar(dist)));
+          }
+        });
+        viewer.renderer.render(measureLabelScene, camera);
+      }
+    });
+
+    // -- Toggle mark mode --
+    function toggleMarkMode(forceOff) {
+      if (forceOff) {
+        MARK_MODE = false;
+      } else {
+        MARK_MODE = !MARK_MODE;
+      }
+      if (MARK_MODE && constraintPickMode) cancelConstraintPick();
+      if (MARK_MODE && memberPickMode) cancelMemberPick();
+      document.body.classList.toggle('mark-mode', MARK_MODE);
+      showToast(MARK_MODE ? "Mark mode ON  (click to mark, X or ESC to exit)" : "Mark mode OFF");
+      // Update button state
+      const btn = document.getElementById('btn-mark-mode');
+      if (btn) btn.classList.toggle('active', MARK_MODE);
+    }
+
+    // ===== MEASUREMENT POINT LABEL FUNCTIONS =====
+
+    // -- Create a Potree TextSprite label for measurement points --
+    function createMeasurePointLabel(text, position) {
+      var label = new Potree.TextSprite(text);
+      label.setTextColor({r: 255, g: 0, b: 0, a: 1.0});
+      label.setBorderColor({r: 0, g: 0, b: 0, a: 0.0});
+      label.setBackgroundColor({r: 0, g: 0, b: 0, a: 0.0});
+      label.fontsize = 16;
+      label.material.depthTest = false;
+      label.material.depthWrite = false;
+      label.material.transparent = true;
+      label.position.copy(position);
+      label.userData.isMeasureLabel = true;
+      return label;
+    }
+
+    // -- Get the P-name for a given point index within a measure --
+    function getPointName(measure, idx) {
+      var nums = measurePointNumbers.get(measure);
+      if (nums && idx < nums.length) return 'P' + nums[idx];
+      return 'P?';
+    }
+
+    // -- Sync labels for a measurement (create/remove/update) --
+    function syncMeasurePointLabels(measure) {
+      var labels = measurePointLabels.get(measure);
+      if (!labels) { labels = []; measurePointLabels.set(measure, labels); }
+      var nums = measurePointNumbers.get(measure);
+      if (!nums) { nums = []; measurePointNumbers.set(measure, nums); }
+
+      var pts = measure.points;
+
+      // Reclaim P-numbers for removed ghost points (e.g. ESC during measurement)
+      while (nums.length > pts.length) {
+        var removed = nums.pop();
+        // Reclaim if it was the very latest assigned number
+        if (removed === nextPointNumber - 1) {
+          nextPointNumber--;
+        }
+      }
+
+      // Assign global P-numbers to any new points
+      while (nums.length < pts.length) {
+        nums.push(nextPointNumber++);
+      }
+
+      // Remove excess labels
+      while (labels.length > pts.length) {
+        var old = labels.pop();
+        measureLabelScene.remove(old);
+        old.traverse(function(obj) {
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        });
+      }
+      // Create missing labels
+      while (labels.length < pts.length) {
+        var idx = labels.length;
+        var pos = pts[idx].position ? pts[idx].position.clone() : pts[idx].clone();
+        var lbl = createMeasurePointLabel('P' + nums[idx], pos);
+        lbl.visible = measure.visible;
+        measureLabelScene.add(lbl);
+        labels.push(lbl);
+      }
+      // Update positions
+      for (var i = 0; i < labels.length; i++) {
+        var p = pts[i].position ? pts[i].position : pts[i];
+        labels[i].position.copy(p);
+        labels[i].visible = measure.visible;
+      }
+    }
+
+    // -- Remove all labels for a measurement --
+    function removeMeasurePointLabels(measure) {
+      var labels = measurePointLabels.get(measure);
+      if (labels) {
+        for (var i = 0; i < labels.length; i++) {
+          measureLabelScene.remove(labels[i]);
+          labels[i].traverse(function(obj) {
+            if (obj.material) {
+              if (obj.material.map) obj.material.map.dispose();
+              obj.material.dispose();
+            }
+          });
+        }
+        measurePointLabels.delete(measure);
+      }
+      measurePointNumbers.delete(measure);
+    }
+
+    // -- Hook measurement events for labels + sidebar --
+    var _measListTimer = null;
+    function debouncedRebuildMeasList() {
+      clearTimeout(_measListTimer);
+      _measListTimer = setTimeout(rebuildMeasurementList, 80);
+    }
+
+    function setupMeasurementLabelEvents() {
+      viewer.scene.addEventListener('measurement_added', function(e) {
+        var m = e.measurement;
+        syncMeasurePointLabels(m);
+        rebuildMeasurementList();
+        m.addEventListener('marker_added', function() {
+          syncMeasurePointLabels(m);
+          debouncedRebuildMeasList();
+        });
+        m.addEventListener('marker_moved', function() {
+          syncMeasurePointLabels(m);
+          debouncedRebuildMeasList();
+        });
+        m.addEventListener('marker_removed', function() {
+          syncMeasurePointLabels(m);
+          debouncedRebuildMeasList();
+        });
+      });
+      viewer.scene.addEventListener('measurement_removed', function(e) {
+        removeMeasurePointLabels(e.measurement);
+        rebuildMeasurementList();
+      });
+    }
+
+    // ===== PERSISTENT MEASUREMENT SIDEBAR LIST =====
+
+    function rebuildMeasurementList() {
+      var listEl = document.getElementById('enable-measurement-list');
+      if (!listEl) return;
+      var measurements = viewer.scene.measurements || [];
+      // Only show distance measurements
+      var distMeasures = [];
+      for (var i = 0; i < measurements.length; i++) {
+        var m = measurements[i];
+        if (m.showDistances && !m.showArea && !m.showAngles) distMeasures.push(m);
+      }
+
+      if (distMeasures.length === 0) {
+        listEl.innerHTML = '';
+        return;
+      }
+
+      var html = '';
+      for (var mi = 0; mi < distMeasures.length; mi++) {
+        var measure = distMeasures[mi];
+        var nums = measurePointNumbers.get(measure);
+        var pts = measure.points;
+        if (!nums || pts.length < 2) {
+          // Show placeholder for incomplete measurement
+          var pName = (nums && nums.length > 0) ? 'P' + nums[0] : '...';
+          html += '<div class="enable-meas-item">' +
+            '<div class="meas-header"><span class="meas-title">' + pName + '... (picking)</span></div>' +
+            '</div>';
+          continue;
+        }
+
+        var firstName = 'P' + nums[0];
+        var lastName = 'P' + nums[nums.length - 1];
+        html += '<div class="enable-meas-item">' +
+          '<div class="meas-header">' +
+          '<span class="meas-title">' + firstName + ' \u2192 ' + lastName + '</span>' +
+          '<button class="meas-delete" data-meas-idx="' + mi + '" title="Delete measurement">\u00d7</button>' +
+          '</div>';
+
+        var total3D = 0, totalXY = 0, totalZ = 0;
+        for (var si = 0; si < pts.length - 1; si++) {
+          var a = pts[si].position ? pts[si].position : pts[si];
+          var b = pts[si + 1].position ? pts[si + 1].position : pts[si + 1];
+          var dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+          var d3d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          var dxy = Math.sqrt(dx * dx + dy * dy);
+          var absZ = Math.abs(dz);
+          var zSign = dz >= 0 ? '+' : '-';
+          total3D += d3d; totalXY += dxy; totalZ += absZ;
+
+          html += '<div class="enable-meas-seg">' +
+            '<span class="seg-name">P' + nums[si] + '\u2192P' + nums[si + 1] + '</span>' +
+            '<span class="seg-vals">3D:' + d3d.toFixed(3) + ' XY:' + dxy.toFixed(3) + ' Z:' + absZ.toFixed(3) + '(' + zSign + ')</span>' +
+            '</div>';
+        }
+        // Total row if multi-segment
+        if (pts.length > 2) {
+          html += '<div class="enable-meas-seg seg-total">' +
+            '<span class="seg-name">Total</span>' +
+            '<span class="seg-vals">3D:' + total3D.toFixed(3) + ' XY:' + totalXY.toFixed(3) + ' Z:' + totalZ.toFixed(3) + '</span>' +
+            '</div>';
+        }
+        html += '</div>';
+      }
+      listEl.innerHTML = html;
+
+      // Bind delete buttons
+      listEl.querySelectorAll('.meas-delete').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var idx = parseInt(btn.getAttribute('data-meas-idx'));
+          if (distMeasures[idx]) {
+            viewer.scene.removeMeasurement(distMeasures[idx]);
+          }
+        });
+      });
+    }
+
+    // ===== EXPORT ALL MEASUREMENTS TO TXT =====
+    function exportAllMeasurements() {
+      var measurements = viewer.scene.measurements || [];
+      var distMeasures = [];
+      for (var i = 0; i < measurements.length; i++) {
+        var m = measurements[i];
+        if (m.showDistances && !m.showArea && !m.showAngles && m.points.length >= 2) {
+          distMeasures.push(m);
+        }
+      }
+      if (distMeasures.length === 0) { showToast('No measurements to export'); return; }
+
+      var lines = [];
+      lines.push('Measurements Export');
+      lines.push('Total measurements: ' + distMeasures.length);
+      lines.push('');
+
+      for (var mi = 0; mi < distMeasures.length; mi++) {
+        var measure = distMeasures[mi];
+        var nums = measurePointNumbers.get(measure) || [];
+        var pts = measure.points;
+
+        var firstName = nums.length > 0 ? 'P' + nums[0] : 'P?';
+        var lastName = nums.length > 0 ? 'P' + nums[nums.length - 1] : 'P?';
+        lines.push('=== Measurement ' + (mi + 1) + ': ' + firstName + ' -> ' + lastName + ' ===');
+        lines.push('');
+
+        lines.push('Point Coordinates:');
+        for (var pi = 0; pi < pts.length; pi++) {
+          var p = pts[pi].position ? pts[pi].position : pts[pi];
+          var pn = pi < nums.length ? 'P' + nums[pi] : 'P?';
+          lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
+        }
+        lines.push('');
+
+        lines.push('Segment Distances:');
+        var total3D = 0, totalXY = 0, totalZ = 0;
+        for (var si = 0; si < pts.length - 1; si++) {
+          var a = pts[si].position ? pts[si].position : pts[si];
+          var b = pts[si + 1].position ? pts[si + 1].position : pts[si + 1];
+          var dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+          var d3d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          var dxy = Math.sqrt(dx * dx + dy * dy);
+          var absZ = Math.abs(dz);
+          var zSign = dz >= 0 ? '(+)' : '(-)';
+          total3D += d3d; totalXY += dxy; totalZ += absZ;
+          var sn1 = si < nums.length ? 'P' + nums[si] : 'P?';
+          var sn2 = (si + 1) < nums.length ? 'P' + nums[si + 1] : 'P?';
+          lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + d3d.toFixed(3) + '  XY: ' + dxy.toFixed(3) + '  Z: ' + absZ.toFixed(3) + ' ' + zSign);
+        }
+        lines.push('');
+        lines.push('Totals:  3D: ' + total3D.toFixed(3) + '  XY: ' + totalXY.toFixed(3) + '  Z: ' + totalZ.toFixed(3));
+        lines.push('');
+      }
+
+      var content = lines.join('\n');
+      var blob = new Blob([content], { type: 'text/plain' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'measurements.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Exported ' + distMeasures.length + ' measurement(s) to .txt');
+    }
+
+    // -- Inject sidebar buttons once GUI is ready --
+    function injectMarkButtons() {
+      const $tools = $('#tools');
+      if ($tools.length === 0) { setTimeout(injectMarkButtons, 200); return; }
+
+      const html = '<div id="enable-mark-buttons">' +
+        '<button id="btn-mark-mode" title="X marks the spot (shortcut: X)">Mark Point</button>' +
+        '<button id="btn-clear-marks" title="Clear all markers (shortcut: Z)">Clear Marks</button>' +
+        '</div>' +
+        '<div id="enable-constraint-buttons">' +
+        '<button id="btn-set-plane" title="Define a constraint plane (3 points)">Set Plane</button>' +
+        '<button id="btn-set-axis" title="Define a constraint axis (2 points)">Set Axis</button>' +
+        '</div>' +
+        '<div id="enable-constraint-list"></div>' +
+        '<div id="enable-constraint-status"></div>' +
+        '<div id="enable-member-buttons">' +
+        '<button id="btn-add-member" title="Sketch a structural member (shortcut: M)">Add Member</button>' +
+        '</div>' +
+        '<div id="enable-member-list"></div>' +
+        '<div id="enable-member-buttons-export">' +
+        '<button id="btn-export-dxf" title="Export all members as DXF">Export DXF</button>' +
+        '</div>' +
+        '<div id="enable-measurement-list"></div>' +
+        '<div id="enable-measurement-buttons-export">' +
+        '<button id="btn-export-measurements" title="Export all measurements to .txt">Export Measurements (.txt)</button>' +
+        '</div>';
+      $tools.after(html);
+
+      document.getElementById('btn-mark-mode').addEventListener('click', function() { toggleMarkMode(); });
+      document.getElementById('btn-clear-marks').addEventListener('click', function() { clearAllMarkers(); });
+      document.getElementById('btn-set-plane').addEventListener('click', function() { startConstraintPick('plane'); });
+      document.getElementById('btn-set-axis').addEventListener('click', function() { startConstraintPick('axis'); });
+      document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
+      document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
+      document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
+    }
+    injectMarkButtons();
+
+    // -- Setup measurement point labels (immediate — viewer.scene exists from init) --
+    setupMeasurementLabelEvents();
+
+    // -- Click handler with drag guard + constraint point dragging --
+    let mouseDownPos = null;
+
+    renderArea.addEventListener('mousedown', function(e) {
+      // Check if clicking near a member endpoint (for dragging) — check before constraints
+      if (e.button === 0 && members.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
+        var rect = renderArea.getBoundingClientRect();
+        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var memberHit = findNearestMemberEndpoint(mousePixel);
+        if (memberHit) {
+          memberDragActive = true;
+          memberDragInfo = memberHit;
+          document.body.classList.add('member-drag');
+          e.stopPropagation();
+          mouseDownPos = null;
+          return;
+        }
+      }
+      // Check if clicking near a constraint definition point (for dragging)
+      if (e.button === 0 && constraints.length > 0 && !constraintPickMode && !MARK_MODE && !memberPickMode) {
+        var rect = renderArea.getBoundingClientRect();
+        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var hit = findNearestDefinitionPoint(mousePixel);
+        if (hit) {
+          constraintDragActive = true;
+          constraintDragInfo = hit;
+          document.body.classList.add('constraint-drag');
+          e.stopPropagation();
+          mouseDownPos = null;
+          return;
+        }
+      }
+      if (!MARK_MODE && !constraintPickMode && !memberPickMode) return;
+      mouseDownPos = { x: e.clientX, y: e.clientY };
+    }, true);
+
+    renderArea.addEventListener('mousemove', function(e) {
+      // Member endpoint dragging
+      if (memberDragActive && memberDragInfo) {
+        var rect = renderArea.getBoundingClientRect();
+        var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var camera = viewer.scene.getActiveCamera();
+        var pickResult = _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true });
+        if (pickResult && pickResult.location) {
+          memberDragInfo.member.points[memberDragInfo.pointIndex] = pickResult.location.clone();
+          recomputeMemberVisual(memberDragInfo.member);
+        }
+        return;
+      }
+      // Constraint definition point dragging
+      if (!constraintDragActive || !constraintDragInfo) return;
+      var rect = renderArea.getBoundingClientRect();
+      var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      var camera = viewer.scene.getActiveCamera();
+      var pickResult = _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true });
+      if (pickResult && pickResult.location) {
+        var c = constraintDragInfo.constraint;
+        c.points[constraintDragInfo.pointIndex] = pickResult.location.clone();
+        if (recomputeConstraint(c)) {
+          rebuildConstraintVisual(c);
+        }
+      }
+    }, true);
+
+    renderArea.addEventListener('mouseup', function(e) {
+      // Finalize member endpoint drag
+      if (memberDragActive) {
+        memberDragActive = false;
+        memberDragInfo = null;
+        document.body.classList.remove('member-drag');
+        return;
+      }
+
+      // Finalize constraint point drag
+      if (constraintDragActive) {
+        constraintDragActive = false;
+        constraintDragInfo = null;
+        document.body.classList.remove('constraint-drag');
+        return;
+      }
+
+      if ((!MARK_MODE && !constraintPickMode && !memberPickMode) || !mouseDownPos) return;
+
+      // Drag guard: only place marker if mouse moved < 5px
+      const dx = e.clientX - mouseDownPos.x;
+      const dy = e.clientY - mouseDownPos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      mouseDownPos = null;
+      if (dist > 5) return;
+
+      // Pixel coordinates relative to the renderer canvas (what Potree expects)
+      const rect = renderArea.getBoundingClientRect();
+      const mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+      // Pick point using Potree's own utility (same as measurement tool uses)
+      const camera = viewer.scene.getActiveCamera();
+      const pickResult = Potree.Utils.getMousePointCloudIntersection(
+        mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
+      );
+
+      if (pickResult && pickResult.location) {
+        if (memberPickMode) {
+          handleMemberPick(pickResult.location);
+        } else if (constraintPickMode) {
+          handleConstraintPick(pickResult.location);
+        } else {
+          placeMarker(pickResult.location);
+        }
+      } else {
+        showToast("No point found under cursor");
+      }
+    }, true);
+
+    // ----- load the point cloud -----
+    Potree.loadPointCloud(cloudURL, pointCloudID).then((e) => {
+      const pc    = e.pointcloud;
+      const scene = viewer.scene;
+      scene.addPointCloud(pc);
+
+      // material defaults
+      pc.material.size = 1.0;
+      pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+      pc.material.shape = Potree.PointShape.CIRCLE;
+
+      // Fit camera to content on first load
+      viewer.fitToScreen();
+
+      // ===== Auto-scale marker size based on bounding box =====
+      try {
+        pc.updateMatrixWorld(true);
+        let worldBB;
+        if (typeof pc.getBoundingBoxWorld === "function") {
+          worldBB = pc.getBoundingBoxWorld(new THREE.Box3());
+        } else if (pc.pcoGeometry && pc.pcoGeometry.tightBoundingBox) {
+          worldBB = pc.pcoGeometry.tightBoundingBox.clone().applyMatrix4(pc.matrixWorld);
+        } else {
+          worldBB = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
+        }
+        const size = worldBB.getSize(new THREE.Vector3());
+        const diagonal = Math.sqrt(size.x * size.x + size.y * size.y + size.z * size.z);
+        ringOuterRadius = diagonal * 0.002;      // visible zoomed out
+        ringMiddleRadius = diagonal * 0.0005;   // mid-range
+        ringInnerRadius = diagonal * 0.00012;    // ~single point sized
+        if (ringOuterRadius < 0.02) ringOuterRadius = 0.02;
+        if (ringMiddleRadius < 0.005) ringMiddleRadius = 0.005;
+        if (ringInnerRadius < 0.001) ringInnerRadius = 0.001;
+      } catch (err) {
+        console.warn('Marker size auto-scale failed, using default:', err);
+      }
+
+      // ===== INITIAL, LOCKED CLIP BOX (robust across forks) =====
+      try {
+        // World-space AABB of the cloud
+        pc.updateMatrixWorld(true);
+        let worldBB;
+        if (typeof pc.getBoundingBoxWorld === "function") {
+          worldBB = pc.getBoundingBoxWorld(new THREE.Box3());
+        } else if (pc.pcoGeometry && pc.pcoGeometry.tightBoundingBox) {
+          worldBB = pc.pcoGeometry.tightBoundingBox.clone().applyMatrix4(pc.matrixWorld);
+        } else {
+          worldBB = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
+        }
+        const center = worldBB.getCenter(new THREE.Vector3());
+        const size   = worldBB.getSize(new THREE.Vector3());
+
+        let clipBox;
+
+        // Preferred: use clippingTool if present
+        if (viewer.clippingTool && typeof viewer.clippingTool.addBox === "function") {
+          clipBox = viewer.clippingTool.addBox();
+          clipBox.clip = true;
+          clipBox.setPosition(center);
+          clipBox.scale.set(size.x, size.y, size.z);
+        } else if (typeof Potree.BoxVolume === "function") {
+          // Fallback: plain BoxVolume
+          clipBox = new Potree.BoxVolume();
+          clipBox.clip = true;
+          clipBox.position.copy(center);
+          clipBox.scale.set(size.x, size.y, size.z);
+          scene.addVolume(clipBox);
+        } else {
+          console.warn("No BoxVolume/ClippingTool available in this build; skipping clip box.");
+        }
+
+        if (clipBox) {
+          clipBox.name = "Initial Crop";
+          clipBox.visible = true;
+          clipBox.userData = clipBox.userData || {};
+          clipBox.userData.persistent = true;     // mark as locked
+
+          // Disallow editing if API exists
+          if (typeof clipBox.setEditable === "function") clipBox.setEditable(false);
+
+          viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+          viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+
+          // Prevent deletion through scene API
+          const originalRemoveVolume = scene.removeVolume ? scene.removeVolume.bind(scene) : null;
+          if (originalRemoveVolume) {
+            scene.removeVolume = (vol) => {
+              if (vol && vol.userData && vol.userData.persistent) return; // ignore
+              return originalRemoveVolume(vol);
+            };
+          }
+
+          // Prevent Delete/Backspace removal
+          document.addEventListener("keydown", (ev) => {
+            if (ev.key === "Delete" || ev.key === "Backspace") {
+              const ih = viewer.inputHandler;
+              const sel = (ih && (ih.selected || ih.selection)) ? Array.from(ih.selected || ih.selection) : [];
+              const hasLocked = sel.some(s => s && s.userData && s.userData.persistent);
+              if (hasLocked) { ev.preventDefault(); ev.stopPropagation(); }
+            }
+          }, true);
+        }
+      } catch (err) {
+        console.warn('Clip box init failed:', err);
+      }
+    }).catch((err) => {
+      console.error(err);
+      alert('Failed to load point cloud: ' + cloudURL);
+    });
+
+    // ----- keyboard helpers -----
+    window.addEventListener('keydown', (ev) => {
+      // Existing shortcuts
+      if (ev.key === 'e' || ev.key === 'E') viewer.setEDLEnabled(!viewer.getEDLEnabled()); // toggle EDL
+      if (ev.key === '+' || ev.key === '=') viewer.setPointBudget(viewer.getPointBudget() + 250000);
+      if (ev.key === '-' || ev.key === '_') viewer.setPointBudget(Math.max(250000, viewer.getPointBudget() - 250000));
+      if (ev.key === 'f' || ev.key === 'F') viewer.fitToScreen();
+
+      // Mark point shortcuts
+      if (ev.key === 'x' || ev.key === 'X') toggleMarkMode();
+      if (ev.key === 'z' || ev.key === 'Z') clearAllMarkers();
+      // Member shortcut
+      if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+
+      if (ev.key === 'Escape') {
+        if (constraintPickMode) cancelConstraintPick();
+        else if (memberPickMode) cancelMemberPick();
+        else if (MARK_MODE) toggleMarkMode(true);
+        // Cancel any active Potree measurement insertion
+        viewer.dispatchEvent({ type: 'cancel_insertions' });
+      }
+    });
+  })();
+  </script>
+</body>
+</html>

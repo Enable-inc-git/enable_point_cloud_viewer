@@ -54305,7 +54305,7 @@
 						unitCode = this.lengthUnitDisplay.code;
 					}
 
-					const fmt = v => Utils.addCommas(v.toFixed(2));
+					const fmt = v => Utils.addCommas(v.toFixed(3));
 					const text =
 						`3D: ${fmt(len3D)} ${unitCode}\n` +
 						`XY: ${fmt(lenXY)} ${unitCode}\n` +
@@ -81858,6 +81858,7 @@ ENDSEC
 			this.radiusDelta = 0;
 
 			this.doubleClockZoomEnabled = true;
+			this._zoomTarget = null;
 
 			this.tweens = [];
 
@@ -81898,6 +81899,17 @@ ENDSEC
 				let resolvedRadius = this.scene.view.radius + this.radiusDelta;
 
 				this.radiusDelta += -e.delta * resolvedRadius * 0.1;
+
+				// Zoom-to-cursor: capture intersection under mouse
+				let I = Utils.getMousePointCloudIntersection(
+					this.viewer.inputHandler.mouse,
+					this.scene.getActiveCamera(),
+					this.viewer,
+					this.scene.pointclouds,
+					{pickClipped: true});
+				if (I) {
+					this._zoomTarget = I.location.clone();
+				}
 
 				this.stopTweens();
 			};
@@ -81978,8 +81990,9 @@ ENDSEC
 			this.pitchDelta = 0;
 			this.radiusDelta = 0;
 			this.panDelta.set(0, 0);
+			this._zoomTarget = null;
 		}
-		
+
 		zoomToLocation(mouse){
 			let camera = this.scene.getActiveCamera();
 			
@@ -82081,17 +82094,31 @@ ENDSEC
 				view.pan(px, py);
 			}
 
-			{ // apply zoom
+			{ // apply zoom (with zoom-to-cursor)
 				let progression = Math.min(1, this.fadeFactor * delta);
 
-				// let radius = view.radius + progression * this.radiusDelta * view.radius * 0.1;
-				let radius = view.radius + progression * this.radiusDelta;
+				let zoomAmount = progression * this.radiusDelta;
+				let oldRadius = view.radius;
+				let radius = oldRadius + zoomAmount;
 
+				let pivot = view.getPivot();
 				let V = view.direction.multiplyScalar(-radius);
-				let position = new Vector3().addVectors(view.getPivot(), V);
+				let position = new Vector3().addVectors(pivot, V);
 				view.radius = radius;
-
 				view.position.copy(position);
+
+				// Shift pivot toward cursor intersection point
+				if (this._zoomTarget && zoomAmount !== 0 && oldRadius > 0) {
+					let fraction = Math.abs(zoomAmount) / oldRadius;
+					let sign = zoomAmount < 0 ? 1 : -1;
+					let shift = new Vector3().subVectors(this._zoomTarget, pivot).multiplyScalar(fraction * sign);
+					view.position.add(shift);
+				}
+
+				// Clear zoom target when deceleration completes
+				if (Math.abs(this.radiusDelta) < 0.001) {
+					this._zoomTarget = null;
+				}
 			}
 
 			{
