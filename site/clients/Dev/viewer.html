@@ -765,8 +765,20 @@
         });
         var planeMesh = new THREE.Mesh(planeGeo, planeMat);
         planeMesh.position.copy(constraint.centroid);
-        var up = new THREE.Vector3(0, 0, 1);
-        var quat = new THREE.Quaternion().setFromUnitVectors(up, constraint.normal);
+        // Build rotation so quad edges stay aligned with world axes.
+        // PlaneGeometry face normal is local Z; local X/Y are the quad edges.
+        var n = constraint.normal;
+        // Project world-Z onto the plane to get a vertical-ish "up" edge.
+        // If the plane is nearly horizontal (normal ~ Z), use world-X instead.
+        var worldRef = (Math.abs(n.z) < 0.9)
+          ? new THREE.Vector3(0, 0, 1)
+          : new THREE.Vector3(1, 0, 0);
+        // localX = horizontal edge in the plane
+        var localX = new THREE.Vector3().crossVectors(worldRef, n).normalize();
+        // localY = vertical edge in the plane
+        var localY = new THREE.Vector3().crossVectors(n, localX).normalize();
+        var rotMat = new THREE.Matrix4().makeBasis(localX, localY, n);
+        var quat = new THREE.Quaternion().setFromRotationMatrix(rotMat);
         planeMesh.quaternion.copy(quat);
         group.add(planeMesh);
 
