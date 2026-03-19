@@ -1531,6 +1531,7 @@
       if (measureLabelScene.children.length > 0) {
         var cw = viewer.renderer.getSize(new THREE.Vector2()).width;
         var ch = viewer.renderer.getSize(new THREE.Vector2()).height;
+        var isOrtho = camera instanceof THREE.OrthographicCamera;
         measurePointLabels.forEach(function(labels, measure) {
           for (var li = 0; li < labels.length; li++) {
             var lbl = labels[li];
@@ -1544,16 +1545,23 @@
 
             // Offset label above the point in screen space
             var screenPos = worldPos.clone().project(camera);
-            screenPos.x = (screenPos.x + 1) * cw / 2;
-            screenPos.y = (-screenPos.y + 1) * ch / 2;
-            screenPos.y -= 30; // 30 pixels above the dot
-            var labelPos = new THREE.Vector3(
-              (screenPos.x / cw) * 2 - 1,
-              -(screenPos.y / ch) * 2 + 1,
-              0.5);
-            labelPos.unproject(camera);
-            var dir = labelPos.sub(camera.position).normalize();
-            lbl.position.copy(camera.position.clone().add(dir.multiplyScalar(dist)));
+            var screenX = (screenPos.x + 1) * cw / 2;
+            var screenY = (-screenPos.y + 1) * ch / 2;
+            screenY -= 30; // 30 pixels above the dot
+
+            // Unproject back to world — works for both perspective and ortho
+            var ndcX = (screenX / cw) * 2 - 1;
+            var ndcY = -(screenY / ch) * 2 + 1;
+            var nearPoint = new THREE.Vector3(ndcX, ndcY, screenPos.z).unproject(camera);
+
+            if (isOrtho) {
+              // For ortho, unprojected point is already at the right world position
+              lbl.position.copy(nearPoint);
+            } else {
+              // For perspective, project along the ray from camera to get correct depth
+              var dir = nearPoint.sub(camera.position).normalize();
+              lbl.position.copy(camera.position.clone().add(dir.multiplyScalar(dist)));
+            }
           }
         });
         viewer.renderer.render(measureLabelScene, camera);
@@ -2152,8 +2160,7 @@
       if (ev.key === 'm' || ev.key === 'M') startMemberPick();
 
       if (ev.key === 'Escape') {
-        if (planeOrthoSlab) exitPlaneOrtho();
-        else if (constraintPickMode) cancelConstraintPick();
+        if (constraintPickMode) cancelConstraintPick();
         else if (memberPickMode) cancelMemberPick();
         else if (MARK_MODE) toggleMarkMode(true);
         // Cancel any active Potree measurement insertion
