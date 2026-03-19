@@ -259,6 +259,16 @@
       text-decoration: underline;
     }
 
+    /* ===== Session save/load buttons ===== */
+    #enable-session-buttons { margin: 6px 0; display: flex; gap: 6px; }
+    #enable-session-buttons button {
+      flex: 1; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-session-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+
     /* ===== Measurement panel overrides ===== */
     /* Hide native raw XYZ + native distance table in measurement panel */
     .measurement_content .coordinates_table_container,
@@ -556,6 +566,7 @@
 
       markerScene.add(group);
       markedPoints.push(group);
+      undoStack.push({ type: 'mark' });
       showToast("Marked point (" + markedPoints.length + " total)");
     }
 
@@ -606,12 +617,99 @@
     let nextPointNumber = 1;                    // global P-number, never resets
     const measurePointNumbers = new Map();      // Map<Measure, number[]> — P-numbers per measurement
 
+    // ===== SNAP THRESHOLDS (screen pixels) =====
+    var SNAP_THRESHOLD_MEMBER = 18;      // for member/constraint picks
+    var SNAP_THRESHOLD_MEASUREMENT = 10; // for Potree measurement picks (gentler)
+
+    // ===== UNDO STACK =====
+    const undoStack = [];
+
+    // -- Undo last action --
+    function performUndo() {
+      if (undoStack.length === 0) { showToast('Nothing to undo'); return; }
+      var action = undoStack.pop();
+
+      if (action.type === 'mark') {
+        // Remove last marker
+        if (markedPoints.length > 0) {
+          var last = markedPoints.pop();
+          last.traverse(function(obj) { if (obj.geometry) obj.geometry.dispose(); });
+          markerScene.remove(last);
+          showToast('Undid mark (' + markedPoints.length + ' remaining)');
+        }
+      } else if (action.type === 'constraint-point') {
+        // Remove last picked constraint point
+        if (constraintPickMode && constraintPickPoints.length > 0) {
+          constraintPickPoints.pop();
+          if (constraintPickMarkers.length > 0) {
+            var m = constraintPickMarkers.pop();
+            m.traverse(function(obj) {
+              if (obj.geometry) obj.geometry.dispose();
+              if (obj.material) obj.material.dispose();
+            });
+            constraintScene.remove(m);
+          }
+          if (constraintPickPoints.length === 0) {
+            cancelConstraintPick();
+            showToast('Undid constraint pick — cancelled');
+          } else {
+            showToast('Pick point (' + (constraintPickPoints.length + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
+          }
+        }
+      } else if (action.type === 'constraint') {
+        deleteConstraint(action.id);
+        showToast('Undid constraint');
+      } else if (action.type === 'member-point') {
+        // Remove last picked member point
+        if (memberPickMode && memberPickPoints.length > 0) {
+          memberPickPoints.pop();
+          if (memberPickMarkers.length > 0) {
+            var m = memberPickMarkers.pop();
+            m.traverse(function(obj) {
+              if (obj.geometry) obj.geometry.dispose();
+              if (obj.material) obj.material.dispose();
+            });
+            memberScene.remove(m);
+          }
+          if (memberPickPoints.length === 0) {
+            cancelMemberPick();
+            showToast('Undid member pick — cancelled');
+          } else {
+            showToast('Pick endpoint (2/2) for member', 5000);
+          }
+        }
+      } else if (action.type === 'member') {
+        deleteMember(action.id);
+        showToast('Undid member');
+      } else if (action.type === 'measurement-point') {
+        var meas = action.measure;
+        if (meas && meas.points && meas.points.length > 0) {
+          if (meas.points.length <= 1) {
+            // Remove the whole measurement if only 1 point
+            viewer.scene.removeMeasurement(meas);
+          } else {
+            // Remove last point
+            meas.removeMarker(meas.points.length - 1);
+          }
+          showToast('Undid measurement point');
+        }
+      }
+    }
+
     // -- Monkey-patch point picking to apply active constraint --
     const _origPick = Potree.Utils.getMousePointCloudIntersection;
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
       const result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
       if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive) {
         result.location = projectPoint(result.location);
+      }
+      // Snap for Potree measurement tool (not during our custom picks or drags)
+      if (result && result.location && !constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
+        var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEASUREMENT);
+        if (snap) {
+          result.location = snap.position;
+          showToast('Snapped to ' + snap.label, 1000);
+        }
       }
       return result;
     };
@@ -679,6 +777,7 @@
     function handleConstraintPick(position) {
       constraintPickPoints.push(position.clone());
       placePickMarker(position);
+      undoStack.push({ type: 'constraint-point' });
       var count = constraintPickPoints.length;
       if (count < constraintPickTarget) {
         showToast('Pick point (' + (count + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
@@ -755,6 +854,11 @@
         buildConstraintVisual(constraint);
         constraints.push(constraint);
         rebuildConstraintList();
+        // Replace constraint-point undo entries with a single constraint entry
+        while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'constraint-point') {
+          undoStack.pop();
+        }
+        undoStack.push({ type: 'constraint', id: constraint.id });
         showToast(constraint.name + ' created');
       }
 
@@ -1232,6 +1336,7 @@
     function handleMemberPick(position) {
       memberPickPoints.push(position.clone());
       placeMemberPickMarker(position);
+      undoStack.push({ type: 'member-point' });
       if (memberPickPoints.length < 2) {
         showToast('Pick endpoint (2/2) for member', 5000);
       } else {
@@ -1292,6 +1397,11 @@
       buildMemberVisual(member);
       members.push(member);
       rebuildMemberList();
+      // Replace member-point undo entries with a single member entry
+      while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'member-point') {
+        undoStack.pop();
+      }
+      undoStack.push({ type: 'member', id: member.id });
       showToast(member.name + ' created');
 
       memberPickMode = false;
@@ -1487,6 +1597,58 @@
           }
         }
       }
+      return bestResult;
+    }
+
+    // -- Find nearest snap target (member endpoints, constraint points, measurement points) --
+    function findSnapTarget(mousePixel, threshold) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = threshold;
+      var bestResult = null;
+
+      function check(worldPos, label) {
+        var pt = worldPos.clone().project(camera);
+        var screenX = (pt.x * 0.5 + 0.5) * rect.width;
+        var screenY = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+        var dx = screenX - mousePixel.x;
+        var dy = screenY - mousePixel.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestResult = { position: worldPos.clone(), label: label };
+        }
+      }
+
+      // Member endpoints
+      for (var mi = 0; mi < members.length; mi++) {
+        var m = members[mi];
+        if (!m.visible) continue;
+        check(m.points[0], m.name + ' start');
+        check(m.points[1], m.name + ' end');
+      }
+
+      // Constraint definition points
+      for (var ci = 0; ci < constraints.length; ci++) {
+        var c = constraints[ci];
+        if (!c.visible) continue;
+        for (var pi = 0; pi < c.points.length; pi++) {
+          check(c.points[pi], c.name + ' pt' + (pi + 1));
+        }
+      }
+
+      // Measurement points
+      var measurements = viewer.scene.measurements || [];
+      for (var i = 0; i < measurements.length; i++) {
+        var meas = measurements[i];
+        var nums = measurePointNumbers.get(meas);
+        for (var j = 0; j < meas.points.length; j++) {
+          var pos = meas.points[j].position || meas.points[j];
+          var pLabel = nums && j < nums.length ? 'P' + nums[j] : 'P?';
+          check(pos, pLabel);
+        }
+      }
+
       return bestResult;
     }
 
@@ -1727,6 +1889,7 @@
         m.addEventListener('marker_added', function() {
           syncMeasurePointLabels(m);
           debouncedRebuildMeasList();
+          undoStack.push({ type: 'measurement-point', measure: m });
         });
         m.addEventListener('marker_moved', function() {
           syncMeasurePointLabels(m);
@@ -1889,6 +2052,174 @@
       showToast('Exported ' + distMeasures.length + ' measurement(s) to .txt');
     }
 
+    // ===== SAVE / LOAD SESSION =====
+
+    function v3toObj(v) { return { x: v.x, y: v.y, z: v.z }; }
+
+    function serializeSession() {
+      var data = {
+        version: 1,
+        pointCloudID: pointCloudID,
+        constraints: constraints.map(function(c) {
+          return {
+            id: c.id, type: c.type, name: c.name,
+            points: c.points.map(v3toObj),
+            visible: c.visible, locked: !!c.locked
+          };
+        }),
+        activeConstraintId: activeConstraintId,
+        nextConstraintId: nextConstraintId,
+        members: members.map(function(m) {
+          return {
+            id: m.id, name: m.name,
+            points: m.points.map(v3toObj),
+            visible: m.visible
+          };
+        }),
+        nextMemberId: nextMemberId,
+        measurements: (function() {
+          var arr = [];
+          var allMeas = viewer.scene.measurements || [];
+          for (var i = 0; i < allMeas.length; i++) {
+            var m = allMeas[i];
+            if (!m.showDistances || m.showArea || m.showAngles) continue;
+            var pts = [];
+            for (var j = 0; j < m.points.length; j++) {
+              var p = m.points[j].position || m.points[j];
+              pts.push(v3toObj(p));
+            }
+            var nums = measurePointNumbers.get(m) || [];
+            arr.push({ points: pts, pointNumbers: nums.slice() });
+          }
+          return arr;
+        })(),
+        nextPointNumber: nextPointNumber,
+        marks: markedPoints.map(function(g) { return v3toObj(g.position); })
+      };
+      return data;
+    }
+
+    function saveSessionToFile() {
+      var data = serializeSession();
+      var json = JSON.stringify(data, null, 2);
+      var blob = new Blob([json], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      var date = new Date().toISOString().slice(0, 10);
+      a.download = 'session_' + pointCloudID + '_' + date + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Session saved');
+    }
+
+    function loadSession(data) {
+      // Validate
+      if (!data || data.version !== 1) {
+        showToast('Invalid session file');
+        return;
+      }
+      if (data.pointCloudID && data.pointCloudID !== pointCloudID) {
+        showToast('Warning: session is for "' + data.pointCloudID + '", current is "' + pointCloudID + '"', 4000);
+      }
+
+      // Clear existing state
+      clearAllMarkers();
+      while (constraints.length > 0) {
+        deleteConstraint(constraints[constraints.length - 1].id);
+      }
+      while (members.length > 0) {
+        deleteMember(members[members.length - 1].id);
+      }
+      var existingMeas = (viewer.scene.measurements || []).slice();
+      for (var i = 0; i < existingMeas.length; i++) {
+        viewer.scene.removeMeasurement(existingMeas[i]);
+      }
+      undoStack.length = 0;
+
+      // Restore constraints
+      if (data.constraints) {
+        for (var ci = 0; ci < data.constraints.length; ci++) {
+          var sc = data.constraints[ci];
+          var pts = sc.points.map(function(p) { return new THREE.Vector3(p.x, p.y, p.z); });
+          var c = {
+            id: sc.id, type: sc.type, name: sc.name,
+            points: pts, visual: null,
+            visible: sc.visible !== false,
+            locked: !!sc.locked
+          };
+          recomputeConstraint(c);
+          buildConstraintVisual(c);
+          constraints.push(c);
+        }
+      }
+      activeConstraintId = data.activeConstraintId || null;
+      nextConstraintId = data.nextConstraintId || (constraints.length + 1);
+      rebuildConstraintList();
+      updateConstraintVisuals();
+
+      // Restore members
+      if (data.members) {
+        for (var mi = 0; mi < data.members.length; mi++) {
+          var sm = data.members[mi];
+          var m = {
+            id: sm.id, name: sm.name,
+            points: sm.points.map(function(p) { return new THREE.Vector3(p.x, p.y, p.z); }),
+            visual: null,
+            visible: sm.visible !== false
+          };
+          buildMemberVisual(m);
+          members.push(m);
+        }
+      }
+      nextMemberId = data.nextMemberId || (members.length + 1);
+      rebuildMemberList();
+
+      // Restore measurements
+      nextPointNumber = data.nextPointNumber || 1;
+      if (data.measurements) {
+        for (var mi2 = 0; mi2 < data.measurements.length; mi2++) {
+          var sm2 = data.measurements[mi2];
+          if (!sm2.points || sm2.points.length < 2) continue;
+          var measure = new Potree.Measure();
+          measure.showDistances = true;
+          measure.showArea = false;
+          measure.showAngles = false;
+          measure.closed = false;
+          for (var pi = 0; pi < sm2.points.length; pi++) {
+            var pp = sm2.points[pi];
+            measure.addMarker(new THREE.Vector3(pp.x, pp.y, pp.z));
+          }
+          viewer.scene.addMeasurement(measure);
+          // Override auto-assigned P-numbers with saved ones
+          if (sm2.pointNumbers && sm2.pointNumbers.length > 0) {
+            measurePointNumbers.set(measure, sm2.pointNumbers.slice());
+            syncMeasurePointLabels(measure);
+          }
+        }
+      }
+      rebuildMeasurementList();
+
+      // Restore marks
+      if (data.marks) {
+        for (var mk = 0; mk < data.marks.length; mk++) {
+          placeMarker(new THREE.Vector3(data.marks[mk].x, data.marks[mk].y, data.marks[mk].z));
+        }
+      }
+      // Clear undo stack from restore operations
+      undoStack.length = 0;
+
+      showToast('Session loaded');
+    }
+
+    function loadSessionFromFile() {
+      var input = document.getElementById('session-file-input');
+      if (!input) return;
+      input.click();
+    }
+
     // -- Inject sidebar buttons once GUI is ready --
     function injectMarkButtons() {
       const $tools = $('#tools');
@@ -1914,7 +2245,12 @@
         '<div id="enable-measurement-list"></div>' +
         '<div id="enable-measurement-buttons-export">' +
         '<button id="btn-export-measurements" title="Export all measurements to .txt">Export Measurements (.txt)</button>' +
-        '</div>';
+        '</div>' +
+        '<div id="enable-session-buttons">' +
+        '<button id="btn-save-session" title="Save all work to a file">Save Session</button>' +
+        '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
+        '</div>' +
+        '<input type="file" id="session-file-input" accept=".json" style="display:none">';
       $tools.after(html);
 
       document.getElementById('btn-mark-mode').addEventListener('click', function() { toggleMarkMode(); });
@@ -1924,6 +2260,24 @@
       document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
       document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
       document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
+      document.getElementById('btn-save-session').addEventListener('click', function() { saveSessionToFile(); });
+      document.getElementById('btn-load-session').addEventListener('click', function() { loadSessionFromFile(); });
+      document.getElementById('session-file-input').addEventListener('change', function(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+          try {
+            var data = JSON.parse(ev.target.result);
+            loadSession(data);
+          } catch (err) {
+            showToast('Failed to parse session file');
+            console.error(err);
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = ''; // allow re-loading same file
+      });
 
       // Version footer at bottom of sidebar
       var sidebar = document.getElementById('potree_sidebar_container');
@@ -2070,12 +2424,21 @@
       );
 
       if (pickResult && pickResult.location) {
+        var pos = pickResult.location;
+        // Snap check for member/constraint picks (aggressive threshold)
+        if (memberPickMode || constraintPickMode) {
+          var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
+          if (snap) {
+            pos = snap.position;
+            showToast('Snapped to ' + snap.label, 1500);
+          }
+        }
         if (memberPickMode) {
-          handleMemberPick(pickResult.location);
+          handleMemberPick(pos);
         } else if (constraintPickMode) {
-          handleConstraintPick(pickResult.location);
+          handleConstraintPick(pos);
         } else {
-          placeMarker(pickResult.location);
+          placeMarker(pos);
         }
       } else {
         showToast("No point found under cursor");
@@ -2202,9 +2565,11 @@
 
       // Mark point shortcuts
       if (ev.key === 'x' || ev.key === 'X') toggleMarkMode();
-      if (ev.key === 'z' || ev.key === 'Z') clearAllMarkers();
+      if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
       // Member shortcut
       if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+      // Undo
+      if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
 
       if (ev.key === 'Escape') {
         if (constraintPickMode) cancelConstraintPick();
