@@ -149,6 +149,39 @@
     }
     .constraint-row .btn-lock:hover { outline: 1px solid var(--accent, #4db6ff); }
     .constraint-row .btn-lock.locked { opacity: 1; background: rgba(255,165,0,0.3); }
+    .constraint-row .btn-ortho {
+      padding: 2px 5px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .constraint-row .btn-ortho:hover { outline: 1px solid var(--accent, #4db6ff); }
+
+    /* ===== Plane ortho depth slab controls ===== */
+    #enable-plane-depth-controls {
+      margin: 4px 0; padding: 6px 8px; border-radius: 4px;
+      background: rgba(57,255,20,0.08); border: 1px solid rgba(57,255,20,0.2);
+      font: 12px/1.4 sans-serif; color: var(--sidebar-text, #fbfbfb);
+    }
+    #enable-plane-depth-controls .depth-title {
+      font-weight: 600; font-size: 11px; color: #39ff14; margin-bottom: 4px;
+    }
+    #enable-plane-depth-controls .depth-row {
+      display: flex; align-items: center; gap: 6px; margin: 3px 0;
+    }
+    #enable-plane-depth-controls .depth-row label {
+      min-width: 50px; font-size: 11px; color: var(--muted, #9aa3b2);
+    }
+    #enable-plane-depth-controls .depth-row input[type="number"] {
+      width: 70px; padding: 2px 4px; border: 1px solid var(--border, #555);
+      border-radius: 3px; background: #333; color: #fff; font: 12px/1.3 sans-serif;
+    }
+    #enable-plane-depth-controls .depth-row span.unit { font-size: 11px; color: var(--muted, #9aa3b2); }
+    #enable-plane-depth-controls button {
+      margin-top: 4px; padding: 3px 10px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    #enable-plane-depth-controls button:hover { outline: 1px solid var(--accent, #4db6ff); }
 
     /* ===== Member tool cursor ===== */
     body.member-pick-mode #potree_render_area { cursor: crosshair !important; }
@@ -861,6 +894,17 @@
           });
           row.appendChild(lockBtn);
 
+          if (c.type === 'plane') {
+            var orthoBtn = document.createElement('button');
+            orthoBtn.className = 'btn-ortho';
+            orthoBtn.textContent = '\u2316';
+            orthoBtn.title = 'Orthographic view of this plane';
+            orthoBtn.addEventListener('click', function() {
+              viewPlaneOrtho(c);
+            });
+            row.appendChild(orthoBtn);
+          }
+
           var activateBtn = document.createElement('button');
           activateBtn.textContent = c.id === activeConstraintId ? 'Active' : 'Activate';
           activateBtn.addEventListener('click', function() {
@@ -979,6 +1023,159 @@
         c.visual = null;
       }
       buildConstraintVisual(c);
+    }
+
+    // -- Plane ortho depth slab state --
+    var planeOrthoSlab = null;       // the BoxVolume used as depth slab
+    var planeOrthoConstraint = null; // which constraint is active for ortho
+
+    // -- Switch to orthographic view aligned to a plane constraint --
+    function viewPlaneOrtho(c) {
+      if (c.type !== 'plane') return;
+
+      // Switch to orthographic camera mode
+      viewer.setCameraMode(Potree.CameraMode.ORTHOGRAPHIC);
+
+      // Position the camera along the plane normal, looking at the centroid.
+      // Potree's render loop drives cameras from scene.view (yaw/pitch/position),
+      // so we must set view — not camera — properties.
+      var normal = c.normal.clone();
+      var distance = viewer.scene.view.radius || 50;
+      if (distance < 1) distance = 50;
+
+      // Camera position: offset from centroid along the normal
+      var camPos = c.centroid.clone().addScaledVector(normal, distance);
+      viewer.scene.view.position.copy(camPos);
+      viewer.scene.view.lookAt(c.centroid);
+
+      // Create/update depth slab clip box
+      planeOrthoConstraint = c;
+      createOrUpdateDepthSlab(c, 20, 20);
+
+      // Show depth controls UI
+      showDepthControls(c);
+
+      showToast('Ortho view: ' + c.name);
+    }
+
+    // -- Create or update the depth slab clip box --
+    function createOrUpdateDepthSlab(c, behindMM, frontMM) {
+      // Convert mm to scene units (assume metres)
+      var behind = behindMM / 1000;
+      var front = frontMM / 1000;
+      var thickness = behind + front; // total depth
+      if (thickness < 0.001) thickness = 0.001;
+
+      // Slab center: offset from plane centroid along normal.
+      // "front" is in the normal direction, "behind" is opposite.
+      var offset = (front - behind) / 2;
+      var center = c.centroid.clone().addScaledVector(c.normal, offset);
+
+      // Orientation: rotate local Y axis to align with plane normal.
+      // BoxVolume is a unit cube; scale.y controls thickness along local Y.
+      var quat = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), c.normal
+      );
+
+      // Lateral size: huge so it doesn't clip laterally
+      var lateralSize = 10000;
+
+      if (!planeOrthoSlab) {
+        planeOrthoSlab = new Potree.BoxVolume();
+        planeOrthoSlab.clip = true;
+        planeOrthoSlab.name = 'Plane Depth Slab';
+        planeOrthoSlab.visible = true;
+        planeOrthoSlab.userData = planeOrthoSlab.userData || {};
+        planeOrthoSlab.userData.persistent = true;
+        planeOrthoSlab.userData.isDepthSlab = true;
+        // Hide the green box visual
+        planeOrthoSlab.box.visible = false;
+        planeOrthoSlab.frame.visible = false;
+        if (planeOrthoSlab.label) planeOrthoSlab.label.visible = false;
+
+        viewer.scene.addVolume(planeOrthoSlab);
+        // Switch to INSIDE_ALL so both the main crop box and slab must pass
+        viewer.setClipMethod(Potree.ClipMethod.INSIDE_ALL);
+      }
+
+      planeOrthoSlab.position.copy(center);
+      planeOrthoSlab.quaternion.copy(quat);
+      planeOrthoSlab.scale.set(lateralSize, thickness, lateralSize);
+      planeOrthoSlab.updateMatrixWorld(true);
+      if (typeof planeOrthoSlab.update === 'function') planeOrthoSlab.update();
+    }
+
+    // -- Remove the depth slab and restore clip method --
+    function removeDepthSlab() {
+      if (planeOrthoSlab) {
+        // Temporarily allow removal of our persistent slab
+        planeOrthoSlab.userData.persistent = false;
+        viewer.scene.removeVolume(planeOrthoSlab);
+        planeOrthoSlab = null;
+      }
+      planeOrthoConstraint = null;
+      // Restore to INSIDE_ANY (original mode)
+      viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+      hideDepthControls();
+    }
+
+    // -- Show depth controls UI in sidebar --
+    function showDepthControls(c) {
+      hideDepthControls();
+      var container = document.getElementById('enable-constraint-list');
+      if (!container) return;
+
+      var div = document.createElement('div');
+      div.id = 'enable-plane-depth-controls';
+
+      div.innerHTML =
+        '<div class="depth-title">\u2316 ' + c.name + ' \u2014 Depth Slab</div>' +
+        '<div class="depth-row">' +
+          '<label>Behind:</label>' +
+          '<input type="number" id="depth-behind" value="20" step="5" min="0">' +
+          '<span class="unit">mm</span>' +
+        '</div>' +
+        '<div class="depth-row">' +
+          '<label>In front:</label>' +
+          '<input type="number" id="depth-front" value="20" step="5" min="0">' +
+          '<span class="unit">mm</span>' +
+        '</div>' +
+        '<button id="btn-exit-plane-ortho">Exit Plane View</button>';
+
+      container.parentNode.insertBefore(div, container.nextSibling);
+
+      // Wire up live updating
+      var behindInput = document.getElementById('depth-behind');
+      var frontInput = document.getElementById('depth-front');
+
+      function onDepthChange() {
+        var behind = parseFloat(behindInput.value) || 0;
+        var front = parseFloat(frontInput.value) || 0;
+        if (behind < 0) behind = 0;
+        if (front < 0) front = 0;
+        if (planeOrthoConstraint) {
+          createOrUpdateDepthSlab(planeOrthoConstraint, behind, front);
+        }
+      }
+      behindInput.addEventListener('input', onDepthChange);
+      frontInput.addEventListener('input', onDepthChange);
+
+      document.getElementById('btn-exit-plane-ortho').addEventListener('click', function() {
+        exitPlaneOrtho();
+      });
+    }
+
+    // -- Hide depth controls UI --
+    function hideDepthControls() {
+      var el = document.getElementById('enable-plane-depth-controls');
+      if (el) el.remove();
+    }
+
+    // -- Exit plane ortho mode: remove slab, switch back to perspective --
+    function exitPlaneOrtho() {
+      removeDepthSlab();
+      viewer.setCameraMode(Potree.CameraMode.PERSPECTIVE);
+      showToast('Exited plane view');
     }
 
     // ===== MEMBER SKETCHING FUNCTIONS =====
@@ -1955,7 +2152,8 @@
       if (ev.key === 'm' || ev.key === 'M') startMemberPick();
 
       if (ev.key === 'Escape') {
-        if (constraintPickMode) cancelConstraintPick();
+        if (planeOrthoSlab) exitPlaneOrtho();
+        else if (constraintPickMode) cancelConstraintPick();
         else if (memberPickMode) cancelMemberPick();
         else if (MARK_MODE) toggleMarkMode(true);
         // Cancel any active Potree measurement insertion
