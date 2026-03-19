@@ -1690,6 +1690,33 @@
     // -- Setup measurement point labels (immediate — viewer.scene exists from init) --
     setupMeasurementLabelEvents();
 
+    // -- Speed lock: let user override auto-speed via slider, with reset button --
+    function setupSpeedLock() {
+      var sld = document.getElementById('sldMoveSpeed');
+      if (!sld) { setTimeout(setupSpeedLock, 200); return; }
+
+      // Intercept slider interaction to lock speed
+      $(sld).on('slidestart', function() {
+        viewer._speedLocked = true;
+      });
+
+      // Add reset button next to the speed label
+      var lbl = document.getElementById('lblMoveSpeed');
+      if (lbl) {
+        var resetBtn = document.createElement('span');
+        resetBtn.textContent = '\u21BA';
+        resetBtn.title = 'Reset to auto speed';
+        resetBtn.style.cssText = 'cursor:pointer;margin-left:6px;font-size:14px;opacity:0.6;';
+        resetBtn.addEventListener('mouseenter', function() { resetBtn.style.opacity = '1'; });
+        resetBtn.addEventListener('mouseleave', function() { resetBtn.style.opacity = '0.6'; });
+        resetBtn.addEventListener('click', function() {
+          viewer._speedLocked = false;
+        });
+        lbl.parentNode.insertBefore(resetBtn, lbl.nextSibling);
+      }
+    }
+    setupSpeedLock();
+
     // -- Click handler with drag guard + constraint point dragging --
     let mouseDownPos = null;
 

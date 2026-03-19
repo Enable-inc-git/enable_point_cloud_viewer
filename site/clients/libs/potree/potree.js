@@ -82046,7 +82046,10 @@ ENDSEC
 					this.scene.view.position.z = (1 - t) * startPos.z + t * targetPos.z;
 
 					this.scene.view.radius = (1 - t) * startRadius + t * targetRadius;
-					this.viewer.setMoveSpeed(this.scene.view.radius);
+					if (!this.viewer._speedLocked) {
+						let cap = this.viewer._autoSpeedMax || 10;
+						this.viewer.setMoveSpeed(Math.min(this.scene.view.radius, cap));
+					}
 				});
 
 				tween.onComplete(() => {
@@ -82122,8 +82125,11 @@ ENDSEC
 			}
 
 			{
-				let speed = view.radius;
-				this.viewer.setMoveSpeed(speed);
+				if (!this.viewer._speedLocked) {
+					let cap = this.viewer._autoSpeedMax || 10;
+					let speed = Math.min(view.radius, cap);
+					this.viewer.setMoveSpeed(speed);
+				}
 			}
 
 			{ // decelerate over time
@@ -88394,7 +88400,9 @@ ENDSEC
 					if (this.scene.pointclouds.length === 1) {
 						let speed = e.pointcloud.boundingBox.getSize(new Vector3()).length();
 						speed = speed / 5;
-						this.setMoveSpeed(speed);
+						this._autoSpeedMax = 10;
+						this._speedLocked = false;
+						this.setMoveSpeed(Math.min(speed, 10));
 					}
 				};
 
