@@ -57,6 +57,9 @@
     #menu_map, #map, #potree_map_container,
     .ol-viewport, .ol-overlaycontainer { display: none !important; }
 
+    /* Hide Potree's About section (covered by our version footer) */
+    #menu_about, #menu_about + div { display: none !important; }
+
     /* Slightly tighter sidebar spacing */
     #potree_sidebar_container .accordion > div { padding: 6px 10px; }
 
@@ -235,6 +238,26 @@
       transition: outline 0.15s;
     }
     #enable-member-buttons-export button:hover { outline: 1px solid var(--accent, #4db6ff); }
+
+    /* ===== Sidebar version footer ===== */
+    #enable-version-footer {
+      position: fixed; bottom: 0; left: 0; width: 360px;
+      padding: 6px 12px;
+      background: var(--sidebar-bg, #363636);
+      border-top: 1px solid rgba(255,255,255,0.08);
+      font: 10px/1.4 sans-serif;
+      color: rgba(251,251,251,0.35);
+      z-index: 100;
+      box-sizing: border-box;
+    }
+    #enable-version-footer a {
+      color: rgba(251,251,251,0.45);
+      text-decoration: none;
+    }
+    #enable-version-footer a:hover {
+      color: rgba(251,251,251,0.7);
+      text-decoration: underline;
+    }
 
     /* ===== Measurement panel overrides ===== */
     /* Hide native raw XYZ + native distance table in measurement panel */
@@ -1901,6 +1924,18 @@
       document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
       document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
       document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
+
+      // Version footer at bottom of sidebar
+      var sidebar = document.getElementById('potree_sidebar_container');
+      if (sidebar) {
+        var footer = document.createElement('div');
+        footer.id = 'enable-version-footer';
+        footer.innerHTML =
+          'Enable Point Cloud Viewer v1.0<br>' +
+          'Powered by <a href="http://potree.org" target="_blank" rel="noopener">Potree</a>' +
+          ' \u00a9 2011\u20132020 Markus Sch\u00fctz. BSD 2-Clause License.';
+        sidebar.appendChild(footer);
+      }
     }
     injectMarkButtons();
 
