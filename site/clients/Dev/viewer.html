@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>Potree Viewer</title>
+  <title>Enable Viewer</title>
 
   <!-- ===================== CSS ===================== -->
   <link rel="stylesheet" href="../libs/potree/potree.css">
@@ -737,11 +737,19 @@
       constraintPickMode = true;
       constraintPickPoints = [];
       constraintPickType = type;
-      constraintPickTarget = type === 'plane' ? 3 : 2;
-      document.body.classList.add('constraint-pick-mode');
-      showToast('Pick point (1/' + constraintPickTarget + ') for ' + type, 5000);
-      var btn = document.getElementById(type === 'plane' ? 'btn-set-plane' : 'btn-set-axis');
-      if (btn) btn.classList.add('active');
+      if (type === 'fit-plane') {
+        constraintPickTarget = Infinity; // no auto-finalize; Enter/dblclick to finish
+        document.body.classList.add('constraint-pick-mode');
+        showToast('Pick points for best-fit plane (Enter to finalize, min 3)', 5000);
+        var btn = document.getElementById('btn-fit-plane');
+        if (btn) btn.classList.add('active');
+      } else {
+        constraintPickTarget = type === 'plane' ? 3 : 2;
+        document.body.classList.add('constraint-pick-mode');
+        showToast('Pick point (1/' + constraintPickTarget + ') for ' + type, 5000);
+        var btn = document.getElementById(type === 'plane' ? 'btn-set-plane' : 'btn-set-axis');
+        if (btn) btn.classList.add('active');
+      }
     }
 
     // -- Place a temporary neon-green concentric ring marker during picking --
@@ -779,7 +787,12 @@
       placePickMarker(position);
       undoStack.push({ type: 'constraint-point' });
       var count = constraintPickPoints.length;
-      if (count < constraintPickTarget) {
+      if (constraintPickType === 'fit-plane') {
+        var status = count + ' point' + (count === 1 ? '' : 's') + ' picked';
+        if (count < 3) status += ' (need at least 3)';
+        else status += ' \u2014 Enter to finalize';
+        showToast(status, 5000);
+      } else if (count < constraintPickTarget) {
         showToast('Pick point (' + (count + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
       } else {
         finalizeConstraint();
@@ -828,6 +841,95 @@
           visual: null,
           visible: true
         };
+      } else if (type === 'fit-plane') {
+        if (pts.length < 3) {
+          showToast('Need at least 3 points for best-fit plane');
+          cancelConstraintPick();
+          return;
+        }
+        // Compute centroid
+        var centroid = new THREE.Vector3();
+        for (var fi = 0; fi < pts.length; fi++) centroid.add(pts[fi]);
+        centroid.divideScalar(pts.length);
+
+        // Build 3x3 covariance matrix
+        var xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+        for (var fi = 0; fi < pts.length; fi++) {
+          var dx = pts[fi].x - centroid.x;
+          var dy = pts[fi].y - centroid.y;
+          var dz = pts[fi].z - centroid.z;
+          xx += dx * dx; xy += dx * dy; xz += dx * dz;
+          yy += dy * dy; yz += dy * dz; zz += dz * dz;
+        }
+
+        // Find the eigenvector with smallest eigenvalue via power iteration
+        // on the adjugate (cofactor) matrix — the normal is the least-variance direction.
+        // For a 3x3 symmetric matrix, the smallest eigenvector can be found by
+        // computing cross products of rows of (A - λI). We use a simpler approach:
+        // try each candidate normal (cross products of covariance rows) and pick
+        // the one that gives the smallest variance.
+        var det2 = function(a, b, c, d) { return a * d - b * c; };
+        var candidates = [
+          // Cross products of pairs of rows of the covariance matrix
+          new THREE.Vector3(
+            det2(xy, xz, yy, yz),
+            det2(xz, xx, yz, xy),
+            det2(xx, xy, xy, yy)
+          ),
+          new THREE.Vector3(
+            det2(yy, yz, xy, xz),
+            det2(yz, xy, xz, xx),
+            det2(xy, yy, xx, xy)
+          ),
+          // Fallback: world axes
+          new THREE.Vector3(1, 0, 0),
+          new THREE.Vector3(0, 1, 0),
+          new THREE.Vector3(0, 0, 1)
+        ];
+
+        // Pick candidate that minimizes sum of squared distances to the plane
+        var bestNormal = null;
+        var bestVariance = Infinity;
+        for (var ci2 = 0; ci2 < candidates.length; ci2++) {
+          var n = candidates[ci2];
+          if (n.length() < 0.0001) continue;
+          n.normalize();
+          var variance = 0;
+          for (var fi = 0; fi < pts.length; fi++) {
+            var d = (pts[fi].x - centroid.x) * n.x +
+                    (pts[fi].y - centroid.y) * n.y +
+                    (pts[fi].z - centroid.z) * n.z;
+            variance += d * d;
+          }
+          if (variance < bestVariance) {
+            bestVariance = variance;
+            bestNormal = n.clone();
+          }
+        }
+
+        if (!bestNormal) {
+          showToast('Could not compute best-fit plane');
+          cancelConstraintPick();
+          return;
+        }
+
+        var rms = Math.sqrt(bestVariance / pts.length) * 1000; // mm
+        var normal = bestNormal;
+        var plane = new THREE.Plane();
+        plane.setFromNormalAndCoplanarPoint(normal, centroid);
+
+        constraint = {
+          id: nextConstraintId++,
+          type: 'plane',
+          name: 'Fit Plane ' + (nextConstraintId - 1),
+          plane: plane,
+          normal: normal,
+          centroid: centroid,
+          points: pts,
+          visual: null,
+          visible: true
+        };
+        showToast('Best-fit plane from ' + pts.length + ' points (RMS: ' + rms.toFixed(1) + ' mm)', 4000);
       } else if (type === 'axis') {
         var dir = new THREE.Vector3().subVectors(pts[1], pts[0]);
         if (dir.length() < 0.001) {
@@ -1132,15 +1234,54 @@
     // -- Recompute constraint geometry after a point is moved --
     function recomputeConstraint(c) {
       if (c.type === 'plane') {
-        var v1 = new THREE.Vector3().subVectors(c.points[1], c.points[0]);
-        var v2 = new THREE.Vector3().subVectors(c.points[2], c.points[0]);
-        var normal = new THREE.Vector3().crossVectors(v1, v2);
-        if (normal.length() < 0.001) return false;
-        normal.normalize();
-        c.normal = normal;
-        c.plane = new THREE.Plane();
-        c.plane.setFromNormalAndCoplanarPoint(normal, c.points[0]);
-        c.centroid = new THREE.Vector3().add(c.points[0]).add(c.points[1]).add(c.points[2]).divideScalar(3);
+        var pts = c.points;
+        if (pts.length === 3) {
+          var v1 = new THREE.Vector3().subVectors(pts[1], pts[0]);
+          var v2 = new THREE.Vector3().subVectors(pts[2], pts[0]);
+          var normal = new THREE.Vector3().crossVectors(v1, v2);
+          if (normal.length() < 0.001) return false;
+          normal.normalize();
+          c.normal = normal;
+          c.plane = new THREE.Plane();
+          c.plane.setFromNormalAndCoplanarPoint(normal, pts[0]);
+          c.centroid = new THREE.Vector3().add(pts[0]).add(pts[1]).add(pts[2]).divideScalar(3);
+        } else if (pts.length > 3) {
+          // Re-fit plane from all points
+          var centroid = new THREE.Vector3();
+          for (var i = 0; i < pts.length; i++) centroid.add(pts[i]);
+          centroid.divideScalar(pts.length);
+          var xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+          for (var i = 0; i < pts.length; i++) {
+            var dx = pts[i].x - centroid.x, dy = pts[i].y - centroid.y, dz = pts[i].z - centroid.z;
+            xx += dx * dx; xy += dx * dy; xz += dx * dz;
+            yy += dy * dy; yz += dy * dz; zz += dz * dz;
+          }
+          var det2 = function(a, b, cd, d) { return a * d - b * cd; };
+          var candidates = [
+            new THREE.Vector3(det2(xy, xz, yy, yz), det2(xz, xx, yz, xy), det2(xx, xy, xy, yy)),
+            new THREE.Vector3(det2(yy, yz, xy, xz), det2(yz, xy, xz, xx), det2(xy, yy, xx, xy)),
+            new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)
+          ];
+          var bestNormal = null, bestVar = Infinity;
+          for (var ci2 = 0; ci2 < candidates.length; ci2++) {
+            var n = candidates[ci2];
+            if (n.length() < 0.0001) continue;
+            n.normalize();
+            var v = 0;
+            for (var i = 0; i < pts.length; i++) {
+              var d = (pts[i].x - centroid.x) * n.x + (pts[i].y - centroid.y) * n.y + (pts[i].z - centroid.z) * n.z;
+              v += d * d;
+            }
+            if (v < bestVar) { bestVar = v; bestNormal = n.clone(); }
+          }
+          if (!bestNormal) return false;
+          c.normal = bestNormal;
+          c.centroid = centroid;
+          c.plane = new THREE.Plane();
+          c.plane.setFromNormalAndCoplanarPoint(bestNormal, centroid);
+        } else {
+          return false; // fewer than 3 points
+        }
       } else if (c.type === 'axis') {
         var dir = new THREE.Vector3().subVectors(c.points[1], c.points[0]);
         if (dir.length() < 0.001) return false;
@@ -2231,6 +2372,7 @@
         '</div>' +
         '<div id="enable-constraint-buttons">' +
         '<button id="btn-set-plane" title="Define a constraint plane (3 points)">Set Plane</button>' +
+        '<button id="btn-fit-plane" title="Best-fit plane from many points (Enter to finalize)">Fit Plane</button>' +
         '<button id="btn-set-axis" title="Define a constraint axis (2 points)">Set Axis</button>' +
         '</div>' +
         '<div id="enable-constraint-list"></div>' +
@@ -2256,6 +2398,7 @@
       document.getElementById('btn-mark-mode').addEventListener('click', function() { toggleMarkMode(); });
       document.getElementById('btn-clear-marks').addEventListener('click', function() { clearAllMarkers(); });
       document.getElementById('btn-set-plane').addEventListener('click', function() { startConstraintPick('plane'); });
+      document.getElementById('btn-fit-plane').addEventListener('click', function() { startConstraintPick('fit-plane'); });
       document.getElementById('btn-set-axis').addEventListener('click', function() { startConstraintPick('axis'); });
       document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
       document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
@@ -2297,17 +2440,37 @@
     setupMeasurementLabelEvents();
 
     // -- Speed lock: let user override auto-speed via slider, with reset button --
+    var SPEED_MAX = 7;
     function setupSpeedLock() {
       var sld = document.getElementById('sldMoveSpeed');
       if (!sld) { setTimeout(setupSpeedLock, 200); return; }
 
-      // Intercept slider interaction to lock speed
-      $(sld).on('slidestart', function() {
-        viewer._speedLocked = true;
+      // Set our auto-speed cap
+      viewer._autoSpeedMax = SPEED_MAX;
+
+      // Reconfigure slider: linear 0–SPEED_MAX instead of Potree's exponential 0–10001
+      $(sld).slider('destroy');
+      $(sld).slider({
+        value: viewer.getMoveSpeed(),
+        min: 0,
+        max: SPEED_MAX,
+        step: 0.1,
+        slide: function(event, ui) {
+          viewer._speedLocked = true;
+          viewer.setMoveSpeed(ui.value);
+        }
       });
 
-      // Add reset button next to the speed label
+      // Keep slider + label in sync when speed changes (auto or manual)
       var lbl = document.getElementById('lblMoveSpeed');
+      viewer.addEventListener('move_speed_changed', function() {
+        var speed = viewer.getMoveSpeed();
+        if (lbl) lbl.textContent = speed.toFixed(1);
+        $(sld).slider('value', speed);
+      });
+      if (lbl) lbl.textContent = viewer.getMoveSpeed().toFixed(1);
+
+      // Add reset button next to the speed label
       if (lbl) {
         var resetBtn = document.createElement('span');
         resetBtn.textContent = '\u21BA';
@@ -2570,6 +2733,12 @@
       if (ev.key === 'm' || ev.key === 'M') startMemberPick();
       // Undo
       if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
+
+      // Enter finalizes fit-plane mode
+      if (ev.key === 'Enter' && constraintPickMode && constraintPickType === 'fit-plane') {
+        ev.preventDefault();
+        finalizeConstraint();
+      }
 
       if (ev.key === 'Escape') {
         if (constraintPickMode) cancelConstraintPick();

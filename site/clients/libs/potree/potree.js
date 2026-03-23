@@ -81898,7 +81898,10 @@ ENDSEC
 			let scroll = (e) => {
 				let resolvedRadius = this.scene.view.radius + this.radiusDelta;
 
-				this.radiusDelta += -e.delta * resolvedRadius * 0.1;
+				let scrollMul = this.viewer._speedLocked
+				? (this.viewer.getMoveSpeed() / Math.max(resolvedRadius, 0.001))
+				: 1;
+			this.radiusDelta += -e.delta * resolvedRadius * 0.1 * scrollMul;
 
 				// Zoom-to-cursor: capture intersection under mouse
 				let I = Utils.getMousePointCloudIntersection(
@@ -82089,7 +82092,10 @@ ENDSEC
 
 			{ // apply pan
 				let progression = Math.min(1, this.fadeFactor * delta);
-				let panDistance = progression * view.radius * 3;
+				let speedMul = this.viewer._speedLocked
+					? (this.viewer.getMoveSpeed() / Math.max(view.radius, 0.001))
+					: 1;
+				let panDistance = progression * view.radius * 3 * speedMul;
 
 				let px = -this.panDelta.x * panDistance;
 				let py = this.panDelta.y * panDistance;
@@ -88400,9 +88406,9 @@ ENDSEC
 					if (this.scene.pointclouds.length === 1) {
 						let speed = e.pointcloud.boundingBox.getSize(new Vector3()).length();
 						speed = speed / 5;
-						this._autoSpeedMax = 10;
+						this._autoSpeedMax = this._autoSpeedMax || 7;
 						this._speedLocked = false;
-						this.setMoveSpeed(Math.min(speed, 10));
+						this.setMoveSpeed(Math.min(speed, this._autoSpeedMax));
 					}
 				};
 
