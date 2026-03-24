@@ -1,0 +1,152 @@
+ENABLE VIEWER — TEMPORAL SCAN COMPARISON & STRUCTURAL MONITORING
+================================================================
+Feature Outline for Future Development
+
+
+OVERVIEW
+--------
+This feature allows stakeholders to upload and compare multiple laser scans of the same structure taken at different points in time. The primary use case is tracking structural movement — settlement, deflection, lateral drift, tilt, and deformation — by visualizing the differences between a baseline scan and one or more follow-up scans. This turns the viewer from a single-point-in-time documentation tool into an ongoing structural health monitoring platform.
+
+
+PREREQUISITE: SCAN REGISTRATION
+--------------------------------
+All scans must arrive pre-registered (aligned to the same coordinate system) from the scanning/processing pipeline. This is standard practice in surveying workflows:
+
+- Permanent survey control points (targets, benchmarks, prism mounts) are established on stable reference structures during the initial scan
+- Every subsequent scan includes these same control points
+- The scanning software (Leica Cyclone, FARO Scene, RealityCapture, etc.) uses these shared control points to align all scans into a common coordinate system
+- By the time the data reaches Enable Viewer, all scans share the same origin, orientation, and scale
+
+Enable Viewer does not perform scan registration itself — this is intentional. Registration is a solved problem in scanning software that has dedicated algorithms, quality metrics, and error reporting. Duplicating that in a browser would add complexity without improving accuracy. The viewer's role is to make the already-aligned data useful and understandable to stakeholders.
+
+
+MULTI-SCAN LOADING
+------------------
+- The project configuration file is extended to support multiple scans per project, each with a timestamp/label:
+
+    "bridge_north": {
+      "name": "Bridge North Span",
+      "scans": [
+        { "label": "Baseline — Jan 2025", "folder": "bridge_north/scan_01/" },
+        { "label": "6-Month — Jul 2025",  "folder": "bridge_north/scan_02/" },
+        { "label": "12-Month — Jan 2026", "folder": "bridge_north/scan_03/" }
+      ]
+    }
+
+- All scans for a project load into the same 3D scene as separate point clouds
+- A new "Scans" panel in the sidebar lists all loaded scans with:
+  - Toggle visibility per scan (eye icon)
+  - Color override per scan (e.g., baseline = natural RGB, follow-up = single solid color for contrast)
+  - Opacity slider per scan for overlay blending
+  - "Solo" button to isolate a single scan
+  - Timestamp/label display
+
+
+VISUALIZATION MODES
+-------------------
+
+1. SIDE-BY-SIDE TOGGLE
+   - Rapidly switch between scans to visually spot differences
+   - Keyboard shortcut (e.g., 1/2/3) to quickly toggle between scan epochs
+   - Useful for qualitative "does this look different?" assessment
+
+2. OVERLAY BLEND
+   - Show two scans simultaneously with different colors/opacity
+   - Baseline in natural color, follow-up in a contrasting tint (blue, red)
+   - Where the scans align perfectly, colors blend; where movement occurred, the two colors separate visually
+   - This is intuitive for non-technical stakeholders — they can literally see the structure in two positions
+
+3. CLOUD-TO-CLOUD DISTANCE HEATMAP (primary deliverable)
+   - For each point in Scan B, compute the distance to the nearest point in Scan A
+   - Color-code Scan B points by displacement magnitude using a configurable gradient:
+     - Green: 0–5mm (within tolerance / no significant movement)
+     - Yellow: 5–15mm (moderate movement, warrants attention)
+     - Red: 15mm+ (significant movement, action required)
+   - Threshold values are configurable via sidebar inputs
+   - The heatmap makes displacement immediately visible and spatially intuitive
+   - Stakeholders can see exactly WHERE movement is occurring, not just that it exists
+   - This is the single most valuable visualization for structural monitoring
+
+4. DISPLACEMENT VECTORS
+   - At user-selected points (or at a regular grid), show 3D arrows indicating:
+     - Direction of movement (the arrow points where the structure moved)
+     - Magnitude (arrow length, scaled and labeled in mm)
+   - Useful for understanding the pattern of movement — uniform settlement vs. differential settlement vs. lateral drift
+   - Arrows can be filtered by magnitude threshold (e.g., only show vectors > 5mm)
+
+5. CROSS-SECTION COMPARISON
+   - Uses the existing Plane Ortho View / depth slab feature
+   - Define a constraint plane, activate ortho view
+   - Show both scan epochs sliced at the same plane
+   - Overlay the two cross-sections to see profile changes
+   - Particularly useful for:
+     - Beam deflection (section through a beam at midspan shows sag)
+     - Wall tilt (section through a wall shows lateral lean)
+     - Floor settlement (section through a slab shows dishing/hogging)
+
+
+MEASUREMENT TOOLS FOR MONITORING
+---------------------------------
+
+1. POINT-TO-POINT DISPLACEMENT
+   - Pick the same feature in two scans and measure the 3D displacement vector
+   - Reports: total 3D displacement, horizontal (XY) component, vertical (Z) component
+   - Example output: "Column A top: 3D=18.2mm, Horiz=4.1mm, Vert=-17.7mm (settlement)"
+
+2. MONITORING POINTS
+   - Define named monitoring points on the baseline scan (e.g., "Column A Base", "Midspan Soffit", "Abutment NE")
+   - For each follow-up scan, the viewer automatically finds the corresponding location and computes displacement
+   - Results displayed in a summary table:
+
+     Point               | Scan 2 (6mo) | Scan 3 (12mo) | Rate
+     --------------------|-------------|---------------|------
+     Column A Base       | -3.2mm Z    | -7.1mm Z      | -0.6mm/mo
+     Midspan Soffit      | -8.4mm Z    | -14.2mm Z     | -1.2mm/mo
+     Abutment NE         | +2.1mm XY   | +3.8mm XY     | +0.3mm/mo
+
+   - Rate of change calculation based on timestamps
+   - Export table to CSV for reporting
+
+3. PROFILE COMPARISON
+   - Define a line/path on the structure
+   - Extract the elevation profile along that path from each scan
+   - Overlay profiles as a 2D graph showing how the surface has changed
+   - Ideal for slab levelness tracking, beam deflection monitoring
+
+
+REPORTING & EXPORT
+------------------
+- Export displacement summary table as CSV
+- Export annotated screenshot of heatmap view for inclusion in monitoring reports
+- Export monitoring point history as a time-series CSV for graphing in Excel
+- Session save/load includes all monitoring point definitions and comparison settings
+- DXF export extended to include displacement vectors as LINE entities with magnitude annotations
+
+
+STAKEHOLDER VALUE
+-----------------
+This feature transforms Enable Viewer from a documentation tool into a structural health monitoring platform:
+
+- Building owners and asset managers can visually track whether their structure is moving and how fast
+- Structural engineers can quantify displacement at specific points and compare against serviceability limits
+- Insurance and legal teams get clear visual evidence of structural behavior over time
+- Project managers can make informed decisions about remediation timing based on rate-of-change data
+- All of this is accessible via a web browser — stakeholders don't need to install software, understand point clouds, or interpret raw survey data. They see a color-coded 3D model that shows green where things are stable and red where things are moving.
+
+
+COMPUTATIONAL CONSIDERATIONS
+-----------------------------
+- Cloud-to-cloud distance computation is the most expensive operation. For large scans (10M+ points), this would need to be:
+  - Pre-computed server-side during scan processing (preferred), or
+  - Computed client-side using a spatial index (octree/k-d tree) in a Web Worker to avoid blocking the UI
+- Displacement vector computation at discrete monitoring points is lightweight and can run client-side in real time
+- The overlay/toggle modes have zero computational overhead — they just change point cloud visibility and coloring
+
+
+IMPLEMENTATION PHASES
+---------------------
+Phase 1: Multi-scan loading, visibility toggles, color overrides, overlay blend
+Phase 2: Cloud-to-cloud distance heatmap (pre-computed server-side, loaded as a point attribute)
+Phase 3: Monitoring points, displacement table, CSV export
+Phase 4: Displacement vectors, profile comparison, rate-of-change tracking
+Phase 5: Cross-section comparison using existing plane ortho view infrastructure

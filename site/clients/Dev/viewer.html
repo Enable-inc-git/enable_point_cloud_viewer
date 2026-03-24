@@ -81,6 +81,25 @@
       color: #000 !important; border-color: var(--accent, #4db6ff) !important;
     }
 
+    /* ===== Mark list rows ===== */
+    .mark-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 3px 6px; border-radius: 3px; margin: 2px 0;
+      font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb);
+      background: rgba(255,255,255,0.05);
+    }
+    .mark-row .mark-name {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .mark-row button {
+      padding: 2px 6px; border: 1px solid var(--border, #555);
+      border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .mark-row button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .mark-row .btn-lock.locked { opacity: 1; background: rgba(255,165,0,0.3); }
+    .mark-row .btn-vis.hidden { opacity: 0.35; }
+
     /* ===== Toast notification ===== */
     #enable-toast {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -486,7 +505,8 @@
 
     // -- State --
     let MARK_MODE = false;
-    const markedPoints = [];
+    const markedPoints = [];  // array of { id, name, locked, visible, visual: THREE.Group }
+    let nextMarkId = 1;
     const markerScene = new THREE.Scene();  // separate scene, rendered manually AFTER EDL
     markerScene.name = "EnableMarkerScene";
     let ringOuterRadius = 0.12;   // large ring visible when zoomed out
@@ -514,6 +534,45 @@
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
       return geo;
+    }
+
+    // -- Create a radial-gradient glow texture (cached per color hex) --
+    var _glowTextureCache = {};
+    function createGlowTexture(colorHex) {
+      if (_glowTextureCache[colorHex]) return _glowTextureCache[colorHex];
+      var size = 128;
+      var canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      var ctx = canvas.getContext('2d');
+      var c = new THREE.Color(colorHex);
+      var r = Math.round(c.r * 255), g = Math.round(c.g * 255), b = Math.round(c.b * 255);
+      var grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      grad.addColorStop(0, 'rgba(' + r + ',' + g + ',' + b + ',0.20)');
+      grad.addColorStop(0.4, 'rgba(' + r + ',' + g + ',' + b + ',0.15)');
+      grad.addColorStop(0.7, 'rgba(' + r + ',' + g + ',' + b + ',0.35)');
+      grad.addColorStop(0.9, 'rgba(' + r + ',' + g + ',' + b + ',0.5)');
+      grad.addColorStop(1, 'rgba(' + r + ',' + g + ',' + b + ',0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+      var tex = new THREE.CanvasTexture(canvas);
+      _glowTextureCache[colorHex] = tex;
+      return tex;
+    }
+
+    // -- Create a glow sprite for a marker --
+    function createGlowSprite(colorHex, radius) {
+      var tex = createGlowTexture(colorHex);
+      var mat = new THREE.SpriteMaterial({
+        map: tex,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        opacity: 1.0
+      });
+      var sprite = new THREE.Sprite(mat);
+      sprite.scale.set(radius * 3, radius * 3, 1);
+      return sprite;
     }
 
     // -- Render markers in the perspective_overlay pass (AFTER EDL + depth clear) --
@@ -546,41 +605,122 @@
     function placeMarker(position) {
       // Group positioned at the picked point; billboarded each frame
       const group = new THREE.Group();
-      group.name = "marker-" + markedPoints.length;
       group.position.copy(position);
 
-      // Outer ring (visible from far away)
-      const outerGeo = createCircleGeometry(ringOuterRadius, RING_SEGMENTS);
-      const outerRing = new THREE.Line(outerGeo, ringMaterial);
-      group.add(outerRing);
+      // Filled dot at center (~actual point size)
+      const dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: ringMaterial.color, depthTest: false, depthWrite: false,
+        transparent: true, opacity: ringMaterial.opacity, side: THREE.DoubleSide
+      });
+      group.add(new THREE.Mesh(dotGeo, dotMat));
 
-      // Middle ring
-      const middleGeo = createCircleGeometry(ringMiddleRadius, RING_SEGMENTS);
-      const middleRing = new THREE.Line(middleGeo, ringMaterial);
-      group.add(middleRing);
+      // Additive glow (electron cloud effect)
+      group.add(createGlowSprite(0xff2020, ringOuterRadius));
 
-      // Inner ring (tightest, ~actual point size)
-      const innerGeo = createCircleGeometry(ringInnerRadius, RING_SEGMENTS);
-      const innerRing = new THREE.Line(innerGeo, ringMaterial);
-      group.add(innerRing);
+      var mark = {
+        id: nextMarkId++,
+        name: 'P' + (nextMarkId - 1),
+        locked: true,
+        visible: true,
+        visual: group
+      };
+      group.name = "marker-" + mark.id;
 
       markerScene.add(group);
-      markedPoints.push(group);
-      undoStack.push({ type: 'mark' });
-      showToast("Marked point (" + markedPoints.length + " total)");
+      markedPoints.push(mark);
+      undoStack.push({ type: 'mark', id: mark.id });
+      rebuildMarkList();
+      showToast(mark.name + " placed (" + markedPoints.length + " total)");
+    }
+
+    // -- Delete a single marker by id --
+    function deleteMarker(id) {
+      for (var i = 0; i < markedPoints.length; i++) {
+        if (markedPoints[i].id === id) {
+          var m = markedPoints[i];
+          m.visual.traverse(function(obj) {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+              if (obj.material.map) obj.material.map.dispose();
+              obj.material.dispose();
+            }
+          });
+          markerScene.remove(m.visual);
+          markedPoints.splice(i, 1);
+          rebuildMarkList();
+          return;
+        }
+      }
     }
 
     // -- Clear all markers --
     function clearAllMarkers() {
-      while (markerScene.children.length > 0) {
-        const child = markerScene.children[0];
-        child.traverse(function(obj) {
+      while (markedPoints.length > 0) {
+        var m = markedPoints.pop();
+        m.visual.traverse(function(obj) {
           if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
         });
-        markerScene.remove(child);
+        markerScene.remove(m.visual);
       }
-      markedPoints.length = 0;
+      rebuildMarkList();
       showToast("Cleared all markers");
+    }
+
+    // -- Rebuild mark list in sidebar --
+    function rebuildMarkList() {
+      var listEl = document.getElementById('enable-mark-list');
+      if (!listEl) return;
+      listEl.innerHTML = '';
+
+      for (var i = 0; i < markedPoints.length; i++) {
+        (function(m) {
+          var row = document.createElement('div');
+          row.className = 'mark-row';
+
+          var nameSpan = document.createElement('span');
+          nameSpan.className = 'mark-name';
+          nameSpan.textContent = m.name;
+          row.appendChild(nameSpan);
+
+          var visBtn = document.createElement('button');
+          visBtn.className = 'btn-vis' + (m.visible === false ? ' hidden' : '');
+          visBtn.textContent = '\uD83D\uDC41';
+          visBtn.title = 'Toggle visibility';
+          visBtn.addEventListener('click', function() {
+            m.visible = !m.visible;
+            m.visual.visible = m.visible;
+            visBtn.classList.toggle('hidden', !m.visible);
+          });
+          row.appendChild(visBtn);
+
+          var lockBtn = document.createElement('button');
+          lockBtn.className = 'btn-lock' + (m.locked ? ' locked' : '');
+          lockBtn.textContent = m.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+          lockBtn.title = m.locked ? 'Unlock to move' : 'Lock position';
+          lockBtn.addEventListener('click', function() {
+            m.locked = !m.locked;
+            lockBtn.textContent = m.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+            lockBtn.title = m.locked ? 'Unlock to move' : 'Lock position';
+            lockBtn.classList.toggle('locked', m.locked);
+          });
+          row.appendChild(lockBtn);
+
+          var deleteBtn = document.createElement('button');
+          deleteBtn.textContent = '\u00d7';
+          deleteBtn.title = 'Delete mark';
+          deleteBtn.addEventListener('click', function() {
+            deleteMarker(m.id);
+          });
+          row.appendChild(deleteBtn);
+
+          listEl.appendChild(row);
+        })(markedPoints[i]);
+      }
     }
 
     // ===== CONSTRAINT MEASUREMENT TOOL =====
@@ -614,8 +754,8 @@
     const measurePointLabels = new Map(); // Map<Measure, TextSprite[]>
     const measureLabelScene = new THREE.Scene();
     measureLabelScene.name = "EnableMeasureLabelScene";
-    let nextPointNumber = 1;                    // global P-number, never resets
-    const measurePointNumbers = new Map();      // Map<Measure, number[]> — P-numbers per measurement
+    let nextPointNumber = 1;                    // global D-number, never resets
+    const measurePointNumbers = new Map();      // Map<Measure, number[]> — D-numbers per measurement
 
     // ===== SNAP THRESHOLDS (screen pixels) =====
     var SNAP_THRESHOLD_MEMBER = 18;      // for member/constraint picks
@@ -630,13 +770,9 @@
       var action = undoStack.pop();
 
       if (action.type === 'mark') {
-        // Remove last marker
-        if (markedPoints.length > 0) {
-          var last = markedPoints.pop();
-          last.traverse(function(obj) { if (obj.geometry) obj.geometry.dispose(); });
-          markerScene.remove(last);
-          showToast('Undid mark (' + markedPoints.length + ' remaining)');
-        }
+        // Remove the specific marker by id
+        deleteMarker(action.id);
+        showToast('Undid mark (' + markedPoints.length + ' remaining)');
       } else if (action.type === 'constraint-point') {
         // Remove last picked constraint point
         if (constraintPickMode && constraintPickPoints.length > 0) {
@@ -757,13 +893,15 @@
       var ptGroup = new THREE.Group();
       ptGroup.position.copy(position);
       ptGroup.userData.isDefinitionPoint = true;
-      var mat = new THREE.LineBasicMaterial({
+      // Filled dot at center
+      var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      var dotMat = new THREE.MeshBasicMaterial({
         color: 0x39ff14, depthTest: false, depthWrite: false,
-        transparent: true, opacity: 0.9, linewidth: 3
+        transparent: true, opacity: 0.9, side: THREE.DoubleSide
       });
-      ptGroup.add(new THREE.Line(createCircleGeometry(ringOuterRadius, RING_SEGMENTS), mat.clone()));
-      ptGroup.add(new THREE.Line(createCircleGeometry(ringMiddleRadius, RING_SEGMENTS), mat.clone()));
-      ptGroup.add(new THREE.Line(createCircleGeometry(ringInnerRadius, RING_SEGMENTS), mat.clone()));
+      ptGroup.add(new THREE.Mesh(dotGeo, dotMat));
+      // Additive glow
+      ptGroup.add(createGlowSprite(0x39ff14, ringOuterRadius));
       constraintScene.add(ptGroup);
       constraintPickMarkers.push(ptGroup);
     }
@@ -839,7 +977,8 @@
           centroid: centroid,
           points: pts,
           visual: null,
-          visible: true
+          visible: true,
+          locked: true
         };
       } else if (type === 'fit-plane') {
         if (pts.length < 3) {
@@ -927,7 +1066,8 @@
           centroid: centroid,
           points: pts,
           visual: null,
-          visible: true
+          visible: true,
+          locked: true
         };
         showToast('Best-fit plane from ' + pts.length + ' points (RMS: ' + rms.toFixed(1) + ' mm)', 4000);
       } else if (type === 'axis') {
@@ -946,7 +1086,8 @@
           direction: dir,
           points: pts,
           visual: null,
-          visible: true
+          visible: true,
+          locked: true
         };
       }
 
@@ -1035,7 +1176,7 @@
         group.add(new THREE.Line(lineGeo, lineMat));
       }
 
-      // Definition point markers (triple concentric blue circles, like mark tool)
+      // Definition point markers (dot + glow)
       for (var k = 0; k < constraint.points.length; k++) {
         var pt = constraint.points[k];
         var ptGroup = new THREE.Group();
@@ -1043,29 +1184,18 @@
         ptGroup.userData.isDefinitionPoint = true;
         ptGroup.userData.pointIndex = k;
 
-        var outerGeo = createCircleGeometry(ringOuterRadius, RING_SEGMENTS);
-        var outerRing = new THREE.Line(outerGeo, new THREE.LineBasicMaterial({
+        var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+        var dotMesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({
           color: 0x39ff14, depthTest: false, depthWrite: false,
-          transparent: true, opacity: 0.9, linewidth: 3
+          transparent: true, opacity: 0.9, side: THREE.DoubleSide
         }));
-        outerRing.userData.isDefPointRing = true;
-        ptGroup.add(outerRing);
+        dotMesh.userData.isDefPointRing = true;
+        ptGroup.add(dotMesh);
 
-        var middleGeo = createCircleGeometry(ringMiddleRadius, RING_SEGMENTS);
-        var middleRing = new THREE.Line(middleGeo, new THREE.LineBasicMaterial({
-          color: 0x39ff14, depthTest: false, depthWrite: false,
-          transparent: true, opacity: 0.9, linewidth: 3
-        }));
-        middleRing.userData.isDefPointRing = true;
-        ptGroup.add(middleRing);
-
-        var innerGeo = createCircleGeometry(ringInnerRadius, RING_SEGMENTS);
-        var innerRing = new THREE.Line(innerGeo, new THREE.LineBasicMaterial({
-          color: 0x39ff14, depthTest: false, depthWrite: false,
-          transparent: true, opacity: 0.9, linewidth: 3
-        }));
-        innerRing.userData.isDefPointRing = true;
-        ptGroup.add(innerRing);
+        // Additive glow
+        var glow = createGlowSprite(0x39ff14, ringOuterRadius);
+        glow.userData.isDefPointRing = true;
+        ptGroup.add(glow);
 
         group.add(ptGroup);
       }
@@ -1501,13 +1631,15 @@
       var ptGroup = new THREE.Group();
       ptGroup.position.copy(position);
       ptGroup.userData.isMemberPickMarker = true;
-      var mat = new THREE.LineBasicMaterial({
+      // Filled dot at center
+      var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      var dotMat = new THREE.MeshBasicMaterial({
         color: 0xff9900, depthTest: false, depthWrite: false,
-        transparent: true, opacity: 0.9, linewidth: 3
+        transparent: true, opacity: 0.9, side: THREE.DoubleSide
       });
-      ptGroup.add(new THREE.Line(createCircleGeometry(ringOuterRadius, RING_SEGMENTS), mat.clone()));
-      ptGroup.add(new THREE.Line(createCircleGeometry(ringMiddleRadius, RING_SEGMENTS), mat.clone()));
-      ptGroup.add(new THREE.Line(createCircleGeometry(ringInnerRadius, RING_SEGMENTS), mat.clone()));
+      ptGroup.add(new THREE.Mesh(dotGeo, dotMat));
+      // Additive glow
+      ptGroup.add(createGlowSprite(0xff9900, ringOuterRadius));
       memberScene.add(ptGroup);
       memberPickMarkers.push(ptGroup);
     }
@@ -1533,7 +1665,8 @@
         name: 'M' + (nextMemberId - 1),
         points: [memberPickPoints[0].clone(), memberPickPoints[1].clone()],
         visual: null,
-        visible: true
+        visible: true,
+        locked: false
       };
       buildMemberVisual(member);
       members.push(member);
@@ -1589,19 +1722,21 @@
       });
       group.add(new THREE.Line(lineGeo, lineMat));
 
-      // Endpoint markers (triple concentric circles in orange)
-      var endpointMat = new THREE.LineBasicMaterial({
-        color: 0xff9900, depthTest: false, depthWrite: false,
-        transparent: true, opacity: 0.9, linewidth: 3
-      });
+      // Endpoint markers (dot + glow in orange)
       for (var k = 0; k < 2; k++) {
         var ptGroup = new THREE.Group();
         ptGroup.position.copy(member.points[k]);
         ptGroup.userData.isMemberEndpoint = true;
         ptGroup.userData.pointIndex = k;
-        ptGroup.add(new THREE.Line(createCircleGeometry(ringOuterRadius, RING_SEGMENTS), endpointMat.clone()));
-        ptGroup.add(new THREE.Line(createCircleGeometry(ringMiddleRadius, RING_SEGMENTS), endpointMat.clone()));
-        ptGroup.add(new THREE.Line(createCircleGeometry(ringInnerRadius, RING_SEGMENTS), endpointMat.clone()));
+        // Filled dot at center
+        var epDotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+        var epDotMat = new THREE.MeshBasicMaterial({
+          color: 0xff9900, depthTest: false, depthWrite: false,
+          transparent: true, opacity: 0.9, side: THREE.DoubleSide
+        });
+        ptGroup.add(new THREE.Mesh(epDotGeo, epDotMat));
+        // Additive glow
+        ptGroup.add(createGlowSprite(0xff9900, ringOuterRadius));
         group.add(ptGroup);
       }
 
@@ -1681,6 +1816,18 @@
           });
           row.appendChild(visBtn);
 
+          var lockBtn = document.createElement('button');
+          lockBtn.className = 'btn-lock' + (m.locked ? ' locked' : '');
+          lockBtn.textContent = m.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+          lockBtn.title = m.locked ? 'Unlock to move' : 'Lock position';
+          lockBtn.addEventListener('click', function() {
+            m.locked = !m.locked;
+            lockBtn.textContent = m.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+            lockBtn.title = m.locked ? 'Unlock to move' : 'Lock position';
+            lockBtn.classList.toggle('locked', m.locked);
+          });
+          row.appendChild(lockBtn);
+
           var deleteBtn = document.createElement('button');
           deleteBtn.textContent = '\u00d7';
           deleteBtn.title = 'Delete member';
@@ -1724,7 +1871,7 @@
       var bestResult = null;
       for (var mi = 0; mi < members.length; mi++) {
         var m = members[mi];
-        if (!m.visible) continue;
+        if (!m.visible || m.locked) continue;
         for (var pi = 0; pi < m.points.length; pi++) {
           var pt = m.points[pi].clone().project(camera);
           var screenX = (pt.x * 0.5 + 0.5) * rect.width;
@@ -1740,6 +1887,32 @@
       }
       return bestResult;
     }
+
+    // -- Find nearest marker (for dragging — skips locked markers) --
+    function findNearestMarker(mousePixel) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 25;
+      var bestResult = null;
+      for (var i = 0; i < markedPoints.length; i++) {
+        var m = markedPoints[i];
+        if (m.locked || !m.visible) continue;
+        var pt = m.visual.position.clone().project(camera);
+        var screenX = (pt.x * 0.5 + 0.5) * rect.width;
+        var screenY = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+        var dx = screenX - mousePixel.x;
+        var dy = screenY - mousePixel.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestResult = { mark: m, index: i };
+        }
+      }
+      return bestResult;
+    }
+
+    var markerDragActive = false;
+    var markerDragInfo = null;
 
     // -- Find nearest snap target (member endpoints, constraint points, measurement points) --
     function findSnapTarget(mousePixel, threshold) {
@@ -1785,7 +1958,7 @@
         var nums = measurePointNumbers.get(meas);
         for (var j = 0; j < meas.points.length; j++) {
           var pos = meas.points[j].position || meas.points[j];
-          var pLabel = nums && j < nums.length ? 'P' + nums[j] : 'P?';
+          var pLabel = nums && j < nums.length ? 'D' + nums[j] : 'D?';
           check(pos, pLabel);
         }
       }
@@ -1939,11 +2112,11 @@
       return label;
     }
 
-    // -- Get the P-name for a given point index within a measure --
+    // -- Get the D-name for a given point index within a measure --
     function getPointName(measure, idx) {
       var nums = measurePointNumbers.get(measure);
-      if (nums && idx < nums.length) return 'P' + nums[idx];
-      return 'P?';
+      if (nums && idx < nums.length) return 'D' + nums[idx];
+      return 'D?';
     }
 
     // -- Sync labels for a measurement (create/remove/update) --
@@ -1984,7 +2157,7 @@
       while (labels.length < pts.length) {
         var idx = labels.length;
         var pos = pts[idx].position ? pts[idx].position.clone() : pts[idx].clone();
-        var lbl = createMeasurePointLabel('P' + nums[idx], pos);
+        var lbl = createMeasurePointLabel('D' + nums[idx], pos);
         lbl.visible = measure.visible;
         measureLabelScene.add(lbl);
         labels.push(lbl);
@@ -2072,15 +2245,15 @@
         var pts = measure.points;
         if (!nums || pts.length < 2) {
           // Show placeholder for incomplete measurement
-          var pName = (nums && nums.length > 0) ? 'P' + nums[0] : '...';
+          var pName = (nums && nums.length > 0) ? 'D' + nums[0] : '...';
           html += '<div class="enable-meas-item">' +
             '<div class="meas-header"><span class="meas-title">' + pName + '... (picking)</span></div>' +
             '</div>';
           continue;
         }
 
-        var firstName = 'P' + nums[0];
-        var lastName = 'P' + nums[nums.length - 1];
+        var firstName = 'D' + nums[0];
+        var lastName = 'D' + nums[nums.length - 1];
         html += '<div class="enable-meas-item">' +
           '<div class="meas-header">' +
           '<span class="meas-title">' + firstName + ' \u2192 ' + lastName + '</span>' +
@@ -2099,7 +2272,7 @@
           total3D += d3d; totalXY += dxy; totalZ += absZ;
 
           html += '<div class="enable-meas-seg">' +
-            '<span class="seg-name">P' + nums[si] + '\u2192P' + nums[si + 1] + '</span>' +
+            '<span class="seg-name">D' + nums[si] + '\u2192D' + nums[si + 1] + '</span>' +
             '<span class="seg-vals">3D:' + d3d.toFixed(3) + ' XY:' + dxy.toFixed(3) + ' Z:' + absZ.toFixed(3) + '(' + zSign + ')</span>' +
             '</div>';
         }
@@ -2147,15 +2320,15 @@
         var nums = measurePointNumbers.get(measure) || [];
         var pts = measure.points;
 
-        var firstName = nums.length > 0 ? 'P' + nums[0] : 'P?';
-        var lastName = nums.length > 0 ? 'P' + nums[nums.length - 1] : 'P?';
+        var firstName = nums.length > 0 ? 'D' + nums[0] : 'D?';
+        var lastName = nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
         lines.push('=== Measurement ' + (mi + 1) + ': ' + firstName + ' -> ' + lastName + ' ===');
         lines.push('');
 
         lines.push('Point Coordinates:');
         for (var pi = 0; pi < pts.length; pi++) {
           var p = pts[pi].position ? pts[pi].position : pts[pi];
-          var pn = pi < nums.length ? 'P' + nums[pi] : 'P?';
+          var pn = pi < nums.length ? 'D' + nums[pi] : 'D?';
           lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
         }
         lines.push('');
@@ -2171,8 +2344,8 @@
           var absZ = Math.abs(dz);
           var zSign = dz >= 0 ? '(+)' : '(-)';
           total3D += d3d; totalXY += dxy; totalZ += absZ;
-          var sn1 = si < nums.length ? 'P' + nums[si] : 'P?';
-          var sn2 = (si + 1) < nums.length ? 'P' + nums[si + 1] : 'P?';
+          var sn1 = si < nums.length ? 'D' + nums[si] : 'D?';
+          var sn2 = (si + 1) < nums.length ? 'D' + nums[si + 1] : 'D?';
           lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + d3d.toFixed(3) + '  XY: ' + dxy.toFixed(3) + '  Z: ' + absZ.toFixed(3) + ' ' + zSign);
         }
         lines.push('');
@@ -2235,7 +2408,10 @@
           return arr;
         })(),
         nextPointNumber: nextPointNumber,
-        marks: markedPoints.map(function(g) { return v3toObj(g.position); })
+        nextMarkId: nextMarkId,
+        marks: markedPoints.map(function(m) {
+          return { id: m.id, name: m.name, locked: m.locked, visible: m.visible, position: v3toObj(m.visual.position) };
+        })
       };
       return data;
     }
@@ -2346,9 +2522,20 @@
       // Restore marks
       if (data.marks) {
         for (var mk = 0; mk < data.marks.length; mk++) {
-          placeMarker(new THREE.Vector3(data.marks[mk].x, data.marks[mk].y, data.marks[mk].z));
+          var sm = data.marks[mk];
+          // Support both old format (just {x,y,z}) and new format ({id, name, position, ...})
+          var pos = sm.position ? sm.position : sm;
+          placeMarker(new THREE.Vector3(pos.x, pos.y, pos.z));
+          // Override auto-assigned properties with saved ones
+          var placed = markedPoints[markedPoints.length - 1];
+          if (sm.id) placed.id = sm.id;
+          if (sm.name) placed.name = sm.name;
+          if (sm.locked !== undefined) placed.locked = sm.locked;
+          if (sm.visible !== undefined) { placed.visible = sm.visible; placed.visual.visible = sm.visible; }
         }
       }
+      if (data.nextMarkId) nextMarkId = data.nextMarkId;
+      rebuildMarkList();
       // Clear undo stack from restore operations
       undoStack.length = 0;
 
@@ -2370,6 +2557,7 @@
         '<button id="btn-mark-mode" title="X marks the spot (shortcut: X)">Mark Point</button>' +
         '<button id="btn-clear-marks" title="Clear all markers (shortcut: Z)">Clear Marks</button>' +
         '</div>' +
+        '<div id="enable-mark-list"></div>' +
         '<div id="enable-constraint-buttons">' +
         '<button id="btn-set-plane" title="Define a constraint plane (3 points)">Set Plane</button>' +
         '<button id="btn-fit-plane" title="Best-fit plane from many points (Enter to finalize)">Fit Plane</button>' +
@@ -2490,6 +2678,20 @@
     let mouseDownPos = null;
 
     renderArea.addEventListener('mousedown', function(e) {
+      // Check if clicking near an unlocked marker (for dragging)
+      if (e.button === 0 && markedPoints.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
+        var rect = renderArea.getBoundingClientRect();
+        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var markerHit = findNearestMarker(mousePixel);
+        if (markerHit) {
+          markerDragActive = true;
+          markerDragInfo = markerHit;
+          document.body.classList.add('marker-drag');
+          e.stopPropagation();
+          mouseDownPos = null;
+          return;
+        }
+      }
       // Check if clicking near a member endpoint (for dragging) — check before constraints
       if (e.button === 0 && members.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
         var rect = renderArea.getBoundingClientRect();
@@ -2519,10 +2721,26 @@
         }
       }
       if (!MARK_MODE && !constraintPickMode && !memberPickMode) return;
+      if (e.button !== 0) return; // left-click only for placing points
       mouseDownPos = { x: e.clientX, y: e.clientY };
     }, true);
 
+    // -- Hover highlight state (persists across mousemove calls) --
+    var _hoveredGroup = null;
+    var HOVER_THRESHOLD = 12; // pixels
+
     renderArea.addEventListener('mousemove', function(e) {
+      // Marker dragging
+      if (markerDragActive && markerDragInfo) {
+        var rect = renderArea.getBoundingClientRect();
+        var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var camera = viewer.scene.getActiveCamera();
+        var pickResult = _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true });
+        if (pickResult && pickResult.location) {
+          markerDragInfo.mark.visual.position.copy(pickResult.location);
+        }
+        return;
+      }
       // Member endpoint dragging
       if (memberDragActive && memberDragInfo) {
         var rect = renderArea.getBoundingClientRect();
@@ -2536,21 +2754,109 @@
         return;
       }
       // Constraint definition point dragging
-      if (!constraintDragActive || !constraintDragInfo) return;
-      var rect = renderArea.getBoundingClientRect();
-      var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      var camera = viewer.scene.getActiveCamera();
-      var pickResult = _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true });
-      if (pickResult && pickResult.location) {
-        var c = constraintDragInfo.constraint;
-        c.points[constraintDragInfo.pointIndex] = pickResult.location.clone();
-        if (recomputeConstraint(c)) {
-          rebuildConstraintVisual(c);
+      if (constraintDragActive && constraintDragInfo) {
+        var rect = renderArea.getBoundingClientRect();
+        var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var camera = viewer.scene.getActiveCamera();
+        var pickResult = _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true });
+        if (pickResult && pickResult.location) {
+          var c = constraintDragInfo.constraint;
+          c.points[constraintDragInfo.pointIndex] = pickResult.location.clone();
+          if (recomputeConstraint(c)) {
+            rebuildConstraintVisual(c);
+          }
+        }
+        return;
+      }
+
+    // -- Hover highlight: scale up glow when cursor is near a custom point --
+    var rect2 = renderArea.getBoundingClientRect();
+    var mousePixel2 = { x: e.clientX - rect2.left, y: e.clientY - rect2.top };
+    var cam = viewer.scene.getActiveCamera();
+    var bestHoverDist = HOVER_THRESHOLD;
+    var bestHoverGroup = null;
+
+    var checkHover = function(worldPos, group) {
+      var pt = worldPos.clone().project(cam);
+      var sx = (pt.x * 0.5 + 0.5) * rect2.width;
+      var sy = (1 - (pt.y * 0.5 + 0.5)) * rect2.height;
+      var dx = sx - mousePixel2.x, dy = sy - mousePixel2.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestHoverDist) {
+        bestHoverDist = dist;
+        bestHoverGroup = group;
+      }
+    };
+
+    // Check mark points (skip locked)
+    for (var hi = 0; hi < markedPoints.length; hi++) {
+      var hm = markedPoints[hi];
+      if (hm.visible && !hm.locked) checkHover(hm.visual.position, hm.visual);
+    }
+    // Check constraint definition points (skip locked)
+    for (var hi2 = 0; hi2 < constraints.length; hi2++) {
+      var hc = constraints[hi2];
+      if (!hc.visible || !hc.visual || hc.locked) continue;
+      for (var hj = 0; hj < hc.visual.children.length; hj++) {
+        var child = hc.visual.children[hj];
+        if (child.userData && child.userData.isDefinitionPoint) {
+          checkHover(child.getWorldPosition(new THREE.Vector3()), child);
         }
       }
+    }
+    // Check member endpoints (skip locked)
+    for (var hi3 = 0; hi3 < members.length; hi3++) {
+      var hmm = members[hi3];
+      if (!hmm.visible || !hmm.visual || hmm.locked) continue;
+      for (var hj2 = 0; hj2 < hmm.visual.children.length; hj2++) {
+        var child2 = hmm.visual.children[hj2];
+        if (child2.userData && child2.userData.isMemberEndpoint) {
+          checkHover(child2.getWorldPosition(new THREE.Vector3()), child2);
+        }
+      }
+    }
+
+    // Apply/remove hover effect (lighten center dot color)
+    if (_hoveredGroup !== bestHoverGroup) {
+      // Remove previous hover — restore original color
+      if (_hoveredGroup && _hoveredGroup.userData._origDotColor !== undefined) {
+        _hoveredGroup.traverse(function(obj) {
+          if (obj.isMesh && obj.geometry && obj.geometry.type === 'CircleGeometry') {
+            obj.material.color.setHex(_hoveredGroup.userData._origDotColor);
+          }
+        });
+        delete _hoveredGroup.userData._origDotColor;
+      }
+      // Apply new hover — lighten dot to near-white tint
+      if (bestHoverGroup) {
+        bestHoverGroup.traverse(function(obj) {
+          if (obj.isMesh && obj.geometry && obj.geometry.type === 'CircleGeometry') {
+            if (bestHoverGroup.userData._origDotColor === undefined) {
+              bestHoverGroup.userData._origDotColor = obj.material.color.getHex();
+            }
+            // Lerp toward white for a highlight effect
+            var orig = new THREE.Color(bestHoverGroup.userData._origDotColor);
+            obj.material.color.copy(orig).lerp(new THREE.Color(0xffffff), 0.7);
+          }
+        });
+        renderArea.style.cursor = 'pointer';
+      } else {
+        renderArea.style.cursor = '';
+      }
+      _hoveredGroup = bestHoverGroup;
+    }
+
     }, true);
 
     renderArea.addEventListener('mouseup', function(e) {
+      // Finalize marker drag
+      if (markerDragActive) {
+        markerDragActive = false;
+        markerDragInfo = null;
+        document.body.classList.remove('marker-drag');
+        return;
+      }
+
       // Finalize member endpoint drag
       if (memberDragActive) {
         memberDragActive = false;

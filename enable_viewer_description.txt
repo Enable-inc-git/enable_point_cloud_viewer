@@ -1,0 +1,253 @@
+ENABLE POINT CLOUD VIEWER v1.0 — Product Description
+=====================================================
+
+WHAT IT IS
+----------
+Enable Point Cloud Viewer is a web-based 3D point cloud visualization and analysis platform purpose-built for structural engineering workflows. It runs entirely in the browser — no software installation, no plugins, no downloads. Engineers open a URL, and they are immediately working inside a fully interactive 3D scan of a real-world structure. The viewer is designed to bridge the gap between raw laser scan data and actionable structural information that feeds directly into modeling software like Trimble Tekla Structures and SketchUp.
+
+The platform is built on top of Potree (an open-source WebGL point cloud renderer) but has been extensively customized with proprietary tools, a branded dark-theme interface, and engineering-specific features that go far beyond simple point cloud viewing. It is deployed per-client, meaning each client receives their own dedicated viewer instance with their specific scan data pre-loaded and accessible via simple URL parameters.
+
+
+HOW IT WORKS
+------------
+Point cloud data from laser scans (typically LiDAR or photogrammetry) is processed and hosted on a web server. Each scan project is registered in a simple configuration file. Clients access their scans by navigating to a URL like:
+
+    https://[domain]/clients/[ClientName]/viewer.html?p=[ProjectID]
+
+The viewer loads instantly in any modern browser (Chrome, Edge, Firefox, Safari) and renders millions of 3D points in real time using WebGL with Eye-Dome Lighting (EDL) for enhanced depth perception. The interface features a persistent sidebar on the left with all tools and controls, and a full-width 3D viewport on the right.
+
+
+CORE NAVIGATION
+----------------
+- Orbit rotation (left-click drag) to rotate around the point cloud
+- Pan (right-click drag) to move laterally — works seamlessly even while measurement tools are active, which is a custom enhancement over standard Potree behavior
+- Scroll wheel zoom with zoom-to-cursor — the view zooms toward whatever the mouse is pointing at, not just toward the center
+- Double-click to zoom and re-center on a specific point in the cloud
+- Adjustable navigation speed via a sidebar slider (linear 0–7 scale) that controls both pan and zoom speed in real time
+- Auto-speed mode that adjusts navigation speed based on zoom level, with a manual override and reset button
+- Keyboard shortcut F to fit the entire point cloud in view
+- Point budget control (+/- keys) to balance rendering performance vs. detail
+- EDL toggle (E key) to turn enhanced depth lighting on/off
+
+
+MEASUREMENT TOOLS
+-----------------
+The viewer includes a comprehensive measurement system designed for structural engineering:
+
+- Distance measurements using Potree's built-in measurement tool, enhanced with custom point labeling (P1, P2, P3...) that appears as floating red labels above each measurement point
+- Each measurement displays segment-by-segment breakdown showing three distance components:
+  - 3D distance (true spatial distance)
+  - XY distance (horizontal/plan distance)
+  - Z distance (vertical/elevation difference) with positive/negative sign indicator
+- Multi-segment measurements show individual segment distances plus running totals
+- All measurements are listed in a persistent sidebar panel with delete buttons per measurement
+- Measurement data exports to a formatted .txt file containing all point coordinates (X, Y, Z to 4 decimal places) and all segment distances for documentation and import into other software
+
+
+CONSTRAINT PLANE & AXIS TOOLS
+-----------------------------
+One of the most powerful features of the viewer is its constraint system, which allows engineers to define geometric references directly on the point cloud:
+
+SET PLANE (3-Point Plane):
+- Click three points on a surface (wall, floor, beam flange, etc.) to define a mathematical plane
+- The plane is visualized as a semi-transparent green quad with edge outlines, sized proportionally to the point spread
+- The quad edges automatically align with world horizontal/vertical axes for a clean visual appearance
+- Once a plane is activated, ALL subsequent picks (measurements, member endpoints) are automatically projected onto that plane, ensuring perfect coplanarity
+- This is critical for structural engineering: when measuring along a wall face, you want all points constrained to the wall plane, not floating slightly in front of or behind it
+
+FIT PLANE (Best-Fit Plane from Many Points):
+- For surfaces that are not perfectly flat (which is most real-world as-built conditions), the Fit Plane tool allows picking any number of points (minimum 3) on a surface
+- Press Enter to finalize, and the tool computes a least-squares best-fit plane using covariance matrix analysis
+- The tool reports the RMS (Root Mean Square) deviation in millimeters, giving engineers a quantitative measure of how flat/planar the surface actually is
+- Example output: "Best-fit plane from 14 points (RMS: 3.2 mm)" — this tells the engineer the wall deviates from perfectly flat by an average of 3.2mm
+- The resulting plane works identically to a 3-point plane for all downstream tools
+
+SET AXIS (2-Point Axis):
+- Click two points to define an axis line
+- When activated, all picks are projected onto this axis, constraining measurements to a single line
+- Useful for measuring along a beam centerline, column line, or any linear element
+
+CONSTRAINT MANAGEMENT:
+- Each constraint appears in a sidebar list with controls:
+  - Eye icon: toggle visibility of the green visual overlay
+  - Lock icon: lock/unlock definition points to prevent accidental dragging
+  - Activate/deactivate: toggle whether the constraint is actively snapping picks
+  - Delete: remove the constraint entirely
+- Definition points (the green circles at each picked location) are draggable — grab and move them to adjust the plane/axis, and the constraint recomputes in real time
+- Multiple constraints can coexist; only one can be active at a time
+- Constraint status is displayed in green text below the list when one is active
+
+
+PLANE ORTHOGRAPHIC VIEW (Section View)
+---------------------------------------
+For any plane constraint, a dedicated button (⌖) switches the viewer into an orthographic camera view aligned exactly perpendicular to that plane. This is the equivalent of a section cut view:
+
+- The camera automatically positions itself looking straight at the plane surface
+- A depth slab clip box is created around the plane, defaulting to ±20mm thickness
+- The depth slab controls appear in the sidebar with two input fields:
+  - "Behind" (mm): how far behind the plane surface to include points
+  - "In front" (mm): how far in front of the plane surface to include points
+- These values update in real time — type a new value and the visible point cloud slice immediately adjusts
+- This allows engineers to isolate a thin slice of the scan exactly at a wall face, floor slab, or structural member and take precise measurements in that exact plane
+- An "Exit Plane View" button returns to the normal perspective 3D view and removes the depth slab
+- The clip box uses "INSIDE ALL" intersection mode, meaning points must be inside both the main crop boundary AND the depth slab to be visible
+
+This feature is particularly valuable for:
+- Taking accurate dimensions of structural steel connections
+- Measuring wall thicknesses and offsets
+- Checking floor levelness across a slab
+- Documenting as-built conditions for structural members at specific cross-sections
+
+
+STRUCTURAL MEMBER SKETCHING TOOL
+---------------------------------
+The member sketching tool allows engineers to overlay structural member centerlines directly onto the point cloud:
+
+- Press M or click "Add Member" to enter member sketching mode
+- Click two points to define a structural member (beam, column, brace, etc.) as a line between two endpoints
+- Members are displayed as orange lines with concentric circle markers at each endpoint
+- A floating label at the midpoint shows the member name
+- Members auto-snap to the active constraint plane/axis, so endpoints are precisely positioned on the structural surface
+- Member names default to M1, M2, M3... but can be renamed inline by clicking the name in the sidebar list
+- Each member in the sidebar list has visibility toggle and delete controls
+- Member endpoints are draggable — grab an endpoint to reposition it, and the member line and label update in real time
+- Members can be connected end-to-end using the snap-to-endpoint feature (see below)
+
+DXF EXPORT:
+- All members export to a standard DXF file with one click
+- Each member becomes a LINE entity on its own named layer (using the member name)
+- The DXF can be imported directly into SketchUp, Tekla, AutoCAD, or any other CAD/BIM software as reference geometry for structural modeling
+
+
+MARK POINT TOOL
+---------------
+A simple but useful annotation tool:
+- Press X to toggle mark mode, then click to place red concentric circle markers at any point in the cloud
+- Markers are rendered as three concentric rings (large, medium, small) that remain visible at all zoom levels
+- Ring sizes auto-scale based on the point cloud's bounding box so they are proportional to the scan
+- Press Z to clear all markers
+- Useful for flagging points of interest, identifying areas that need attention, or communicating locations during team reviews
+
+
+SNAP-TO-ENDPOINT SYSTEM
+------------------------
+The viewer includes an intelligent snapping system that helps engineers connect geometry precisely:
+
+- When placing member endpoints or constraint definition points, the system automatically detects nearby existing endpoints in screen space
+- Snap sources include: existing member endpoints, constraint definition points, and measurement points
+- Two sensitivity levels:
+  - Member and constraint picks: 18-pixel threshold (aggressive snap for connecting structural members)
+  - Measurement tool picks: 10-pixel threshold (gentler to avoid errant snaps when placing points that should be close together but not coincident — a common need when measuring between nearby but distinct structural elements)
+- A toast notification confirms snaps: "Snapped to M1 start" or "Snapped to P3"
+- This enables building connected structural frames (beam-to-column connections, bracing intersections) with perfect geometric alignment
+
+
+UNDO SYSTEM
+------------
+Full undo support via Ctrl+Z:
+- Undo placing a mark (removes the last marker)
+- Undo a constraint pick point during definition (removes the last picked point and shows updated count)
+- Undo a finalized constraint (deletes it entirely)
+- Undo a member pick point during definition
+- Undo a finalized member
+- Undo a measurement point (removes the last point from the active measurement, or removes the entire measurement if it only had one point)
+- The undo stack is cleared when loading a saved session to prevent confusion
+
+
+SAVE & LOAD SESSION
+--------------------
+All work can be saved and restored across browser sessions:
+
+SAVE:
+- Click "Save Session" to download a JSON file containing:
+  - All constraint definitions (type, name, points, visibility, lock state)
+  - The active constraint ID
+  - All structural members (name, endpoints, visibility)
+  - All measurements with their point coordinates and P-number assignments
+  - All mark positions
+  - Counter states for consistent numbering on reload
+- File is named: session_[ProjectID]_[date].json
+
+LOAD:
+- Click "Load Session" and select a previously saved JSON file
+- The viewer clears all current work and restores the complete saved state
+- All 3D visuals are rebuilt: constraint planes/axes with their green overlays, member lines with labels, measurement points with P-number labels
+- A warning is shown if loading a session saved for a different point cloud project
+- The undo stack is cleared after loading
+
+This is essential for multi-session workflows — an engineer can work on a scan, save their progress, close the browser, and return days later to continue exactly where they left off.
+
+
+VISUAL DESIGN & BRANDING
+--------------------------
+The viewer uses a custom dark theme branded for Enable:
+- Dark sidebar (#363636) with the Enable logo displayed at the top
+- Near-black background (#0f1318) for the 3D viewport
+- Enable green (#3EAD4A) as the accent color throughout — buttons, highlights, active states
+- Custom dark scrollbars that match the theme (replacing Potree's default blue-teal scrollbars)
+- All constraint visuals use neon green (#39FF14) for high visibility against the dark background
+- Member visuals use orange (#FF9900) for clear differentiation from constraints
+- Mark point markers use red (#FF2020) for high contrast
+- Measurement point labels are red for consistency with Potree's native measurement styling
+- Toast notifications appear as semi-transparent dark pills at the bottom center of the viewport
+- Version footer pinned at the bottom of the sidebar: "Enable Point Cloud Viewer v1.0" with Potree attribution
+
+
+KEYBOARD SHORTCUTS
+------------------
+- X: Toggle mark mode
+- Z: Clear all markers (only when Ctrl is NOT held)
+- M: Start member sketching
+- E: Toggle Eye-Dome Lighting
+- F: Fit point cloud to screen
+- +/-: Increase/decrease point budget
+- Ctrl+Z: Undo last action
+- Enter: Finalize a best-fit plane (during fit-plane picking)
+- Escape: Cancel current pick mode (constraint/member/mark) or cancel active Potree measurement
+
+
+INITIAL CLIP BOX
+-----------------
+On load, an axis-aligned clip box is automatically created around the entire point cloud:
+- Named "Initial Crop"
+- Locked and persistent — cannot be deleted via the UI or keyboard shortcuts
+- Allows users to crop the visible area using Potree's built-in volume editing tools while ensuring the base boundary is never accidentally removed
+- Uses "Show Inside" clip task with "Inside Any" method (switches to "Inside All" when a plane depth slab is active)
+
+
+TECHNICAL ARCHITECTURE
+-----------------------
+- Pure client-side web application — no server-side processing required after initial point cloud hosting
+- Built on Potree (BSD 2-Clause licensed open-source WebGL point cloud renderer) by Markus Schutz
+- Uses THREE.js for 3D rendering
+- All custom tools are implemented as a single inline JavaScript IIFE (~2,700 lines) in the HTML file
+- Separate THREE.Scene objects for markers, constraints, members, and measurement labels — all rendered in the perspective overlay pass after Potree's own rendering
+- Custom monkey-patched point picker integrates constraint projection and endpoint snapping into Potree's native measurement workflow without modifying Potree's core
+- Custom right-click pan handler intercepts mouse events at the capture phase to ensure panning always works, even when Potree's drag system is occupied by measurement insertion
+- Eye-Dome Lighting (EDL) provides enhanced depth perception without requiring normal data
+- Adaptive point sizing ensures consistent visual density across zoom levels
+- Point budget is adjustable to balance performance on different hardware
+
+
+TARGET USERS
+------------
+- Structural engineers performing as-built surveys and condition assessments
+- Engineering firms that use laser scanning / LiDAR / photogrammetry for existing structure documentation
+- Teams that need to extract dimensions, member locations, and geometric references from point clouds for import into Tekla Structures, SketchUp, AutoCAD, or other modeling/BIM software
+- Any professional who needs to share interactive 3D scan data with clients or team members via a simple web link — no software installation required on the viewer's end
+
+
+DEPLOYMENT MODEL
+-----------------
+- Each client gets a dedicated viewer instance under their own URL path
+- Point cloud data is pre-processed and hosted alongside the viewer
+- Projects are registered in a simple JavaScript configuration file
+- Multiple projects per client are supported — each accessed via a URL parameter
+- The viewer files can be hosted on any standard web server (Apache, Nginx, S3, etc.)
+- No database, no authentication system, no server-side code required — it is a purely static web application
+
+
+VERSION
+-------
+Enable Point Cloud Viewer v1.0
+Powered by Potree (c) 2011-2020 Markus Schutz, BSD 2-Clause License.
