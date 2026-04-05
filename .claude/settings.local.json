@@ -16,7 +16,8 @@
       "Bash(du -sh /c/enable_point_cloud_viewer/potree/pointclouds/*/)",
       "Bash(./PotreeConverter.exe \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\dec 20.las\" -o \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\dec20\" --attributes RGB INTENSITY CLASSIFICATION --material RGB --offset-method AUTO)",
       "Bash(./PotreeConverter.exe \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\mar 31.las\" -o \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\mar31\" --attributes RGB INTENSITY CLASSIFICATION --material RGB --offset-method AUTO)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(git:*)"
     ]
   }
 }
