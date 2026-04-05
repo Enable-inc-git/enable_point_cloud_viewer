@@ -1,0 +1,1923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Enable Temporal Viewer</title>
+
+  <!-- ===================== CSS ===================== -->
+  <link rel="stylesheet" href="../../libs/potree/potree.css">
+  <link rel="stylesheet" href="../../libs/jquery-ui/jquery-ui.min.css">
+  <link rel="stylesheet" href="../../libs/spectrum/spectrum.css">
+  <link rel="stylesheet" href="../../libs/jstree/themes/mixed/style.css">
+  <link rel="stylesheet" href="temporal.css">
+</head>
+
+<body>
+  <!-- ===================== CONTAINER ===================== -->
+  <div class="potree_container">
+    <div id="potree_render_area"></div>
+    <div id="potree_sidebar_container"></div>
+  </div>
+
+  <!-- Toast element -->
+  <div id="enable-toast"></div>
+
+  <!-- Heat map legend -->
+  <div id="heatmap-legend" style="display:none; position:fixed; top:20px; right:20px; z-index:1000; pointer-events:none;">
+    <canvas id="heatmap-legend-canvas" width="180" height="520"></canvas>
+  </div>
+
+  <!-- ===================== VENDOR + POTREE JS ===================== -->
+  <script src="../../libs/jquery/jquery-3.1.1.min.js"></script>
+  <script src="../../libs/spectrum/spectrum.js"></script>
+  <script src="../../libs/jquery-ui/jquery-ui.min.js"></script>
+  <script src="../../libs/other/BinaryHeap.js"></script>
+  <script src="../../libs/tween/tween.min.js"></script>
+  <script src="../../libs/d3/d3.js"></script>
+  <script src="../../libs/proj4/proj4.js"></script>
+  <script src="../../libs/i18next/i18next.js"></script>
+  <script src="../../libs/jstree/jstree.js"></script>
+
+  <script src="../../libs/three/build/three.min.js"></script>
+  <script src="../../libs/potree/potree.js"></script>
+  <script src="../../libs/plasio/js/laslaz.js"></script>
+
+  <!-- Temporal project registry -->
+  <script src="temporal-projects.js"></script>
+
+  <!-- ===================== APP ===================== -->
+  <script>
+  (function () {
+    'use strict';
+
+    /* =========================================================
+       1. PROJECT LOOKUP
+       ========================================================= */
+    const params = new URLSearchParams(location.search);
+    const projectId = params.get('p');
+    if (!projectId) { alert('Missing ?p=<ProjectID> in URL'); return; }
+    const project = (window.TEMPORAL_PROJECTS || {})[projectId];
+    if (!project || !project.scans || project.scans.length < 2) {
+      alert('Project "' + projectId + '" not found or has fewer than 2 scans.');
+      return;
+    }
+
+    /* =========================================================
+       2. POTREE VIEWER INIT
+       ========================================================= */
+    const renderArea = document.getElementById('potree_render_area');
+    const viewer = new Potree.Viewer(renderArea, {
+      useDefaultRenderLoop: true,
+      showBoundingBox: false
+    });
+
+    viewer.setEDLEnabled(true);
+    viewer.setFOV(60);
+    viewer.setPointBudget(4_000_000);
+    viewer.setDescription(project.name || projectId);
+    viewer.loadSettingsFromURL();
+
+    /* =========================================================
+       3. RIGHT-CLICK PAN FIX (same as main viewer)
+       ========================================================= */
+    (function () {
+      var rightDragPrev = null;
+      var domEl = viewer.renderer.domElement;
+
+      domEl.addEventListener('mousedown', function (e) {
+        if (e.button === 2) {
+          e.stopImmediatePropagation();
+          rightDragPrev = { x: e.clientX, y: e.clientY };
+        }
+      }, true);
+
+      domEl.addEventListener('mousemove', function (e) {
+        if (!rightDragPrev || !(e.buttons & 2)) {
+          if (rightDragPrev) rightDragPrev = null;
+          return;
+        }
+        e.stopImmediatePropagation();
+        var dx = e.clientX - rightDragPrev.x;
+        var dy = e.clientY - rightDragPrev.y;
+        rightDragPrev = { x: e.clientX, y: e.clientY };
+        var controls = viewer.getControls();
+        if (controls && controls.panDelta) {
+          controls.panDelta.x += dx / domEl.clientWidth;
+          controls.panDelta.y += dy / domEl.clientHeight;
+          if (controls.stopTweens) controls.stopTweens();
+        }
+      }, true);
+
+      domEl.addEventListener('mouseup', function (e) {
+        if (e.button === 2) {
+          e.stopImmediatePropagation();
+          rightDragPrev = null;
+        }
+      }, true);
+    })();
+
+    /* =========================================================
+       4. TOAST HELPER
+       ========================================================= */
+    function showToast(msg, ms) {
+      ms = ms || 2000;
+      var el = document.getElementById('enable-toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(el._tid);
+      el._tid = setTimeout(function () { el.classList.remove('show'); }, ms);
+    }
+
+    /* =========================================================
+       5. SCAN STATE
+       ========================================================= */
+    const SCAN_COLORS = ['#3EAD4A', '#ffa500', '#4db6ff', '#ff4444', '#cc66ff'];
+    const scans = []; // { id, name, date, folder, pointCloud, loaded, pointCount, color }
+    let selectedA = null; // scan id
+    let selectedB = null; // scan id
+
+    // Crop box state
+    let cropVolume = null; // Potree BoxVolume for limiting heat map region
+
+    // Exclusion boxes — areas to remove from heat map
+    let exclusionBoxes = []; // array of Potree BoxVolume
+
+    // Contour line state
+    let contourScene = new THREE.Scene();
+    contourScene.name = 'ContourScene';
+    let contoursVisible = false;
+    let contourData = null; // { positions, distances } cached for rebuilding
+
+    // Heat map state
+    let heatmapDistances = null;  // Float32Array — cached after compute
+    let heatmapNodeMap = null;    // array of { nodeRef, startIndex, count }
+    let heatmapTarget = null;     // 'a' or 'b' — which scan is colorized
+    let heatmapWorker = null;
+    let heatmapActive = false;
+
+    // Store original RGBA per node so we can restore after clearing heat map
+    let originalRGBA = null; // Map<geometryNode, Uint8Array>
+
+    /* =========================================================
+       6. LOAD GUI + SIDEBAR SETUP
+       ========================================================= */
+    viewer.loadGUI(function () {
+      viewer.setLanguage('en');
+
+      var $menu = $("#potree_menu");
+
+      // Kill accordion
+      try { $menu.accordion("destroy"); } catch (e) { }
+      $menu.removeClass("ui-accordion ui-widget ui-helper-reset")
+        .removeData("uiAccordion").removeData("ui-accordion");
+
+      $menu.find("h3, .accordion-header, .ui-accordion-header")
+        .off("click").css("cursor", "default");
+
+      $menu.children("div")
+        .show().attr("aria-hidden", "false")
+        .css({ display: "block", height: "auto", overflow: "visible" });
+
+      $menu.find(".ui-accordion-content")
+        .css({ display: "block", height: "auto", overflow: "visible" })
+        .attr("aria-hidden", "false");
+
+      // Remove map
+      $(".potree_toggle_map, #potree_toggle_map, .mapToggle").remove();
+      $("#menu_map, #map, #potree_map_container").remove();
+
+      // Mutation observer to keep panels open
+      var mo = new MutationObserver(function () {
+        if ($menu.data("uiAccordion") || $menu.hasClass("ui-accordion")) {
+          try { $menu.accordion("destroy"); } catch (e) { }
+          $menu.removeClass("ui-accordion").removeData("uiAccordion").removeData("ui-accordion");
+        }
+        $menu.children("div").css({ display: "block", height: "auto", overflow: "visible" })
+          .attr("aria-hidden", "false");
+        $menu.find(".ui-accordion-content")
+          .css({ display: "block", height: "auto", overflow: "visible" })
+          .attr("aria-hidden", "false");
+      });
+      mo.observe($menu[0], { attributes: true, childList: true, subtree: true });
+
+      // Silence benign sidebar errors
+      var sb = viewer.sidebar;
+      if (sb) {
+        ["initReturnFilters", "initFilters", "onReturnNumberChanged"].forEach(function (fn) {
+          if (typeof sb[fn] === "function") {
+            var orig = sb[fn].bind(sb);
+            sb[fn] = function () { try { return orig.apply(this, arguments); } catch (e) { } };
+          }
+        });
+      }
+
+      // Background = None
+      try { if (viewer.renderer && viewer.renderer.setClearAlpha) viewer.renderer.setClearAlpha(0); } catch (_) { }
+      try { viewer.setBackground("null"); } catch (_) { }
+
+    });
+
+    // Inject our custom panels (poll for sidebar DOM readiness)
+    injectTemporalPanels();
+
+    /* =========================================================
+       7. LOAD POINT CLOUDS
+       ========================================================= */
+    let loadedCount = 0;
+
+    project.scans.forEach(function (scanDef, idx) {
+      var cloudURL = scanDef.folder.replace(/\/+$/, '') + '/cloud.js';
+      var color = SCAN_COLORS[idx % SCAN_COLORS.length];
+
+      var scanObj = {
+        id: scanDef.id,
+        name: scanDef.name,
+        date: scanDef.date,
+        folder: scanDef.folder,
+        pointCloud: null,
+        loaded: false,
+        pointCount: 0,
+        color: color
+      };
+      scans.push(scanObj);
+
+      Potree.loadPointCloud(cloudURL, scanDef.name, function (e) {
+        var pc = e.pointcloud;
+        scanObj.pointCloud = pc;
+        scanObj.loaded = true;
+        scanObj.pointCount = e.pointcloud.pcoGeometry.numPoints || 0;
+
+        viewer.scene.addPointCloud(pc);
+        pc.material.size = 1;
+        pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+
+        loadedCount++;
+        rebuildScanList();
+
+        // Auto-select A and B when both are loaded
+        if (loadedCount === 2 && scans.length >= 2) {
+          if (!selectedA) { selectedA = scans[0].id; }
+          if (!selectedB) { selectedB = scans[1].id; }
+          rebuildScanList();
+        }
+
+        // Fit view when first scan loads
+        if (loadedCount === 1) {
+          viewer.fitToScreen();
+        }
+
+        showToast(scanDef.name + ' loaded (' + scanObj.pointCount.toLocaleString() + ' pts)');
+      });
+    });
+
+    /* =========================================================
+       8. CREATE CLIP BOX (locked, persistent)
+       ========================================================= */
+    function createClipBox() {
+      var volume = viewer.setClipVolume
+        ? viewer.setClipVolume(new Potree.BoxVolume())
+        : (function () {
+          var v = new Potree.BoxVolume();
+          viewer.scene.addVolume(v);
+          return v;
+        })();
+
+      if (volume) {
+        volume.clip = true;
+        volume.visible = false;
+      }
+    }
+
+    /* =========================================================
+       9. SIDEBAR PANEL INJECTION
+       ========================================================= */
+    function injectTemporalPanels() {
+      var $tools = $('#tools');
+      if (!$tools.length) { setTimeout(injectTemporalPanels, 200); return; }
+
+      // --- Scan Panel ---
+      var scanHTML = '<div class="scan-panel">' +
+        '<div class="scan-panel-title">Scans</div>' +
+        '<div id="scan-list"></div>' +
+        '</div>';
+
+      // --- Heat Map Panel ---
+      var heatmapHTML = '<div class="heatmap-panel">' +
+        '<div class="heatmap-panel-title">Heat Map</div>' +
+        '<div class="heatmap-controls">' +
+          '<div class="heatmap-control-row">' +
+            '<label>Colorize</label>' +
+            '<select id="heatmap-target">' +
+              '<option value="b">Scan B (comparison)</option>' +
+              '<option value="a">Scan A (baseline)</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="heatmap-control-row">' +
+            '<label>Subsample</label>' +
+            '<select id="heatmap-subsample">' +
+              '<option value="1">Full (every point)</option>' +
+              '<option value="2">1/2 (preview)</option>' +
+              '<option value="4">1/4 (fast preview)</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;margin:6px 0">' +
+          '<button id="btn-set-cropbox" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text)">Set Crop Box</button>' +
+          '<button id="btn-toggle-cropbox" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);display:none">Disable Clip</button>' +
+          '<button id="btn-softclip-cropbox" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);display:none">Soft Clip</button>' +
+          '<button id="btn-clear-cropbox" style="padding:5px 8px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);display:none" title="Remove crop box">&#10005;</button>' +
+        '</div>' +
+        '<div id="cropbox-status" style="font:11px/1.3 sans-serif;color:var(--muted);margin:2px 0;min-height:14px"></div>' +
+        '<div style="display:flex;gap:6px;margin:4px 0">' +
+          '<button id="btn-add-exclusion" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text)">Add Exclusion Zone</button>' +
+          '<button id="btn-clear-exclusions" style="padding:5px 8px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);display:none" title="Remove all exclusion zones">Clear All</button>' +
+        '</div>' +
+        '<div id="exclusion-list" style="font:11px/1.3 sans-serif;color:var(--muted);margin:2px 0"></div>' +
+        '<button id="btn-compute-heatmap" disabled>Compute Heat Map</button>' +
+        '<button id="btn-clear-heatmap" style="display:none">Clear Heat Map</button>' +
+        '<div class="heatmap-progress">' +
+          '<div class="heatmap-progress-bar">' +
+            '<div class="heatmap-progress-fill"></div>' +
+            '<div class="heatmap-progress-label">0%</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="heatmap-range-controls" id="heatmap-range-controls" style="display:none">' +
+          '<div class="heatmap-control-row">' +
+            '<label>Noise Floor (mm)</label>' +
+            '<input type="number" id="heatmap-range-noise" value="3" min="0" step="0.5" title="Distances below this are uncolored (no change)">' +
+          '</div>' +
+          '<div class="heatmap-control-row">' +
+            '<label>Range Max (mm)</label>' +
+            '<input type="number" id="heatmap-range-max" value="50" min="0.5" step="0.5" title="Full red/blue saturation at this distance">' +
+          '</div>' +
+          '<button id="btn-recolor-heatmap" style="width:100%;padding:5px;margin:4px 0;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text)">Apply Range</button>' +
+          '<div style="display:flex;gap:6px;margin:4px 0">' +
+            '<button id="btn-toggle-contours" style="flex:1;padding:5px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text)">Show Contours</button>' +
+            '<button id="btn-clear-contours" style="flex:1;padding:5px;border:1px solid var(--border);border-radius:4px;font:12px/1.3 sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);display:none">Clear Contours</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="heatmap-status" id="heatmap-status"></div>' +
+        '</div>';
+
+      // --- Version Footer ---
+      var footerHTML = '<div id="enable-version-footer">' +
+        'Enable Temporal Viewer v1.0<br>' +
+        '<span style="font-size:10px;opacity:0.6">Potree &copy; Markus Sch&uuml;tz | ' +
+        '<a href="https://github.com/potree/potree/blob/develop/LICENSE" target="_blank">BSD 2-Clause</a></span>' +
+        '</div>';
+
+      $tools.after(heatmapHTML);
+      $tools.after(scanHTML);
+      $("body").append(footerHTML);
+
+      // Wire up buttons
+      $("#btn-compute-heatmap").on("click", onComputeHeatMap);
+      $("#btn-clear-heatmap").on("click", onClearHeatMap);
+      $("#btn-set-cropbox").on("click", onSetCropBox);
+      $("#btn-clear-cropbox").on("click", onClearCropBox);
+      $("#btn-toggle-cropbox").on("click", onToggleCropBox);
+      $("#btn-softclip-cropbox").on("click", onSoftClipToggle);
+      $("#btn-add-exclusion").on("click", onAddExclusion);
+      $("#btn-clear-exclusions").on("click", onClearExclusions);
+      $(document).on("click", "#btn-toggle-contours", function () {
+        if (!contourData) { showToast('Compute heat map first'); return; }
+        contoursVisible = !contoursVisible;
+        if (contoursVisible) {
+          try {
+            var noiseFloor = parseFloat($("#heatmap-range-noise").val()) || 0;
+            var maxR = parseFloat($("#heatmap-range-max").val()) || 50;
+            buildContourLines(contourData.positions, contourData.distances, noiseFloor, maxR);
+            $("#btn-toggle-contours").text('Hide Contours');
+            $("#btn-clear-contours").show();
+            showToast('Contours: ' + contourScene.children.length + ' objects');
+          } catch (err) {
+            console.error('Contour build error:', err);
+            showToast('Error building contours: ' + err.message);
+            contoursVisible = false;
+          }
+        } else {
+          contoursVisible = false;
+          $("#btn-toggle-contours").text('Show Contours');
+        }
+      });
+
+      $(document).on("click", "#btn-clear-contours", function () {
+        clearContourLines();
+        contoursVisible = false;
+        contourScene.visible = true;
+        $("#btn-toggle-contours").text('Show Contours');
+        $("#btn-clear-contours").hide();
+        showToast('Contours cleared');
+      });
+
+      $(document).on("click", "#btn-recolor-heatmap", function () {
+        if (!heatmapDistances || !heatmapNodeMap) return;
+        var noiseFloor = parseFloat($("#heatmap-range-noise").val()) || 0;
+        var maxR = parseFloat($("#heatmap-range-max").val()) || 50;
+        applyHeatMapColors(heatmapDistances, heatmapNodeMap, noiseFloor, maxR);
+        updateLegend(noiseFloor, maxR);
+        if (contoursVisible && contourData) {
+          buildContourLines(contourData.positions, contourData.distances, noiseFloor, maxR);
+        }
+        showToast('Re-colored: ' + noiseFloor.toFixed(1) + ' – ' + maxR.toFixed(1) + ' mm');
+      });
+
+      // Initial state
+      rebuildScanList();
+      updateComputeButton();
+    }
+
+    /* =========================================================
+       10. SCAN LIST UI
+       ========================================================= */
+    function rebuildScanList() {
+      var $list = $("#scan-list");
+      if (!$list.length) return;
+      $list.empty();
+
+      scans.forEach(function (scan) {
+        var isA = (scan.id === selectedA);
+        var isB = (scan.id === selectedB);
+        var rowClass = 'scan-row';
+        if (isA) rowClass += ' selected-a';
+        if (isB) rowClass += ' selected-b';
+
+        var statusText = scan.loaded
+          ? scan.pointCount.toLocaleString() + ' pts'
+          : 'Loading...';
+
+        var abLabel = '';
+        if (isA) abLabel = '<span class="scan-ab-label label-a">A</span>';
+        else if (isB) abLabel = '<span class="scan-ab-label label-b">B</span>';
+        else abLabel = '<span class="scan-ab-label label-none">&nbsp;</span>';
+
+        var visible = scan.pointCloud ? scan.pointCloud.visible : true;
+        var visClass = visible ? 'btn-vis' : 'btn-vis hidden';
+
+        var html = '<div class="' + rowClass + '" data-scan-id="' + scan.id + '">' +
+          abLabel +
+          '<div class="scan-color" style="background:' + scan.color + '"></div>' +
+          '<div class="scan-info">' +
+            '<div class="scan-name">' + scan.name + '</div>' +
+            '<div class="scan-date">' + scan.date + ' &middot; ' + statusText + '</div>' +
+          '</div>' +
+          '<div class="scan-select-group">' +
+            '<button class="btn-set-a' + (isA ? ' active-a' : '') + '" data-id="' + scan.id + '" title="Set as Baseline (A)">A</button>' +
+            '<button class="btn-set-b' + (isB ? ' active-b' : '') + '" data-id="' + scan.id + '" title="Set as Comparison (B)">B</button>' +
+          '</div>' +
+          '<button class="' + visClass + '" data-id="' + scan.id + '" title="Toggle visibility">' +
+            (visible ? '&#128065;' : '&#128065;') +
+          '</button>' +
+          '</div>';
+
+        $list.append(html);
+      });
+
+      // Bind A/B selection buttons
+      $list.find(".btn-set-a").off("click").on("click", function () {
+        var id = $(this).data("id");
+        if (selectedB === id) selectedB = null;
+        selectedA = id;
+        rebuildScanList();
+        updateComputeButton();
+      });
+
+      $list.find(".btn-set-b").off("click").on("click", function () {
+        var id = $(this).data("id");
+        if (selectedA === id) selectedA = null;
+        selectedB = id;
+        rebuildScanList();
+        updateComputeButton();
+      });
+
+      // Bind visibility toggle
+      $list.find(".btn-vis").off("click").on("click", function () {
+        var id = $(this).data("id");
+        var scan = scans.find(function (s) { return s.id === id; });
+        if (scan && scan.pointCloud) {
+          scan.pointCloud.visible = !scan.pointCloud.visible;
+          rebuildScanList();
+        }
+      });
+    }
+
+    function updateComputeButton() {
+      var scanA = scans.find(function (s) { return s.id === selectedA; });
+      var scanB = scans.find(function (s) { return s.id === selectedB; });
+      var ready = scanA && scanA.loaded && scanB && scanB.loaded && selectedA !== selectedB;
+      $("#btn-compute-heatmap").prop("disabled", !ready);
+    }
+
+    /* =========================================================
+       11. FORCE-LOAD ALL OCTREE NODES
+       ========================================================= */
+    function forceLoadAllNodes(pointCloud) {
+      return new Promise(function (resolve) {
+        var geo = pointCloud.pcoGeometry;
+        if (!geo || !geo.root) { resolve(); return; }
+
+        // Recursively trigger load on every node
+        function triggerLoads(node) {
+          if (!node) return;
+          if (!node.loaded) node.load();
+          if (node.children) {
+            for (var i = 0; i < 8; i++) {
+              if (node.children[i]) triggerLoads(node.children[i]);
+            }
+          }
+        }
+
+        // Raise loading limit temporarily
+        var origMax = Potree.maxNodesLoading || 4;
+        Potree.maxNodesLoading = 20;
+
+        triggerLoads(geo.root);
+
+        // Poll until all loaded
+        var poll = setInterval(function () {
+          if (Potree.numNodesLoading === 0) {
+            clearInterval(poll);
+            Potree.maxNodesLoading = origMax;
+            resolve();
+          } else {
+            // Re-trigger in case some were queued but not started
+            triggerLoads(geo.root);
+          }
+        }, 100);
+      });
+    }
+
+    /* =========================================================
+       12. EXTRACT POSITIONS FROM POINT CLOUD
+       ========================================================= */
+    function extractPositions(pointCloud) {
+      var geo = pointCloud.pcoGeometry;
+      var allPositions = [];
+      var nodeMap = []; // { geometryNode, startIndex, count }
+      var totalCount = 0;
+
+      function traverse(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry) {
+          var posAttr = node.geometry.attributes.position;
+          if (posAttr && posAttr.array) {
+            // Each node's geometry positions are relative to the node's bounding box.
+            // The scene node is placed at geometryNode.boundingBox.min.
+            // The point cloud object is placed at pcoGeometry.offset.
+            // So world position = offset + boundingBox.min + geometry position.
+            var bbMin = node.boundingBox
+              ? { x: node.boundingBox.min.x, y: node.boundingBox.min.y, z: node.boundingBox.min.z }
+              : { x: 0, y: 0, z: 0 };
+
+            nodeMap.push({
+              geometryNode: node,
+              startIndex: totalCount,
+              count: posAttr.count,
+              bbMin: bbMin
+            });
+            totalCount += posAttr.count;
+            allPositions.push({ array: posAttr.array, count: posAttr.count, bbMin: bbMin });
+          }
+        }
+        if (node.children) {
+          for (var i = 0; i < 8; i++) {
+            if (node.children[i]) traverse(node.children[i]);
+          }
+        }
+      }
+
+      traverse(geo.root);
+
+      // Merge into single Float32Array
+      // World position = pcoGeometry.offset + node.boundingBox.min + geometry position
+      var merged = new Float32Array(totalCount * 3);
+      var writeOffset = 0;
+
+      var pcoOffset = geo.offset;
+      var ox = pcoOffset.x, oy = pcoOffset.y, oz = pcoOffset.z;
+
+      for (var n = 0; n < allPositions.length; n++) {
+        var arr = allPositions[n].array;
+        var cnt = allPositions[n].count;
+        var bb = allPositions[n].bbMin;
+
+        // Combined offset: pcoGeometry.offset + node.boundingBox.min
+        var tx = ox + bb.x;
+        var ty = oy + bb.y;
+        var tz = oz + bb.z;
+
+        for (var i = 0; i < cnt; i++) {
+          merged[writeOffset]     = arr[i * 3]     + tx;
+          merged[writeOffset + 1] = arr[i * 3 + 1] + ty;
+          merged[writeOffset + 2] = arr[i * 3 + 2] + tz;
+          writeOffset += 3;
+        }
+      }
+
+      return { positions: merged, count: totalCount, nodeMap: nodeMap };
+    }
+
+    /* =========================================================
+       13. BACKUP / RESTORE ORIGINAL RGBA
+       ========================================================= */
+    function backupOriginalRGBA(pointCloud) {
+      var map = new Map();
+      var geo = pointCloud.pcoGeometry;
+
+      function traverse(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry) {
+          var rgba = node.geometry.attributes.rgba;
+          if (rgba && rgba.array) {
+            map.set(node, new Uint8Array(rgba.array)); // copy
+          }
+        }
+        if (node.children) {
+          for (var i = 0; i < 8; i++) {
+            if (node.children[i]) traverse(node.children[i]);
+          }
+        }
+      }
+
+      traverse(geo.root);
+      return map;
+    }
+
+    function restoreOriginalRGBA(backupMap) {
+      if (!backupMap) return;
+      backupMap.forEach(function (origArray, node) {
+        if (node.geometry && node.geometry.attributes.rgba) {
+          var rgba = node.geometry.attributes.rgba;
+          rgba.array.set(origArray);
+          rgba.needsUpdate = true;
+        }
+      });
+    }
+
+    /* =========================================================
+       14. COLOR RAMP: distance → RGBA
+       ========================================================= */
+    // Return null to mean "keep original color" (skip this point)
+    function distanceToRGBA(dist, noiseFloor, maxRange) {
+      // Uncomputed (subsampled skip) — keep original
+      if (dist === -1) return null;
+      // No corresponding surface (foreign object) — keep original
+      if (dist <= -99000) return null;
+
+      var absDist = Math.abs(dist);
+
+      // Within noise floor — keep original color (no change detected)
+      if (absDist <= noiseFloor) return null;
+
+      // Signed diverging color ramp:
+      //   Negative (moved inward/down): blue
+      //   Positive (moved outward/up):  red
+      //   Magnitude maps intensity: noiseFloor → pale, maxRange → saturated
+
+      var t = (absDist - noiseFloor) / (maxRange - noiseFloor);
+      t = Math.max(0, Math.min(1, t)); // clamp; beyond maxRange stays at max color
+
+      var r, g, b;
+      if (dist > 0) {
+        // Positive: white → orange → red
+        if (t < 0.5) {
+          var s = t / 0.5;
+          r = 255;
+          g = Math.round(220 * (1 - s) + 100 * s);  // 220 → 100
+          b = Math.round(180 * (1 - s));              // 180 → 0
+        } else {
+          var s = (t - 0.5) / 0.5;
+          r = 255;
+          g = Math.round(100 * (1 - s));               // 100 → 0
+          b = 0;
+        }
+      } else {
+        // Negative: white → cyan → blue
+        if (t < 0.5) {
+          var s = t / 0.5;
+          r = Math.round(180 * (1 - s));               // 180 → 0
+          g = Math.round(220 * (1 - s) + 100 * s);    // 220 → 100
+          b = 255;
+        } else {
+          var s = (t - 0.5) / 0.5;
+          r = 0;
+          g = Math.round(100 * (1 - s));                // 100 → 0
+          b = 255;
+        }
+      }
+
+      return [r, g, b, 255];
+    }
+
+    /* =========================================================
+       15. APPLY HEAT MAP COLORS TO GEOMETRY
+       ========================================================= */
+    /* =========================================================
+       HEAT MAP LEGEND
+       ========================================================= */
+    function updateLegend(noiseFloor, maxRange) {
+      var canvas = document.getElementById('heatmap-legend-canvas');
+      if (!canvas) return;
+      var ctx = canvas.getContext('2d');
+      var w = canvas.width;
+      var h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      var barX = 100;
+      var barW = 40;
+      var barTop = 60;
+      var barBot = h - 20;
+      var barH = barBot - barTop;
+
+      // Draw gradient bar: top = +maxRange (red), middle = 0, bottom = -maxRange (blue)
+      for (var y = 0; y < barH; y++) {
+        var t = y / barH;
+        var dist = maxRange * (1 - 2 * t);
+
+        var color = distanceToRGBA(dist, noiseFloor, maxRange);
+        if (color) {
+          ctx.fillStyle = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
+        } else {
+          ctx.fillStyle = '#444';
+        }
+        ctx.fillRect(barX, barTop + y, barW, 1);
+      }
+
+      // Border around bar
+      ctx.strokeStyle = '#aaa';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barX, barTop, barW, barH);
+
+      // Tick marks and labels — left side of bar, right-aligned
+      var tickLen = 6;
+      var labelRight = barX - 8; // right edge of labels, just left of bar
+
+      // Pick a nice step giving 3-8 ticks
+      var steps = [1, 2, 5, 10, 15, 20, 25, 50, 100];
+      var step = 10;
+      for (var si = 0; si < steps.length; si++) {
+        var nTicks = Math.floor(maxRange / steps[si]);
+        if (nTicks >= 3 && nTicks <= 8) { step = steps[si]; break; }
+      }
+
+      ctx.font = '20px sans-serif';
+      ctx.textBaseline = 'middle';
+
+      // Draw ticks for positive side
+      for (var v = 0; v <= maxRange; v += step) {
+        var yPos = barTop + barH * (1 - (v / maxRange)) / 2;
+
+        ctx.strokeStyle = '#ccc';
+        ctx.beginPath();
+        ctx.moveTo(barX - tickLen, yPos);
+        ctx.lineTo(barX, yPos);
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'right';
+        if (v === 0) {
+          ctx.fillText('0', labelRight, yPos);
+        } else {
+          ctx.fillText('+ ' + v.toFixed(0), labelRight, yPos);
+        }
+      }
+
+      // Draw ticks for negative side (skip 0)
+      for (var v = step; v <= maxRange; v += step) {
+        var yPos = barTop + barH * (1 + (v / maxRange)) / 2;
+
+        ctx.strokeStyle = '#ccc';
+        ctx.beginPath();
+        ctx.moveTo(barX - tickLen, yPos);
+        ctx.lineTo(barX, yPos);
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'right';
+        ctx.fillText('- ' + v.toFixed(0), labelRight, yPos);
+      }
+
+      // Noise floor markers
+      if (noiseFloor > 0) {
+        var nfTopY = barTop + barH * (1 - (noiseFloor / maxRange)) / 2;
+        var nfBotY = barTop + barH * (1 + (noiseFloor / maxRange)) / 2;
+
+        ctx.strokeStyle = '#888';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(barX, nfTopY);
+        ctx.lineTo(barX + barW, nfTopY);
+        ctx.moveTo(barX, nfBotY);
+        ctx.lineTo(barX + barW, nfBotY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Title — bigger and bolder than values, centered over bar+labels
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.textAlign = 'center';
+      var centerX = (labelRight + barX + barW) / 2;
+      ctx.fillText('Displacement', centerX, 18);
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText('(mm)', centerX, 40);
+
+      $("#heatmap-legend").show();
+    }
+
+    function hideLegend() {
+      $("#heatmap-legend").hide();
+    }
+
+    /* =========================================================
+       CONTOUR LINES
+       ========================================================= */
+    function clearContourLines() {
+      while (contourScene.children.length > 0) {
+        var child = contourScene.children[0];
+        contourScene.remove(child);
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) child.material.dispose();
+      }
+    }
+
+    function buildContourLines(positions, distances, noiseFloor, maxRange) {
+      clearContourLines();
+
+      // Pre-compute exclusion box inverse matrices
+      var exclInvMats = [];
+      for (var ei = 0; ei < exclusionBoxes.length; ei++) {
+        exclusionBoxes[ei].updateMatrixWorld(true);
+        exclInvMats.push(new THREE.Matrix4().copy(exclusionBoxes[ei].matrixWorld).invert());
+      }
+
+      // Collect valid points (computed, above noise floor, not excluded)
+      var pts = []; // { x, y, z, dist }
+      for (var i = 0; i < distances.length; i++) {
+        if (distances[i] === -1 || distances[i] <= -99000) continue;
+
+        var px = positions[i * 3];
+        var py = positions[i * 3 + 1];
+        var pz = positions[i * 3 + 2];
+
+        // Check exclusion zones
+        var excluded = false;
+        for (var ei = 0; ei < exclInvMats.length; ei++) {
+          var local = new THREE.Vector3(px, py, pz).applyMatrix4(exclInvMats[ei]);
+          if (Math.abs(local.x) <= 0.5 && Math.abs(local.y) <= 0.5 && Math.abs(local.z) <= 0.5) {
+            excluded = true;
+            break;
+          }
+        }
+        if (excluded) continue;
+
+        pts.push({ x: px, y: py, z: pz, dist: distances[i] });
+      }
+
+      if (pts.length < 100) return;
+
+      // Find the dominant surface plane using PCA on all points.
+      // This determines the projection plane for the 2D grid.
+      var cx = 0, cy = 0, cz = 0;
+      for (var i = 0; i < pts.length; i++) {
+        cx += pts[i].x; cy += pts[i].y; cz += pts[i].z;
+      }
+      cx /= pts.length; cy /= pts.length; cz /= pts.length;
+
+      var cxx = 0, cxy = 0, cxz = 0, cyy = 0, cyz = 0, czz = 0;
+      for (var i = 0; i < pts.length; i++) {
+        var dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+        cxx += dx * dx; cxy += dx * dy; cxz += dx * dz;
+        cyy += dy * dy; cyz += dy * dz; czz += dz * dz;
+      }
+
+      // Surface normal = smallest eigenvector (using same function as worker)
+      var normal = smallestEigenvector3x3_local(cxx, cxy, cxz, cyy, cyz, czz);
+
+      // Build local 2D coordinate system on the surface plane
+      // U = direction with largest spread, V = perpendicular to U and normal
+      var absNx = Math.abs(normal[0]), absNy = Math.abs(normal[1]), absNz = Math.abs(normal[2]);
+      var up;
+      if (absNz > absNx && absNz > absNy) {
+        up = new THREE.Vector3(1, 0, 0); // floor-like: use X as reference
+      } else if (absNy > absNx) {
+        up = new THREE.Vector3(1, 0, 0);
+      } else {
+        up = new THREE.Vector3(0, 1, 0);
+      }
+      var N = new THREE.Vector3(normal[0], normal[1], normal[2]);
+      var U = new THREE.Vector3().crossVectors(up, N).normalize();
+      var V = new THREE.Vector3().crossVectors(N, U).normalize();
+
+      // Project all points onto the UV plane
+      var centroid = new THREE.Vector3(cx, cy, cz);
+      var uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+      for (var i = 0; i < pts.length; i++) {
+        var dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+        var u = dx * U.x + dy * U.y + dz * U.z;
+        var v = dx * V.x + dy * V.y + dz * V.z;
+        pts[i].u = u;
+        pts[i].v = v;
+        if (u < uMin) uMin = u; if (u > uMax) uMax = u;
+        if (v < vMin) vMin = v; if (v > vMax) vMax = v;
+      }
+
+      // Create a 2D grid and bin point distances
+      var gridRes = 100; // grid cells per axis
+      var uRange = uMax - uMin;
+      var vRange = vMax - vMin;
+      if (uRange < 0.001 || vRange < 0.001) return;
+
+      var cellU = uRange / gridRes;
+      var cellV = vRange / gridRes;
+
+      // Grid stores sum and count for averaging, plus average Z offset along normal
+      var grid = new Float32Array(gridRes * gridRes);
+      var gridCount = new Uint16Array(gridRes * gridRes);
+      var gridN = new Float32Array(gridRes * gridRes); // normal-direction offset for 3D reconstruction
+
+      for (var i = 0; i < pts.length; i++) {
+        var iu = Math.floor((pts[i].u - uMin) / cellU);
+        var iv = Math.floor((pts[i].v - vMin) / cellV);
+        if (iu >= gridRes) iu = gridRes - 1;
+        if (iv >= gridRes) iv = gridRes - 1;
+        var idx = iv * gridRes + iu;
+        grid[idx] += pts[i].dist;
+        gridCount[idx]++;
+        var dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+        gridN[idx] += dx * N.x + dy * N.y + dz * N.z;
+      }
+
+      // Average
+      var gridAvg = new Float32Array(gridRes * gridRes);
+      var gridNAvg = new Float32Array(gridRes * gridRes);
+      for (var i = 0; i < gridRes * gridRes; i++) {
+        if (gridCount[i] > 0) {
+          gridAvg[i] = grid[i] / gridCount[i];
+          gridNAvg[i] = gridN[i] / gridCount[i];
+        } else {
+          gridAvg[i] = NaN;
+          gridNAvg[i] = 0;
+        }
+      }
+
+      // Generate contour levels matching the legend ticks
+      var steps = [1, 2, 5, 10, 15, 20, 25, 50, 100];
+      var step = 10;
+      for (var si = 0; si < steps.length; si++) {
+        var nTicks = Math.floor(maxRange / steps[si]);
+        if (nTicks >= 3 && nTicks <= 8) { step = steps[si]; break; }
+      }
+
+      var contourLevels = [];
+      for (var v = -maxRange; v <= maxRange; v += step) {
+        if (Math.abs(v) >= noiseFloor) {
+          contourLevels.push(v);
+        }
+      }
+
+      // Marching squares for each contour level
+      var contourMaterial = new THREE.LineBasicMaterial({
+        color: 0x000000,
+        linewidth: 2,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.8
+      });
+
+      for (var ci = 0; ci < contourLevels.length; ci++) {
+        var level = contourLevels[ci];
+        var segments = marchingSquares(gridAvg, gridRes, gridRes, level);
+
+        if (segments.length === 0) continue;
+
+        var linePositions = [];
+        for (var si = 0; si < segments.length; si++) {
+          var seg = segments[si];
+          // Convert grid coords back to 3D world coords
+          for (var pi = 0; pi < 2; pi++) {
+            var gu = seg[pi * 2];
+            var gv = seg[pi * 2 + 1];
+
+            // Grid to UV space
+            var uVal = uMin + gu * cellU;
+            var vVal = vMin + gv * cellV;
+
+            // Interpolate normal offset from grid
+            var iu = Math.floor(gu);
+            var iv = Math.floor(gv);
+            if (iu >= gridRes) iu = gridRes - 1;
+            if (iv >= gridRes) iv = gridRes - 1;
+            var nOffset = gridNAvg[iv * gridRes + iu];
+
+            // UV + normal offset back to world
+            var wx = cx + uVal * U.x + vVal * V.x + nOffset * N.x;
+            var wy = cy + uVal * U.y + vVal * V.y + nOffset * N.y;
+            var wz = cz + uVal * U.z + vVal * V.z + nOffset * N.z;
+
+            linePositions.push(wx, wy, wz);
+          }
+        }
+
+        if (linePositions.length > 0) {
+          var geometry = new THREE.BufferGeometry();
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+          var line = new THREE.LineSegments(geometry, contourMaterial.clone());
+          line.userData.contourLevel = level;
+          line.raycast = function () {}; // don't intercept mouse events
+          contourScene.add(line);
+
+          // Add labels along the contour at intervals
+          var labelText = (level > 0 ? '+ ' : level < 0 ? '- ' : '') + Math.abs(level).toFixed(0);
+          var totalSegs = linePositions.length / 6; // each segment = 2 vertices = 6 floats
+          // Place a label roughly every 15-25 segments, minimum 1
+          var labelInterval = Math.max(1, Math.floor(totalSegs / 8));
+          for (var li = 0; li < totalSegs; li += labelInterval) {
+            var lx = (linePositions[li * 6] + linePositions[li * 6 + 3]) / 2;
+            var ly = (linePositions[li * 6 + 1] + linePositions[li * 6 + 4]) / 2;
+            var lz = (linePositions[li * 6 + 2] + linePositions[li * 6 + 5]) / 2;
+            var sprite = createContourLabel(labelText, level > 0 ? '#ff4400' : level < 0 ? '#0066ff' : '#ffffff');
+            sprite.position.set(lx, ly, lz);
+            contourScene.add(sprite);
+          }
+        }
+      }
+    }
+
+    function createContourLabel(text, color) {
+      var canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 48;
+      var ctx = canvas.getContext('2d');
+
+      // Background pill
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.beginPath();
+      ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 8);
+      ctx.fill();
+
+      // Text
+      ctx.fillStyle = color;
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+      var texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      var material = new THREE.SpriteMaterial({
+        map: texture,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        sizeAttenuation: true
+      });
+      var sprite = new THREE.Sprite(material);
+      sprite.scale.set(0.15, 0.06, 1);
+      sprite.raycast = function () {}; // don't intercept mouse events
+      return sprite;
+    }
+
+    // Marching squares: returns array of line segments [[x1,y1,x2,y2], ...]
+    // in grid coordinates (fractional)
+    function marchingSquares(grid, cols, rows, level) {
+      var segments = [];
+
+      function msLerp(va, vb) {
+        if (Math.abs(vb - va) < 1e-10) return 0.5;
+        return (level - va) / (vb - va);
+      }
+
+      for (var r = 0; r < rows - 1; r++) {
+        for (var c = 0; c < cols - 1; c++) {
+          var v00 = grid[r * cols + c];
+          var v10 = grid[r * cols + c + 1];
+          var v01 = grid[(r + 1) * cols + c];
+          var v11 = grid[(r + 1) * cols + c + 1];
+
+          if (isNaN(v00) || isNaN(v10) || isNaN(v01) || isNaN(v11)) continue;
+
+          var b00 = v00 >= level ? 1 : 0;
+          var b10 = v10 >= level ? 1 : 0;
+          var b01 = v01 >= level ? 1 : 0;
+          var b11 = v11 >= level ? 1 : 0;
+
+          var idx = b00 | (b10 << 1) | (b01 << 2) | (b11 << 3);
+          if (idx === 0 || idx === 15) continue;
+
+          var bottom = [c + msLerp(v00, v10), r];
+          var top    = [c + msLerp(v01, v11), r + 1];
+          var left   = [c, r + msLerp(v00, v01)];
+          var right  = [c + 1, r + msLerp(v10, v11)];
+
+          // Lookup table for which edges to connect
+          switch (idx) {
+            case 1:  segments.push([bottom[0], bottom[1], left[0], left[1]]); break;
+            case 2:  segments.push([bottom[0], bottom[1], right[0], right[1]]); break;
+            case 3:  segments.push([left[0], left[1], right[0], right[1]]); break;
+            case 4:  segments.push([left[0], left[1], top[0], top[1]]); break;
+            case 5:  segments.push([bottom[0], bottom[1], top[0], top[1]]); break;
+            case 6:
+              // Ambiguous case: use average to resolve
+              var avg = (v00 + v10 + v01 + v11) / 4;
+              if (avg >= level) {
+                segments.push([bottom[0], bottom[1], left[0], left[1]]);
+                segments.push([right[0], right[1], top[0], top[1]]);
+              } else {
+                segments.push([bottom[0], bottom[1], right[0], right[1]]);
+                segments.push([left[0], left[1], top[0], top[1]]);
+              }
+              break;
+            case 7:  segments.push([right[0], right[1], top[0], top[1]]); break;
+            case 8:  segments.push([right[0], right[1], top[0], top[1]]); break;
+            case 9:
+              var avg = (v00 + v10 + v01 + v11) / 4;
+              if (avg >= level) {
+                segments.push([bottom[0], bottom[1], right[0], right[1]]);
+                segments.push([left[0], left[1], top[0], top[1]]);
+              } else {
+                segments.push([bottom[0], bottom[1], left[0], left[1]]);
+                segments.push([right[0], right[1], top[0], top[1]]);
+              }
+              break;
+            case 10: segments.push([bottom[0], bottom[1], top[0], top[1]]); break;
+            case 11: segments.push([left[0], left[1], top[0], top[1]]); break;
+            case 12: segments.push([left[0], left[1], right[0], right[1]]); break;
+            case 13: segments.push([bottom[0], bottom[1], right[0], right[1]]); break;
+            case 14: segments.push([bottom[0], bottom[1], left[0], left[1]]); break;
+          }
+        }
+      }
+
+      return segments;
+    }
+
+    // Local copy of eigenvector function (same as worker but available on main thread)
+    function smallestEigenvector3x3_local(a00, a01, a02, a11, a12, a22) {
+      var trace = a00 + a11 + a22;
+      var q = trace / 3;
+      var b00 = a00 - q, b11 = a11 - q, b22 = a22 - q;
+      var p2 = b00*b00 + b11*b11 + b22*b22 + 2*(a01*a01 + a02*a02 + a12*a12);
+      var p = Math.sqrt(p2 / 6);
+      if (p < 1e-15) return [0, 0, 1];
+      var invP = 1/p;
+      var B00=b00*invP, B01=a01*invP, B02=a02*invP;
+      var B11=b11*invP, B12=a12*invP, B22=b22*invP;
+      var detB = B00*(B11*B22-B12*B12) - B01*(B01*B22-B12*B02) + B02*(B01*B12-B11*B02);
+      var halfDetB = Math.max(-1, Math.min(1, detB/2));
+      var phi = Math.acos(halfDetB)/3;
+      var lambda0 = q + 2*p*Math.cos(phi + 2*Math.PI/3);
+      var m00=a00-lambda0, m01x=a01, m02x=a02;
+      var m10=a01, m11x=a11-lambda0, m12x=a12;
+      var m20=a02, m21=a12, m22x=a22-lambda0;
+      var nx = m01x*m12x - m02x*m11x;
+      var ny = m02x*m10 - m00*m12x;
+      var nz = m00*m11x - m01x*m10;
+      var len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+      if (len < 1e-12) {
+        nx=m01x*m22x-m02x*m21; ny=m02x*m20-m00*m22x; nz=m00*m21-m01x*m20;
+        len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+      }
+      if (len < 1e-12) {
+        nx=m11x*m22x-m12x*m21; ny=m12x*m20-m10*m22x; nz=m10*m21-m11x*m20;
+        len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+      }
+      if (len < 1e-12) return [0, 0, 1];
+      return [nx/len, ny/len, nz/len];
+    }
+
+    function applyHeatMapColors(distances, nodeMap, noiseFloor, maxRange) {
+      // Pre-compute exclusion box inverse matrices for active (not disabled) boxes
+      var exclInvMats = [];
+      for (var ei = 0; ei < exclusionBoxes.length; ei++) {
+        if (exclusionBoxes[ei]._disabled) continue;
+        exclusionBoxes[ei].updateMatrixWorld(true);
+        exclInvMats.push(new THREE.Matrix4().copy(exclusionBoxes[ei].matrixWorld).invert());
+      }
+      var hasExclusions = exclInvMats.length > 0;
+
+      // We need world positions to check exclusions.
+      // Use contourData.positions if available, otherwise skip exclusion check.
+      var worldPos = (hasExclusions && contourData) ? contourData.positions : null;
+
+      for (var n = 0; n < nodeMap.length; n++) {
+        var entry = nodeMap[n];
+        var node = entry.geometryNode;
+        if (!node.geometry || !node.geometry.attributes.rgba) continue;
+
+        var rgba = node.geometry.attributes.rgba;
+        var arr = rgba.array;
+        var start = entry.startIndex;
+        var count = entry.count;
+
+        var origArr = originalRGBA ? originalRGBA.get(node) : null;
+
+        for (var i = 0; i < count; i++) {
+          var globalIdx = start + i;
+          var dist = distances[globalIdx];
+
+          // Check exclusion zones
+          var excluded = false;
+          if (worldPos && hasExclusions && dist !== -1 && dist > -99000) {
+            var px = worldPos[globalIdx * 3];
+            var py = worldPos[globalIdx * 3 + 1];
+            var pz = worldPos[globalIdx * 3 + 2];
+            for (var ei = 0; ei < exclInvMats.length; ei++) {
+              var local = new THREE.Vector3(px, py, pz).applyMatrix4(exclInvMats[ei]);
+              if (Math.abs(local.x) <= 0.5 && Math.abs(local.y) <= 0.5 && Math.abs(local.z) <= 0.5) {
+                excluded = true;
+                break;
+              }
+            }
+          }
+
+          var color = excluded ? null : distanceToRGBA(dist, noiseFloor, maxRange);
+          var off = i * 4;
+          if (color === null) {
+            if (origArr) {
+              arr[off]     = origArr[off];
+              arr[off + 1] = origArr[off + 1];
+              arr[off + 2] = origArr[off + 2];
+              arr[off + 3] = origArr[off + 3];
+            }
+          } else {
+            arr[off]     = color[0];
+            arr[off + 1] = color[1];
+            arr[off + 2] = color[2];
+            arr[off + 3] = color[3];
+          }
+        }
+        rgba.needsUpdate = true;
+      }
+    }
+
+    /* =========================================================
+       16. HEAT MAP COMPUTE ORCHESTRATION
+       ========================================================= */
+    /* =========================================================
+       CROP BOX
+       ========================================================= */
+    // Current clip mode: 'hard' (SHOW_INSIDE, fully hide outside) or 'soft' (HIGHLIGHT, dim outside)
+    var cropClipMode = 'soft';
+
+    function onSetCropBox() {
+      // Remove existing crop box if any
+      if (cropVolume) {
+        viewer.scene.removeVolume(cropVolume);
+        cropVolume = null;
+      }
+
+      // Compute tight bounding box of all loaded point clouds
+      var bbMin = new THREE.Vector3(Infinity, Infinity, Infinity);
+      var bbMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+      for (var s = 0; s < scans.length; s++) {
+        var pc = scans[s].pointCloud;
+        if (!pc) continue;
+        // Prefer tightBoundingBox (actual data extent) over boundingBox (cubic padded)
+        var bb = pc.pcoGeometry.tightBoundingBox || pc.boundingBox;
+        if (!bb) continue;
+        // tightBoundingBox is in local space (offset already subtracted),
+        // need to add back the pcoGeometry offset to get world coords
+        var offset = pc.pcoGeometry.offset;
+        var minW = bb.min.clone().add(offset);
+        var maxW = bb.max.clone().add(offset);
+        bbMin.min(minW);
+        bbMax.max(maxW);
+      }
+
+      // Create a BoxVolume that encloses everything
+      var volume = new Potree.BoxVolume();
+      volume.name = 'Heat Map Crop Box';
+      volume.clip = true;
+
+      // Position at center, scale to cover full extent with some margin
+      var center = new THREE.Vector3().addVectors(bbMin, bbMax).multiplyScalar(0.5);
+      var size = new THREE.Vector3().subVectors(bbMax, bbMin).multiplyScalar(1.05); // 5% margin
+
+      volume.position.copy(center);
+      volume.scale.copy(size);
+
+      viewer.scene.addVolume(volume);
+      cropVolume = volume;
+
+      // Set clip mode — soft by default
+      cropClipMode = 'soft';
+      viewer.setClipTask(Potree.ClipTask.HIGHLIGHT);
+
+      $("#btn-clear-cropbox").show();
+      $("#btn-toggle-cropbox").show().text('Disable Clip');
+      $("#btn-softclip-cropbox").show().text('Hard Clip');
+      $("#cropbox-status").text('Drag box faces/edges to crop. All scans enclosed.');
+
+      // Poll for size updates
+      var updateStatus = function () {
+        if (!cropVolume) return;
+        var sc = cropVolume.scale;
+        $("#cropbox-status").text(
+          'Crop box: ' +
+          (sc.x * 1000).toFixed(0) + ' x ' +
+          (sc.y * 1000).toFixed(0) + ' x ' +
+          (sc.z * 1000).toFixed(0) + ' mm'
+        );
+      };
+      cropVolume._statusInterval = setInterval(updateStatus, 500);
+    }
+
+    function onClearCropBox() {
+      if (cropVolume) {
+        if (cropVolume._statusInterval) clearInterval(cropVolume._statusInterval);
+        viewer.scene.removeVolume(cropVolume);
+        cropVolume = null;
+      }
+      viewer.setClipTask(Potree.ClipTask.NONE);
+      $("#btn-clear-cropbox").hide();
+      $("#btn-toggle-cropbox").hide();
+      $("#btn-softclip-cropbox").hide();
+      $("#cropbox-status").text('');
+    }
+
+    function onToggleCropBox() {
+      if (!cropVolume) return;
+      if (cropVolume.clip) {
+        // Disable clipping entirely — hide the volume visual, show full scan
+        cropVolume.clip = false;
+        cropVolume.visible = false;
+        viewer.setClipTask(Potree.ClipTask.NONE);
+        $("#btn-toggle-cropbox").text('Enable Clip');
+        showToast('Clip disabled — full scan visible');
+      } else {
+        // Re-enable clipping — show the volume visual
+        cropVolume.clip = true;
+        cropVolume.visible = true;
+        if (cropClipMode === 'soft') {
+          viewer.setClipTask(Potree.ClipTask.HIGHLIGHT);
+        } else {
+          viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+        }
+        $("#btn-toggle-cropbox").text('Disable Clip');
+        showToast('Clip enabled');
+      }
+    }
+
+    function onSoftClipToggle() {
+      if (!cropVolume) return;
+      if (cropClipMode === 'hard') {
+        cropClipMode = 'soft';
+        if (cropVolume.clip) {
+          viewer.setClipTask(Potree.ClipTask.HIGHLIGHT);
+        }
+        $("#btn-softclip-cropbox").text('Hard Clip');
+        showToast('Soft clip — outside points faded');
+      } else {
+        cropClipMode = 'hard';
+        if (cropVolume.clip) {
+          viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+        }
+        $("#btn-softclip-cropbox").text('Soft Clip');
+        showToast('Hard clip — outside points hidden');
+      }
+    }
+
+    /* =========================================================
+       EXCLUSION ZONES
+       ========================================================= */
+    function onAddExclusion() {
+      // Use Potree's volume tool for interactive placement
+      var volume = viewer.volumeTool.startInsertion({ clip: false });
+      volume.name = 'Exclusion Zone ' + (exclusionBoxes.length + 1);
+      volume.clip = false;
+      exclusionBoxes.push(volume);
+
+      // Style: nearly invisible fill, red frame, no label
+      if (volume.box) {
+        volume.box.material.color.setHex(0x000000);
+        volume.box.material.opacity = 0.03;
+        volume.box.material.needsUpdate = true;
+      }
+      if (volume.frame) {
+        volume.frame.material.color.setHex(0x000000);
+        volume.frame.material.needsUpdate = true;
+      }
+      if (volume.label) volume.label.visible = false;
+
+      // Re-style after Potree finishes building
+      setTimeout(function () {
+        if (volume.box) {
+          volume.box.material.color.setHex(0x000000);
+          volume.box.material.opacity = 0.03;
+          volume.box.material.needsUpdate = true;
+        }
+        if (volume.frame) {
+          volume.frame.material.color.setHex(0x000000);
+          volume.frame.material.needsUpdate = true;
+        }
+        if (volume.label) volume.label.visible = false;
+      }, 500);
+
+      $("#btn-clear-exclusions").show();
+      rebuildExclusionList();
+      updateExclusionUniforms();
+      showToast('Click and drag to place exclusion zone. Points inside will be darkened.');
+    }
+
+    // Push exclusion box matrices to all point cloud materials every frame
+    function updateExclusionUniforms() {
+      // Build inverse matrices for each active (not disabled) exclusion box
+      var matrices = [];
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        var vol = exclusionBoxes[i];
+        if (vol._disabled) continue;
+        vol.updateMatrixWorld(true);
+        var inv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
+        matrices.push({ inverse: { elements: inv.elements } });
+      }
+
+      // Set on all point cloud materials
+      viewer.scene.pointclouds.forEach(function (pc) {
+        if (pc.material && pc.material.setExclusionBoxes) {
+          pc.material.setExclusionBoxes(matrices);
+        }
+      });
+    }
+
+    // Listen for Potree removing volumes (e.g. user selects + presses Delete key)
+    viewer.scene.addEventListener('volume_removed', function (e) {
+      var vol = e.volume;
+      var idx = exclusionBoxes.indexOf(vol);
+      if (idx >= 0) {
+        exclusionBoxes.splice(idx, 1);
+        _lastExclusionHash = 'force';
+        updateExclusionUniforms();
+        forceRecolorHeatMap();
+        if (exclusionBoxes.length === 0) $("#btn-clear-exclusions").hide();
+        rebuildExclusionList();
+      }
+    });
+
+    // Update exclusion uniforms every frame and recolor if heat map is active
+    var _lastExclusionHash = '';
+    viewer.addEventListener('update', function () {
+      if (exclusionBoxes.length > 0) {
+        updateExclusionUniforms();
+
+        // Check if any exclusion box moved/resized — if so, reapply colors
+        if (heatmapActive && heatmapDistances && heatmapNodeMap) {
+          var hash = '';
+          for (var i = 0; i < exclusionBoxes.length; i++) {
+            var vol = exclusionBoxes[i];
+            if (vol._disabled) { hash += 'off|'; continue; }
+            var p = vol.position;
+            var s = vol.scale;
+            hash += p.x.toFixed(3) + p.y.toFixed(3) + p.z.toFixed(3) +
+                    s.x.toFixed(3) + s.y.toFixed(3) + s.z.toFixed(3) + '|';
+          }
+          if (hash !== _lastExclusionHash) {
+            _lastExclusionHash = hash;
+            var noiseFloor = parseFloat($("#heatmap-range-noise").val()) || 3;
+            var maxR = parseFloat($("#heatmap-range-max").val()) || 50;
+            applyHeatMapColors(heatmapDistances, heatmapNodeMap, noiseFloor, maxR);
+          }
+        }
+      } else if (_lastExclusionHash !== '') {
+        _lastExclusionHash = '';
+        // Exclusions were cleared — reapply colors
+        if (heatmapActive && heatmapDistances && heatmapNodeMap) {
+          var noiseFloor = parseFloat($("#heatmap-range-noise").val()) || 3;
+          var maxR = parseFloat($("#heatmap-range-max").val()) || 50;
+          applyHeatMapColors(heatmapDistances, heatmapNodeMap, noiseFloor, maxR);
+        }
+      }
+    });
+
+    function onClearExclusions() {
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        viewer.scene.removeVolume(exclusionBoxes[i]);
+      }
+      exclusionBoxes = [];
+      _lastExclusionHash = 'force';
+      updateExclusionUniforms();
+      forceRecolorHeatMap();
+      $("#btn-clear-exclusions").hide();
+      rebuildExclusionList();
+    }
+
+    function removeExclusion(index) {
+      if (index >= 0 && index < exclusionBoxes.length) {
+        viewer.scene.removeVolume(exclusionBoxes[index]);
+        exclusionBoxes.splice(index, 1);
+        _lastExclusionHash = 'force';
+        updateExclusionUniforms();
+        forceRecolorHeatMap();
+        if (exclusionBoxes.length === 0) $("#btn-clear-exclusions").hide();
+        rebuildExclusionList();
+      }
+    }
+
+    function toggleExclusion(index) {
+      if (index >= 0 && index < exclusionBoxes.length) {
+        var vol = exclusionBoxes[index];
+        vol._disabled = !vol._disabled;
+        vol.visible = !vol._disabled;
+        _lastExclusionHash = 'force';
+        updateExclusionUniforms();
+        forceRecolorHeatMap();
+        rebuildExclusionList();
+      }
+    }
+
+    function forceRecolorHeatMap() {
+      if (heatmapActive && heatmapDistances && heatmapNodeMap) {
+        var noiseFloor = parseFloat($("#heatmap-range-noise").val()) || 3;
+        var maxR = parseFloat($("#heatmap-range-max").val()) || 50;
+        applyHeatMapColors(heatmapDistances, heatmapNodeMap, noiseFloor, maxR);
+      }
+    }
+
+    function rebuildExclusionList() {
+      var $list = $("#exclusion-list");
+      $list.empty();
+      if (exclusionBoxes.length === 0) return;
+
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        var vol = exclusionBoxes[i];
+        var disabled = vol._disabled;
+        var eyeClass = disabled ? 'opacity:0.35' : '';
+        var html = '<div style="display:flex;align-items:center;gap:4px;margin:2px 0;padding:3px 6px;background:rgba(255,255,255,0.05);border-radius:3px;font:12px/1.3 sans-serif;color:var(--sidebar-text)">' +
+          '<span style="flex:1">Exclusion ' + (i + 1) + '</span>' +
+          '<button data-idx="' + i + '" class="btn-toggle-exclusion" style="padding:1px 5px;border:1px solid var(--border);border-radius:3px;font:11px sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);' + eyeClass + '" title="Toggle on/off">&#128065;</button>' +
+          '<button data-idx="' + i + '" class="btn-remove-exclusion" style="padding:1px 5px;border:1px solid var(--border);border-radius:3px;font:11px sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text)" title="Delete">&times;</button>' +
+          '</div>';
+        $list.append(html);
+      }
+      $list.find('.btn-remove-exclusion').on('click', function () {
+        removeExclusion(parseInt($(this).data('idx')));
+      });
+      $list.find('.btn-toggle-exclusion').on('click', function () {
+        toggleExclusion(parseInt($(this).data('idx')));
+      });
+    }
+
+    // Check if a world-space point is inside a BoxVolume
+    function isPointInVolume(px, py, pz, volume) {
+      // Transform point into the volume's local space
+      // Volume is a unit cube from -0.5 to +0.5, scaled/rotated/positioned
+      volume.updateMatrixWorld(true);
+      var invMat = new THREE.Matrix4().copy(volume.matrixWorld).invert();
+      var local = new THREE.Vector3(px, py, pz).applyMatrix4(invMat);
+      return Math.abs(local.x) <= 0.5 && Math.abs(local.y) <= 0.5 && Math.abs(local.z) <= 0.5;
+    }
+
+    // Check if a point is inside any exclusion box
+    function isPointExcluded(px, py, pz) {
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        if (isPointInVolume(px, py, pz, exclusionBoxes[i])) return true;
+      }
+      return false;
+    }
+
+    function getCropBoxBounds() {
+      if (!cropVolume) return null;
+
+      // The BoxVolume is a THREE.Object3D with position, scale, rotation.
+      // We need to compute the world-space axis-aligned bounding box.
+      // The box geometry is a unit cube (-0.5 to +0.5) scaled by volume.scale,
+      // positioned at volume.position, rotated by volume.rotation.
+      cropVolume.updateMatrixWorld(true);
+      var mat = cropVolume.matrixWorld;
+
+      // 8 corners of the unit cube
+      var corners = [
+        new THREE.Vector3(-0.5, -0.5, -0.5),
+        new THREE.Vector3( 0.5, -0.5, -0.5),
+        new THREE.Vector3(-0.5,  0.5, -0.5),
+        new THREE.Vector3( 0.5,  0.5, -0.5),
+        new THREE.Vector3(-0.5, -0.5,  0.5),
+        new THREE.Vector3( 0.5, -0.5,  0.5),
+        new THREE.Vector3(-0.5,  0.5,  0.5),
+        new THREE.Vector3( 0.5,  0.5,  0.5)
+      ];
+
+      var min = new THREE.Vector3(Infinity, Infinity, Infinity);
+      var max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+
+      for (var i = 0; i < corners.length; i++) {
+        corners[i].applyMatrix4(mat);
+        min.min(corners[i]);
+        max.max(corners[i]);
+      }
+
+      return {
+        min: [min.x, min.y, min.z],
+        max: [max.x, max.y, max.z]
+      };
+    }
+
+    function onComputeHeatMap() {
+      var scanA = scans.find(function (s) { return s.id === selectedA; });
+      var scanB = scans.find(function (s) { return s.id === selectedB; });
+      if (!scanA || !scanB || !scanA.loaded || !scanB.loaded) {
+        showToast('Both scans must be loaded first');
+        return;
+      }
+
+      var cropBounds = getCropBoxBounds();
+      var settings = {
+        subsample: parseInt($("#heatmap-subsample").val()) || 1,
+        target: $("#heatmap-target").val(),
+        cropBox: cropBounds
+      };
+
+      // Determine which scan to colorize and which is the reference
+      var targetScan, refScan;
+      if (settings.target === 'a') {
+        targetScan = scanA; refScan = scanB;
+      } else {
+        targetScan = scanB; refScan = scanA;
+      }
+
+      heatmapTarget = settings.target;
+
+      // Disable button, show progress
+      $("#btn-compute-heatmap").prop("disabled", true).text("Computing...");
+      $(".heatmap-progress").show();
+      updateProgress(0, 'Loading all points...');
+      $("#heatmap-status").text('Force-loading all octree nodes...');
+
+      // Temporarily raise point budget so loaded nodes aren't culled
+      var origBudget = viewer.getPointBudget();
+      viewer.setPointBudget(20_000_000);
+
+      // Step 1: Force-load all nodes
+      Promise.all([
+        forceLoadAllNodes(refScan.pointCloud),
+        forceLoadAllNodes(targetScan.pointCloud)
+      ]).then(function () {
+        $("#heatmap-status").text('Extracting positions...');
+        updateProgress(2, 'Extracting positions...');
+
+        // Step 2: Extract positions
+        var refData = extractPositions(refScan.pointCloud);
+        var targetData = extractPositions(targetScan.pointCloud);
+
+        // Step 3: Backup original RGBA of target scan
+        originalRGBA = backupOriginalRGBA(targetScan.pointCloud);
+
+        // Store nodeMap for later re-coloring
+        heatmapNodeMap = targetData.nodeMap;
+
+        $("#heatmap-status").text(
+          'Computing: ' + targetData.count.toLocaleString() + ' pts vs ' +
+          refData.count.toLocaleString() + ' ref pts...'
+        );
+        updateProgress(5, 'Starting worker...');
+
+        // Step 4: Send to worker
+        if (heatmapWorker) { heatmapWorker.terminate(); }
+        heatmapWorker = new Worker('heatmap-worker.js');
+
+        heatmapWorker.onmessage = function (e) {
+          var msg = e.data;
+
+          if (msg.type === 'progress') {
+            var phaseLabels = {
+              'building-tree': 'Building k-d trees...',
+              'computing': 'Computing distances...',
+              'foreign-detect': 'Detecting foreign objects...',
+              'smoothing': 'Smoothing noise...'
+            };
+            updateProgress(msg.percent, phaseLabels[msg.phase] || msg.phase);
+            if (msg.debug) console.log('Worker debug:', msg.debug);
+          }
+
+          if (msg.type === 'complete') {
+            heatmapDistances = new Float32Array(msg.distances);
+            heatmapActive = true;
+            console.log('Foreign objects flagged by worker:', msg.foreignCount);
+
+            // Compute stats (distances are now signed)
+            var validDists = [];
+            var unreliableCount = 0;
+            var posCount = 0, negCount = 0;
+            for (var i = 0; i < heatmapDistances.length; i++) {
+              var d = heatmapDistances[i];
+              if (d <= -99000) {
+                unreliableCount++;
+              } else if (d !== -1) {
+                validDists.push(d);
+                if (d > 0) posCount++;
+                else if (d < 0) negCount++;
+              }
+            }
+            // Sort by absolute value for percentile calculations
+            var absDists = validDists.map(function(v) { return Math.abs(v); });
+            absDists.sort(function (a, b) { return a - b; });
+
+            var median = absDists[Math.floor(absDists.length * 0.5)] || 0;
+            var p95 = absDists[Math.floor(absDists.length * 0.95)] || 50;
+            var maxAbs = absDists[absDists.length - 1] || 50;
+
+            // Auto-detect a good range: use the larger of p95 or 2x median,
+            // but cap at the actual max value. Ensure it's meaningfully above noise floor.
+            var noiseFloor = 3;
+            var autoMax = Math.max(p95, median * 2, noiseFloor * 5);
+            autoMax = Math.min(autoMax, maxAbs); // don't exceed actual data
+            autoMax = Math.max(autoMax, 10); // minimum 10mm range
+
+            // Cache data for contour line generation
+            // Re-extract positions (the buffers were transferred to worker, so we need fresh ones)
+            var targetData2 = extractPositions(targetScan.pointCloud);
+            contourData = { positions: targetData2.positions, distances: heatmapDistances };
+
+            // Apply colors with noise floor
+            applyHeatMapColors(heatmapDistances, heatmapNodeMap, noiseFloor, autoMax);
+
+            // Restore point budget
+            viewer.setPointBudget(origBudget);
+
+            // Populate range controls for manual adjustment
+            $("#heatmap-range-noise").val(noiseFloor.toFixed(1));
+            $("#heatmap-range-max").val(autoMax.toFixed(1));
+            $("#heatmap-range-controls").show();
+
+            // Update UI
+            $(".heatmap-progress").hide();
+            $("#btn-compute-heatmap").prop("disabled", false).text("Compute Heat Map");
+            $("#btn-clear-heatmap").show();
+            $("#heatmap-status").html(
+              validDists.length.toLocaleString() + ' matched pts' +
+              (unreliableCount > 0 ? ' | ' + unreliableCount.toLocaleString() + ' foreign obj (uncolored)' : '') + '<br>' +
+              'Median: ' + median.toFixed(1) + ' mm | 95th: ' + p95.toFixed(1) + ' mm | Max: ' + maxAbs.toFixed(1) + ' mm<br>' +
+              '<span style="color:#ff8844">\u25B2 ' + posCount.toLocaleString() + ' outward/up (red)</span>' +
+              ' | <span style="color:#4488ff">\u25BC ' + negCount.toLocaleString() + ' inward/down (blue)</span><br>' +
+              'Noise floor: ' + noiseFloor.toFixed(1) + ' mm (uncolored = no change)'
+            );
+
+            updateLegend(noiseFloor, autoMax);
+            showToast('Heat map complete');
+            heatmapWorker.terminate();
+            heatmapWorker = null;
+          }
+
+          if (msg.type === 'error') {
+            viewer.setPointBudget(origBudget);
+            $(".heatmap-progress").hide();
+            $("#btn-compute-heatmap").prop("disabled", false).text("Compute Heat Map");
+            $("#heatmap-status").text('Error: ' + msg.message);
+            showToast('Heat map error: ' + msg.message);
+            heatmapWorker.terminate();
+            heatmapWorker = null;
+          }
+        };
+
+        heatmapWorker.onerror = function (err) {
+          viewer.setPointBudget(origBudget);
+          $(".heatmap-progress").hide();
+          $("#btn-compute-heatmap").prop("disabled", false).text("Compute Heat Map");
+          $("#heatmap-status").text('Worker error: ' + err.message);
+          showToast('Worker error');
+          console.error('Worker error:', err);
+        };
+
+        // Transfer position buffers to worker
+        heatmapWorker.postMessage({
+          type: 'compute',
+          scanA: { positions: refData.positions.buffer, count: refData.count },
+          scanB: { positions: targetData.positions.buffer, count: targetData.count },
+          settings: settings
+        }, [refData.positions.buffer, targetData.positions.buffer]);
+
+      });
+    }
+
+    function updateProgress(percent, label) {
+      $(".heatmap-progress-fill").css("width", percent + "%");
+      $(".heatmap-progress-label").text(Math.round(percent) + '% — ' + (label || ''));
+    }
+
+    function onClearHeatMap() {
+      // Restore original RGBA colors
+      if (originalRGBA) {
+        var targetId = heatmapTarget === 'a' ? selectedA : selectedB;
+        var targetScan = scans.find(function (s) { return s.id === targetId; });
+        if (targetScan && targetScan.pointCloud) {
+          restoreOriginalRGBA(originalRGBA);
+        }
+        originalRGBA = null;
+      }
+
+      heatmapDistances = null;
+      heatmapNodeMap = null;
+      heatmapActive = false;
+      heatmapTarget = null;
+
+      $("#btn-clear-heatmap").hide();
+      $("#heatmap-range-controls").hide();
+      $("#heatmap-status").text('');
+      clearContourLines();
+      contourData = null;
+      contoursVisible = false;
+      $("#btn-toggle-contours").text('Show Contours');
+      hideLegend();
+      showToast('Heat map cleared');
+    }
+
+    /* =========================================================
+       12. SPEED SLIDER REWORK (same as main viewer)
+       ========================================================= */
+    function reworkSpeedSlider() {
+      var SPEED_MAX = 7;
+      var interval = setInterval(function () {
+        var $label = $('[id$="speed"]').filter('span');
+        var $slider = $label.closest('.pv-menu-list').find('.ui-slider').first();
+        if (!$label.length || !$slider.length) return;
+        clearInterval(interval);
+
+        $slider.slider('option', 'min', 0);
+        $slider.slider('option', 'max', SPEED_MAX);
+        $slider.slider('option', 'step', 0.1);
+        $slider.slider('value', viewer.getMoveSpeed());
+
+        function syncLabel() {
+          $label.text(viewer.getMoveSpeed().toFixed(1));
+        }
+
+        $slider.on('slide', function (_, ui) {
+          viewer.setMoveSpeed(ui.value);
+          syncLabel();
+        });
+
+        viewer.addEventListener('move_speed_changed', syncLabel);
+        syncLabel();
+
+        // Reset button
+        var $resetBtn = $('<span title="Reset speed" style="cursor:pointer;margin-left:6px;font-size:14px;vertical-align:middle;color:var(--muted,#9aa3b2)">&#8634;</span>');
+        $label.after($resetBtn);
+        $resetBtn.on('click', function () {
+          viewer.setMoveSpeed(1);
+          $slider.slider('value', 1);
+          syncLabel();
+        });
+      }, 200);
+    }
+    reworkSpeedSlider();
+
+    /* =========================================================
+       CONTOUR LINE RENDERER
+       ========================================================= */
+    viewer.addEventListener('render.pass.perspective_overlay', function (e) {
+      if (!contoursVisible || contourScene.children.length === 0) return;
+      var v = e.viewer;
+      var camera = v.scene.getActiveCamera();
+      v.renderer.render(contourScene, camera);
+    });
+
+    /* =========================================================
+       13. KEYBOARD SHORTCUTS
+       ========================================================= */
+    document.addEventListener('keydown', function (e) {
+      // Don't trigger in input fields
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+      var key = e.key.toLowerCase();
+
+      // E = toggle EDL
+      if (key === 'e' && !e.ctrlKey && !e.shiftKey) {
+        viewer.setEDLEnabled(!viewer.getEDLEnabled());
+        showToast('EDL ' + (viewer.getEDLEnabled() ? 'ON' : 'OFF'));
+        return;
+      }
+
+      // +/= and - = point budget
+      if ((key === '+' || key === '=') && !e.ctrlKey) {
+        viewer.setPointBudget(Math.min(viewer.getPointBudget() + 500000, 10000000));
+        showToast('Point budget: ' + (viewer.getPointBudget() / 1000000).toFixed(1) + 'M');
+        return;
+      }
+      if (key === '-' && !e.ctrlKey) {
+        viewer.setPointBudget(Math.max(viewer.getPointBudget() - 500000, 500000));
+        showToast('Point budget: ' + (viewer.getPointBudget() / 1000000).toFixed(1) + 'M');
+        return;
+      }
+
+      // F = fit to screen
+      if (key === 'f' && !e.ctrlKey && !e.shiftKey) {
+        viewer.fitToScreen();
+        return;
+      }
+    });
+
+    /* =========================================================
+       14. CLIP BOX ON FIRST LOAD
+       ========================================================= */
+    viewer.addEventListener('scene_changed', function () {
+      if (viewer.scene.pointclouds.length > 0) {
+        createClipBox();
+      }
+    });
+
+  })();
+  </script>
+</body>
+</html>

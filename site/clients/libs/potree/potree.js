@@ -57608,6 +57608,10 @@ uniform int clipMethod;
 	uniform mat4 clipBoxes[num_clipboxes];
 #endif
 
+#if defined(num_exclusionboxes) && num_exclusionboxes > 0
+	uniform mat4 exclusionBoxes[num_exclusionboxes];
+#endif
+
 #if defined(num_clipspheres) && num_clipspheres > 0
 	uniform mat4 uClipSpheres[num_clipspheres];
 #endif
@@ -58387,22 +58391,39 @@ void doClipping(){
 	bool insideAll = (clipVolumesCount > 0) && (clipVolumesCount == insideCount);
 
 	if(clipMethod == CLIPMETHOD_INSIDE_ANY){
-		if(insideAny && clipTask == CLIPTASK_HIGHLIGHT){
-			vColor.r += 0.5;
+		if(!insideAny && clipTask == CLIPTASK_HIGHLIGHT){
+			vColor = vColor * 0.25;
+			gl_PointSize = gl_PointSize * 0.005;
 		}else if(!insideAny && clipTask == CLIPTASK_SHOW_INSIDE){
 			gl_Position = vec4(100.0, 100.0, 100.0, 1.0);
 		}else if(insideAny && clipTask == CLIPTASK_SHOW_OUTSIDE){
 			gl_Position = vec4(100.0, 100.0, 100.0, 1.0);
 		}
 	}else if(clipMethod == CLIPMETHOD_INSIDE_ALL){
-		if(insideAll && clipTask == CLIPTASK_HIGHLIGHT){
-			vColor.r += 0.5;
+		if(!insideAll && clipTask == CLIPTASK_HIGHLIGHT){
+			vColor = vColor * 0.25;
+			gl_PointSize = gl_PointSize * 0.005;
 		}else if(!insideAll && clipTask == CLIPTASK_SHOW_INSIDE){
 			gl_Position = vec4(100.0, 100.0, 100.0, 1.0);
 		}else if(insideAll && clipTask == CLIPTASK_SHOW_OUTSIDE){
 			gl_Position = vec4(100.0, 100.0, 100.0, 1.0);
 		}
 	}
+
+	// Exclusion boxes: points INSIDE any exclusion box get darkened + shrunk
+	#if defined(num_exclusionboxes) && num_exclusionboxes > 0
+		for(int i = 0; i < num_exclusionboxes; i++){
+			vec4 exclPos = exclusionBoxes[i] * modelMatrix * vec4(position, 1.0);
+			bool insideExcl = -0.5 <= exclPos.x && exclPos.x <= 0.5;
+			insideExcl = insideExcl && -0.5 <= exclPos.y && exclPos.y <= 0.5;
+			insideExcl = insideExcl && -0.5 <= exclPos.z && exclPos.z <= 0.5;
+			if(insideExcl){
+				vColor = vColor * 0.25;
+				gl_PointSize = gl_PointSize * 0.005;
+				break;
+			}
+		}
+	#endif
 }
 
 
@@ -59188,6 +59209,7 @@ void main() {
 				//clipSphereCount:	{ type: "f", value: 0 },
 				clipPolygonCount:	{ type: "i", value: 0 },
 				clipBoxes:			{ type: "Matrix4fv", value: [] },
+				exclusionBoxes:		{ type: "Matrix4fv", value: [] },
 				//clipSpheres:		{ type: "Matrix4fv", value: [] },
 				clipPolygons:		{ type: "3fv", value: [] },
 				clipPolygonVCount:	{ type: "iv", value: [] },
@@ -59385,6 +59407,33 @@ void main() {
 			for (let i = 0; i < this.uniforms.clipBoxes.value.length; i++) {
 				if (Number.isNaN(this.uniforms.clipBoxes.value[i])) {
 					this.uniforms.clipBoxes.value[i] = Infinity;
+				}
+			}
+		}
+
+		setExclusionBoxes (exclusionBoxes) {
+			if (!exclusionBoxes) {
+				return;
+			}
+
+			let doUpdate = (!this.exclusionBoxes || this.exclusionBoxes.length !== exclusionBoxes.length);
+
+			this.exclusionBoxes = exclusionBoxes;
+
+			if (doUpdate) {
+				this.updateShaderSource();
+			}
+
+			this.uniforms.exclusionBoxes.value = new Float32Array(exclusionBoxes.length * 16);
+
+			for (let i = 0; i < exclusionBoxes.length; i++) {
+				let box = exclusionBoxes[i];
+				this.uniforms.exclusionBoxes.value.set(box.inverse.elements, 16 * i);
+			}
+
+			for (let i = 0; i < this.uniforms.exclusionBoxes.value.length; i++) {
+				if (Number.isNaN(this.uniforms.exclusionBoxes.value[i])) {
+					this.uniforms.exclusionBoxes.value[i] = Infinity;
 				}
 			}
 		}
@@ -63491,6 +63540,7 @@ void main() {
 					let numClipBoxes = (material.clipBoxes && material.clipBoxes.length) ? material.clipBoxes.length : 0;
 					let numClipSpheres = (params.clipSpheres && params.clipSpheres.length) ? params.clipSpheres.length : 0;
 					let numClipPolygons = (material.clipPolygons && material.clipPolygons.length) ? material.clipPolygons.length : 0;
+					let numExclusionBoxes = (material.exclusionBoxes && material.exclusionBoxes.length) ? material.exclusionBoxes.length : 0;
 
 					let defines = [
 						`#define num_shadowmaps ${shadowMaps.length}`,
@@ -63498,6 +63548,7 @@ void main() {
 						`#define num_clipboxes ${numClipBoxes}`,
 						`#define num_clipspheres ${numClipSpheres}`,
 						`#define num_clippolygons ${numClipPolygons}`,
+						`#define num_exclusionboxes ${numExclusionBoxes}`,
 					];
 
 
@@ -63652,6 +63703,13 @@ void main() {
 
 					const lClipBoxes = shader.uniformLocations["clipBoxes[0]"];
 					gl.uniformMatrix4fv(lClipBoxes, false, material.uniforms.clipBoxes.value);
+				}
+
+				if (material.exclusionBoxes && material.exclusionBoxes.length > 0) {
+					const lExclBoxes = shader.uniformLocations["exclusionBoxes[0]"];
+					if (lExclBoxes) {
+						gl.uniformMatrix4fv(lExclBoxes, false, material.uniforms.exclusionBoxes.value);
+					}
 				}
 
 				// TODO CLIPSPHERES

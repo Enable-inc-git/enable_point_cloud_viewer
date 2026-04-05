@@ -1,0 +1,361 @@
+/* =========================
+   temporal.css
+   Theme + layout for temporal scan viewer
+   ========================= */
+
+/* ---- Theme palette (matches main viewer / custom.css) ---- */
+:root {
+  --bg:               #1d1d1d;
+  --sidebar-bg:       #363636;
+  --sidebar-text:     #fbfbfb;
+  --accent:           #3EAD4A;
+  --muted:            #9aa3b2;
+  --panel-bg:         #6b6b6b;
+  --border:           #000102;
+  --logo-panel-bg:    #1a1a1a;
+  --section-bg:       #252525;
+  --section-text:     #e8eaf0;
+  --section-border:   #a0a0a0;
+  --fieldset-bg:      #3e3e3e;
+  --fieldset-border:  #23272d;
+  --legend-bg:        #313943;
+  --legend-text:      #e8eaf0;
+  --legend-border:    #23272d;
+}
+
+/* ---- Page / canvas background ---- */
+html, body, #potree_render_area {
+  background: var(--bg) !important;
+}
+html, body {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+}
+
+/* ---- Potree containers ---- */
+.potree_container { position: absolute; inset: 0; }
+#potree_render_area, #potree_sidebar_container { position: absolute; top: 0; bottom: 0; }
+#potree_render_area       { left: 300px; right: 0; }
+#potree_sidebar_container { left: 0; right: auto; width: 360px; overflow-y: auto; }
+
+/* ---- Sidebar ---- */
+#potree_sidebar_container,
+#potree_sidebar,
+#potree_menu,
+#potree_sidebar .ui-widget,
+#potree_sidebar .ui-widget-content,
+#potree_sidebar .ui-accordion,
+#potree_sidebar .ui-accordion .ui-accordion-content {
+  background: var(--sidebar-bg) !important;
+  color: var(--sidebar-text) !important;
+}
+
+/* Sidebar logo header */
+#potree_sidebar_container::before {
+  content: "";
+  display: block;
+  height: 84px;
+  margin: 12px 12px 8px;
+  background-image: url("../../EnableLogo.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+
+/* Force panels always open */
+#potree_menu .ui-accordion-content,
+#potree_menu > div {
+  display: block !important;
+  height: auto !important;
+  overflow: visible !important;
+}
+#potree_menu h3,
+#potree_menu .ui-accordion-header,
+#potree_menu .accordion-header {
+  cursor: default !important;
+  user-select: text;
+}
+
+/* Hide map + about */
+#potree_toggle_map, .potree_toggle_map, .mapToggle,
+#menu_map, #map, #potree_map_container,
+.ol-viewport, .ol-overlaycontainer { display: none !important; }
+#menu_about, #menu_about + div { display: none !important; }
+
+/* Hide appearance accordion */
+#menu_appearance, #menu_appearance + div { display: none !important; }
+
+/* Tighter sidebar spacing */
+#potree_sidebar_container .accordion > div { padding: 6px 10px; }
+
+/* ---- Section headers ---- */
+#potree_menu :is(
+  h3.ui-accordion-header, .ui-accordion-header, .accordion-header,
+  .section_header, .menu_header, .panelTitle, h3
+) {
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border: 1px solid var(--section-border) !important;
+}
+#potree_menu :is(
+  h3.ui-accordion-header, .ui-accordion-header, .accordion-header,
+  .section_header, .menu_header, .panelTitle, h3
+).ui-state-active,
+#potree_menu :is(
+  h3.ui-accordion-header, .ui-accordion-header, .accordion-header,
+  .section_header, .menu_header, .panelTitle, h3
+).ui-state-hover {
+  background: var(--section-bg) !important;
+  color: var(--section-text) !important;
+  border-color: var(--section-border) !important;
+}
+
+/* ---- Fieldset/legend ---- */
+#potree_menu fieldset {
+  background: var(--fieldset-bg) !important;
+  border: 1px solid var(--fieldset-border) !important;
+}
+#potree_menu fieldset legend {
+  background: var(--legend-bg) !important;
+  color: var(--legend-text) !important;
+  border: 1px solid var(--legend-border) !important;
+  padding: 2px 6px !important;
+}
+
+/* ---- Buttons ---- */
+#potree_menu .button, .ui-button {
+  background: var(--panel-bg) !important;
+  color: var(--sidebar-text) !important;
+  border: 1px solid var(--border) !important;
+}
+#potree_menu .button:hover, .ui-button:hover {
+  outline: 1px solid var(--accent) !important;
+}
+
+/* ---- Inputs ---- */
+#potree_menu input[type="text"],
+#potree_menu input[type="number"],
+#potree_menu select {
+  background: var(--panel-bg) !important;
+  color: var(--sidebar-text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* ---- Sliders ---- */
+#potree_menu .ui-slider { background: #2c2c2c !important; border: 1px solid var(--border) !important; }
+#potree_menu .ui-slider-range { background: var(--accent) !important; }
+#potree_menu .ui-slider-handle { background: var(--accent) !important; border: 1px solid var(--border) !important; }
+
+/* ---- Links ---- */
+#potree_menu a { color: var(--accent) !important; }
+
+/* ---- Labels/text ---- */
+#potree_menu label, #potree_menu span, #potree_menu p {
+  color: var(--sidebar-text) !important;
+}
+
+/* ---- Scrollbars ---- */
+#potree_sidebar_container {
+  scrollbar-color: #555 #1a1a1a !important;
+  scrollbar-width: thin !important;
+}
+#potree_sidebar_container::-webkit-scrollbar { width: 10px; background-color: #1a1a1a !important; }
+#potree_sidebar_container::-webkit-scrollbar-track { background: #1a1a1a !important; }
+#potree_sidebar_container::-webkit-scrollbar-thumb { background: #555 !important; }
+
+/* ---- Logo strip ---- */
+#potree_sidebar :is(#potree_header, .logo, #logo, .pv-header, .potree_header, .brand) {
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_sidebar > *:has(> img) {
+  background: var(--logo-panel-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+#potree_sidebar *:has(+ #potree_menu) {
+  background: var(--sidebar-bg) !important;
+  border-bottom: 1px solid var(--section-border) !important;
+}
+
+/* ---- jstree ---- */
+#jstree_scene, #jstree_scene * { color: var(--sidebar-text) !important; }
+#jstree_scene .jstree-anchor.jstree-clicked {
+  background: rgba(62,173,74,0.15) !important;
+  border-radius: 4px;
+}
+
+/* ---- Potree container backgrounds ---- */
+#potree_container, .potree_container, #potree_scene_container {
+  background: var(--bg) !important;
+}
+
+/* ===================================================
+   TEMPORAL-SPECIFIC STYLES
+   =================================================== */
+
+/* ---- Toast ---- */
+#enable-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.8); color: #fff; padding: 8px 20px;
+  border-radius: 6px; font: 14px/1.4 sans-serif; z-index: 99999;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none;
+}
+#enable-toast.show { opacity: 1; }
+
+/* ---- Scan panel ---- */
+.scan-panel { margin: 6px 0; }
+.scan-panel-title {
+  font: 600 12px/1.3 sans-serif;
+  color: var(--accent);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.scan-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px; border-radius: 4px; margin: 3px 0;
+  font: 12px/1.3 sans-serif; color: var(--sidebar-text);
+  background: rgba(255,255,255,0.05);
+  transition: background 0.15s;
+}
+.scan-row:hover { background: rgba(255,255,255,0.08); }
+.scan-row.selected-a { background: rgba(62,173,74,0.15); border-left: 3px solid var(--accent); }
+.scan-row.selected-b { background: rgba(255,165,0,0.15); border-left: 3px solid #ffa500; }
+
+.scan-row .scan-color {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.scan-row .scan-info { flex: 1; min-width: 0; }
+.scan-row .scan-name {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.scan-row .scan-date { font-size: 10px; color: var(--muted); }
+.scan-row .scan-points { font-size: 10px; color: var(--muted); }
+
+.scan-row button {
+  padding: 2px 6px; border: 1px solid var(--border, #555);
+  border-radius: 3px; font: 11px/1.2 sans-serif; cursor: pointer;
+  background: var(--panel-bg); color: var(--sidebar-text);
+}
+.scan-row button:hover { outline: 1px solid var(--accent); }
+.scan-row .btn-vis.hidden { opacity: 0.35; }
+
+/* A/B selection radio labels */
+.scan-row .scan-ab-label {
+  font: 600 10px/1 sans-serif;
+  padding: 2px 5px; border-radius: 3px;
+  min-width: 14px; text-align: center;
+}
+.scan-row .scan-ab-label.label-a {
+  background: var(--accent); color: #000;
+}
+.scan-row .scan-ab-label.label-b {
+  background: #ffa500; color: #000;
+}
+.scan-row .scan-ab-label.label-none {
+  background: transparent; color: transparent;
+}
+
+/* ---- A/B selection buttons ---- */
+.scan-select-group { display: flex; gap: 3px; }
+.scan-select-group button {
+  padding: 1px 5px; font: 600 10px/1.2 sans-serif;
+  border: 1px solid var(--border); border-radius: 3px;
+  cursor: pointer; background: var(--panel-bg); color: var(--sidebar-text);
+}
+.scan-select-group button:hover { outline: 1px solid var(--accent); }
+.scan-select-group button.active-a {
+  background: var(--accent) !important; color: #000 !important;
+  border-color: var(--accent) !important;
+}
+.scan-select-group button.active-b {
+  background: #ffa500 !important; color: #000 !important;
+  border-color: #ffa500 !important;
+}
+
+/* ---- Heat map controls panel ---- */
+.heatmap-panel { margin: 6px 0; }
+.heatmap-panel-title {
+  font: 600 12px/1.3 sans-serif;
+  color: var(--accent);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.heatmap-controls { margin: 4px 0; }
+.heatmap-control-row {
+  display: flex; align-items: center; gap: 6px; margin: 4px 0;
+  font: 12px/1.3 sans-serif; color: var(--sidebar-text);
+}
+.heatmap-control-row label {
+  min-width: 80px; font-size: 11px; color: var(--muted);
+}
+.heatmap-control-row input[type="number"] {
+  width: 70px; padding: 2px 4px; border: 1px solid var(--border);
+  border-radius: 3px; background: #333; color: #fff; font: 12px/1.3 sans-serif;
+}
+.heatmap-control-row select {
+  padding: 2px 4px; border: 1px solid var(--border);
+  border-radius: 3px; background: #333; color: #fff; font: 12px/1.3 sans-serif;
+}
+
+/* Compute button */
+#btn-compute-heatmap {
+  width: 100%; padding: 8px; margin: 8px 0;
+  border: 1px solid var(--accent); border-radius: 4px;
+  font: 600 13px/1.3 sans-serif; cursor: pointer;
+  background: var(--accent); color: #000;
+  transition: opacity 0.15s;
+}
+#btn-compute-heatmap:hover { opacity: 0.85; }
+#btn-compute-heatmap:disabled {
+  opacity: 0.4; cursor: not-allowed;
+}
+
+/* Clear heat map button */
+#btn-clear-heatmap {
+  width: 100%; padding: 5px; margin: 2px 0;
+  border: 1px solid var(--border); border-radius: 4px;
+  font: 12px/1.3 sans-serif; cursor: pointer;
+  background: var(--panel-bg); color: var(--sidebar-text);
+}
+#btn-clear-heatmap:hover { outline: 1px solid var(--accent); }
+
+/* Progress bar */
+.heatmap-progress {
+  display: none; margin: 6px 0;
+}
+.heatmap-progress-bar {
+  height: 18px; background: #2c2c2c; border-radius: 4px;
+  border: 1px solid var(--border); overflow: hidden;
+  position: relative;
+}
+.heatmap-progress-fill {
+  height: 100%; background: var(--accent);
+  border-radius: 3px; transition: width 0.2s;
+  width: 0%;
+}
+.heatmap-progress-label {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font: 600 10px/1 sans-serif; color: #fff;
+  text-shadow: 0 0 3px rgba(0,0,0,0.8);
+}
+
+/* Status text */
+.heatmap-status {
+  font: 12px/1.3 sans-serif; color: var(--muted);
+  margin: 4px 0; min-height: 16px;
+}
+
+/* ---- Version footer ---- */
+#enable-version-footer {
+  position: fixed; bottom: 0; left: 0; width: 360px;
+  padding: 8px 12px; background: var(--sidebar-bg);
+  border-top: 1px solid rgba(255,255,255,0.08);
+  font: 11px/1.4 sans-serif; color: var(--muted);
+  z-index: 100;
+}
+#enable-version-footer a { color: var(--accent); text-decoration: none; }

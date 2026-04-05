@@ -6,7 +6,17 @@
       "WebFetch(domain:deepwiki.com)",
       "WebFetch(domain:potree-templates.readthedocs.io)",
       "Bash(python:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(find C:enable_point_cloud_viewersiteclientslibspotree -name *.js)",
+      "Bash(while read:*)",
+      "Bash(do echo:*)",
+      "Bash(xargs grep:*)",
+      "Bash(find /c/enable_point_cloud_viewer/potree/pointclouds -name metadata.json -o -name *.hrc -o -name *.bin)",
+      "Bash(du -sh /c/enable_point_cloud_viewer/site/clients/*/*/pointclouds/*/)",
+      "Bash(du -sh /c/enable_point_cloud_viewer/potree/pointclouds/*/)",
+      "Bash(./PotreeConverter.exe \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\dec 20.las\" -o \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\dec20\" --attributes RGB INTENSITY CLASSIFICATION --material RGB --offset-method AUTO)",
+      "Bash(./PotreeConverter.exe \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\mar 31.las\" -o \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\mar31\" --attributes RGB INTENSITY CLASSIFICATION --material RGB --offset-method AUTO)",
+      "Bash(node:*)"
     ]
   }
 }
