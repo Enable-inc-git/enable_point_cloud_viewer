@@ -288,6 +288,47 @@
     }
     #enable-session-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
 
+    /* ===== Elevation map buttons ===== */
+    #enable-elevation-buttons { margin: 6px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+    #enable-elevation-buttons button {
+      flex: 1; min-width: 80px; padding: 5px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-elevation-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-elevation-buttons button.clip-btn.active {
+      background: #555; outline: 2px solid var(--accent, #3EAD4A);
+      pointer-events: none; opacity: 0.7;
+    }
+    #enable-elevation-range { margin: 4px 0; display: flex; gap: 6px; align-items: center; font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb); }
+    #enable-elevation-range input[type="number"] {
+      width: 60px; padding: 3px 5px; border: 1px solid var(--border, #333);
+      border-radius: 3px; background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      font: 12px sans-serif;
+    }
+    #enable-elevation-range button {
+      padding: 3px 8px; border: 1px solid var(--border, #333);
+      border-radius: 3px; font: 12px sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    #enable-elevation-status { font: 11px/1.3 sans-serif; color: rgba(251,251,251,0.5); margin: 2px 0; min-height: 14px; }
+    #enable-contour-interval { margin: 4px 0; display: flex; gap: 6px; align-items: center; font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb); }
+    #enable-contour-interval input[type="number"] {
+      width: 65px; padding: 3px 5px; border: 1px solid var(--border, #333);
+      border-radius: 3px; background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      font: 12px sans-serif;
+    }
+    #enable-contour-interval button {
+      padding: 3px 8px; border: 1px solid var(--border, #333);
+      border-radius: 3px; font: 12px sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    #heatmap-legend {
+      display: none; position: fixed; top: 10px; right: 20px; z-index: 200;
+      pointer-events: none;
+    }
+
     /* ===== Measurement panel overrides ===== */
     /* Hide native raw XYZ + native distance table in measurement panel */
     .measurement_content .coordinates_table_container,
@@ -339,6 +380,9 @@
 
   <!-- Toast element -->
   <div id="enable-toast"></div>
+
+  <!-- Elevation legend -->
+  <div id="heatmap-legend"><canvas id="heatmap-legend-canvas" width="180" height="520"></canvas></div>
 
   <!-- ===================== VENDOR + POTREE JS (order matters) ===================== -->
   <script src="../libs/jquery/jquery-3.1.1.min.js"></script>
@@ -749,6 +793,28 @@
     memberScene.name = "EnableMemberScene";
     let memberDragActive = false;
     let memberDragInfo = null; // { member, pointIndex }
+
+    // ===== ELEVATION MAP TOOL =====
+    const elevationScene = new THREE.Scene();
+    elevationScene.name = "EnableElevationScene";
+    let elevationPositions = null;   // Float32Array of world positions
+    let elevationNodeMap = null;     // array of { geometryNode, startIndex, count }
+    let elevationOrigRGBA = null;    // Map<node, Uint8Array> backup
+    let elevationActive = false;
+    let initialClipBox = null;       // reference to the persistent initial clip box
+    let elevationCropVolume = null;  // Potree BoxVolume
+    let elevationCropClipMode = 'soft'; // 'soft' (HIGHLIGHT) or 'hard' (SHOW_INSIDE)
+    let elevationContoursVisible = false;
+    let elevationColoredNodes = new Set(); // track which nodes we've already colored
+    let elevationCropBounds = null;        // cached crop bounds for per-frame recolor
+    let elevationOrigBudget = null;        // original point budget before elevation
+    // Top-surface grid: max Z per XY cell for filtering out lower surfaces
+    let elevationSurfaceGrid = null;       // { maxZ: Float32Array, gridRes, xMin, yMin, cellX, cellY }
+    let elevationContourStep = 0.05;       // contour interval in meters (user-adjustable)
+    let exclusionBoxes = [];               // array of Potree BoxVolume
+    let _lastExclusionHash = '';
+    let elevationZMin = 0;
+    let elevationZMax = 1;
 
     // ===== MEASUREMENT POINT LABELS =====
     const measurePointLabels = new Map(); // Map<Measure, TextSprite[]>
@@ -2038,6 +2104,11 @@
         viewer.renderer.render(memberScene, camera);
       }
 
+      // Elevation contour lines
+      if (elevationContoursVisible && elevationScene.children.length > 0) {
+        try { viewer.renderer.render(elevationScene, camera); } catch(e) { console.warn('Elevation scene render error:', e); }
+      }
+
       // Measurement point labels — offset above point, scale, render
       if (measureLabelScene.children.length > 0) {
         var cw = viewer.renderer.getSize(new THREE.Vector2()).width;
@@ -2051,6 +2122,7 @@
             var worldPos = pt.position ? pt.position : pt;
             var dist = camera.position.distanceTo(worldPos);
             var pr = Potree.Utils.projectedRadius(1, camera, dist, cw, ch);
+            if (!pr || !isFinite(pr) || pr < 0.001) pr = 1;
             var s = (70 / pr);
             lbl.scale.set(s, s, s);
 
@@ -2078,6 +2150,9 @@
         viewer.renderer.render(measureLabelScene, camera);
       }
     });
+
+    // -- Elevation: re-color newly streamed nodes each frame --
+    viewer.addEventListener('update', elevationFrameUpdate);
 
     // -- Toggle mark mode --
     function toggleMarkMode(forceOff) {
@@ -2549,6 +2624,1258 @@
     }
 
     // -- Inject sidebar buttons once GUI is ready --
+    // ===== ELEVATION MAP — UTILITY FUNCTIONS =====
+
+    function forceLoadAllNodes(pointCloud) {
+      return new Promise(function (resolve) {
+        var geo = pointCloud.pcoGeometry;
+        if (!geo || !geo.root) { resolve(); return; }
+        function triggerLoads(node) {
+          if (!node) return;
+          if (!node.loaded) node.load();
+          if (node.children) {
+            for (var i = 0; i < 8; i++) {
+              if (node.children[i]) triggerLoads(node.children[i]);
+            }
+          }
+        }
+        var origMax = Potree.maxNodesLoading || 4;
+        Potree.maxNodesLoading = 20;
+        triggerLoads(geo.root);
+        var poll = setInterval(function () {
+          if (Potree.numNodesLoading === 0) {
+            clearInterval(poll);
+            Potree.maxNodesLoading = origMax;
+            resolve();
+          } else {
+            triggerLoads(geo.root);
+          }
+        }, 100);
+      });
+    }
+
+    function extractPositions(pointCloud) {
+      var geo = pointCloud.pcoGeometry;
+      var allPositions = [];
+      var nodeMap = [];
+      var totalCount = 0;
+      function traverse(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry) {
+          var posAttr = node.geometry.attributes.position;
+          if (posAttr && posAttr.array) {
+            var bbMin = node.boundingBox
+              ? { x: node.boundingBox.min.x, y: node.boundingBox.min.y, z: node.boundingBox.min.z }
+              : { x: 0, y: 0, z: 0 };
+            nodeMap.push({ geometryNode: node, startIndex: totalCount, count: posAttr.count, bbMin: bbMin });
+            totalCount += posAttr.count;
+            allPositions.push({ array: posAttr.array, count: posAttr.count, bbMin: bbMin });
+          }
+        }
+        if (node.children) {
+          for (var i = 0; i < 8; i++) {
+            if (node.children[i]) traverse(node.children[i]);
+          }
+        }
+      }
+      traverse(geo.root);
+      var merged = new Float32Array(totalCount * 3);
+      var writeOffset = 0;
+      var pcoOffset = geo.offset;
+      var ox = pcoOffset.x, oy = pcoOffset.y, oz = pcoOffset.z;
+      for (var n = 0; n < allPositions.length; n++) {
+        var arr = allPositions[n].array;
+        var cnt = allPositions[n].count;
+        var bb = allPositions[n].bbMin;
+        var tx = ox + bb.x, ty = oy + bb.y, tz = oz + bb.z;
+        for (var i = 0; i < cnt; i++) {
+          merged[writeOffset]     = arr[i * 3]     + tx;
+          merged[writeOffset + 1] = arr[i * 3 + 1] + ty;
+          merged[writeOffset + 2] = arr[i * 3 + 2] + tz;
+          writeOffset += 3;
+        }
+      }
+      return { positions: merged, count: totalCount, nodeMap: nodeMap };
+    }
+
+    function backupOriginalRGBA(pointCloud) {
+      var map = new Map();
+      var geo = pointCloud.pcoGeometry;
+      function traverse(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry) {
+          var rgba = node.geometry.attributes.rgba;
+          if (rgba && rgba.array) map.set(node, new Uint8Array(rgba.array));
+        }
+        if (node.children) {
+          for (var i = 0; i < 8; i++) {
+            if (node.children[i]) traverse(node.children[i]);
+          }
+        }
+      }
+      traverse(geo.root);
+      return map;
+    }
+
+    function restoreOriginalRGBA(backupMap) {
+      if (!backupMap) return;
+      backupMap.forEach(function (origArray, node) {
+        if (node.geometry && node.geometry.attributes.rgba) {
+          var rgba = node.geometry.attributes.rgba;
+          rgba.array.set(origArray);
+          rgba.needsUpdate = true;
+        }
+      });
+    }
+
+    // Sequential color ramp: blue → cyan → green → yellow → red
+    function elevationToRGBA(z, zMin, zMax) {
+      var range = zMax - zMin;
+      if (range < 1e-6) return [128, 128, 128, 255];
+      var t = (z - zMin) / range;
+      t = Math.max(0, Math.min(1, t));
+
+      var r, g, b;
+      if (t < 0.25) {
+        var s = t / 0.25;
+        r = 0;
+        g = Math.round(255 * s);
+        b = 255;
+      } else if (t < 0.5) {
+        var s = (t - 0.25) / 0.25;
+        r = 0;
+        g = 255;
+        b = Math.round(255 * (1 - s));
+      } else if (t < 0.75) {
+        var s = (t - 0.5) / 0.25;
+        r = Math.round(255 * s);
+        g = 255;
+        b = 0;
+      } else {
+        var s = (t - 0.75) / 0.25;
+        r = 255;
+        g = Math.round(255 * (1 - s));
+        b = 0;
+      }
+      return [r, g, b, 255];
+    }
+
+    function getCropBoxBounds(volume) {
+      if (!volume) return null;
+      volume.updateMatrixWorld(true);
+      var mat = volume.matrixWorld;
+      var corners = [
+        new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3( 0.5, -0.5, -0.5),
+        new THREE.Vector3(-0.5,  0.5, -0.5), new THREE.Vector3( 0.5,  0.5, -0.5),
+        new THREE.Vector3(-0.5, -0.5,  0.5), new THREE.Vector3( 0.5, -0.5,  0.5),
+        new THREE.Vector3(-0.5,  0.5,  0.5), new THREE.Vector3( 0.5,  0.5,  0.5)
+      ];
+      var min = new THREE.Vector3(Infinity, Infinity, Infinity);
+      var max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+      for (var i = 0; i < corners.length; i++) {
+        corners[i].applyMatrix4(mat);
+        min.min(corners[i]);
+        max.max(corners[i]);
+      }
+      return { min: [min.x, min.y, min.z], max: [max.x, max.y, max.z] };
+    }
+
+    // Build a 2D grid of max-Z values for top-surface detection
+    function buildSurfaceGrid(positions, cropBounds, gridRes) {
+      gridRes = gridRes || 200;
+      var xMin = cropBounds ? cropBounds.min[0] : Infinity;
+      var xMax = cropBounds ? cropBounds.max[0] : -Infinity;
+      var yMin = cropBounds ? cropBounds.min[1] : Infinity;
+      var yMax = cropBounds ? cropBounds.max[1] : -Infinity;
+
+      // If no crop bounds, compute from positions
+      if (!cropBounds) {
+        var count = positions.length / 3;
+        for (var i = 0; i < count; i++) {
+          var px = positions[i * 3], py = positions[i * 3 + 1];
+          if (px < xMin) xMin = px; if (px > xMax) xMax = px;
+          if (py < yMin) yMin = py; if (py > yMax) yMax = py;
+        }
+      }
+
+      var xRange = xMax - xMin, yRange = yMax - yMin;
+      if (xRange < 1e-6 || yRange < 1e-6) return null;
+      var cellX = xRange / gridRes, cellY = yRange / gridRes;
+
+      var maxZ = new Float32Array(gridRes * gridRes);
+      for (var i = 0; i < maxZ.length; i++) maxZ[i] = -Infinity;
+
+      var count = positions.length / 3;
+      for (var i = 0; i < count; i++) {
+        var px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+        if (cropBounds) {
+          if (px < cropBounds.min[0] || px > cropBounds.max[0] ||
+              py < cropBounds.min[1] || py > cropBounds.max[1] ||
+              pz < cropBounds.min[2] || pz > cropBounds.max[2]) continue;
+        }
+        var ix = Math.floor((px - xMin) / cellX);
+        var iy = Math.floor((py - yMin) / cellY);
+        if (ix >= gridRes) ix = gridRes - 1;
+        if (iy >= gridRes) iy = gridRes - 1;
+        if (ix < 0) ix = 0; if (iy < 0) iy = 0;
+        var idx = iy * gridRes + ix;
+        if (pz > maxZ[idx]) maxZ[idx] = pz;
+      }
+
+      return { maxZ: maxZ, gridRes: gridRes, xMin: xMin, yMin: yMin, cellX: cellX, cellY: cellY };
+    }
+
+    // Check if a point is on the top surface (within tolerance of max Z in its grid cell)
+    function isTopSurface(px, py, pz, surfGrid, tolerance) {
+      if (!surfGrid) return true;
+      var ix = Math.floor((px - surfGrid.xMin) / surfGrid.cellX);
+      var iy = Math.floor((py - surfGrid.yMin) / surfGrid.cellY);
+      if (ix < 0 || iy < 0 || ix >= surfGrid.gridRes || iy >= surfGrid.gridRes) return false;
+      var cellMaxZ = surfGrid.maxZ[iy * surfGrid.gridRes + ix];
+      if (cellMaxZ === -Infinity) return false;
+      return pz >= cellMaxZ - tolerance;
+    }
+
+    function applyElevationColors(positions, nodeMap, zMin, zMax, cropBounds) {
+      // Auto-compute surface tolerance: 10% of Z range
+      var tolerance = (zMax - zMin) * 0.10;
+      var exclInvMats = buildExclusionInvMats();
+      var hasExclusions = exclInvMats.length > 0;
+
+      for (var n = 0; n < nodeMap.length; n++) {
+        var entry = nodeMap[n];
+        var node = entry.geometryNode;
+        if (!node.geometry || !node.geometry.attributes.rgba) continue;
+        var rgba = node.geometry.attributes.rgba;
+        var arr = rgba.array;
+        var start = entry.startIndex;
+        var count = entry.count;
+        var origArr = elevationOrigRGBA ? elevationOrigRGBA.get(node) : null;
+
+        for (var i = 0; i < count; i++) {
+          var globalIdx = start + i;
+          var px = positions[globalIdx * 3];
+          var py = positions[globalIdx * 3 + 1];
+          var pz = positions[globalIdx * 3 + 2];
+
+          // Check if inside crop box
+          var inside = true;
+          if (cropBounds) {
+            if (px < cropBounds.min[0] || px > cropBounds.max[0] ||
+                py < cropBounds.min[1] || py > cropBounds.max[1] ||
+                pz < cropBounds.min[2] || pz > cropBounds.max[2]) {
+              inside = false;
+            }
+          }
+
+          // Check if on top surface
+          if (inside && elevationSurfaceGrid) {
+            inside = isTopSurface(px, py, pz, elevationSurfaceGrid, tolerance);
+          }
+
+          // Check exclusion zones
+          if (inside && hasExclusions) {
+            if (isPointExcluded(px, py, pz, exclInvMats)) inside = false;
+          }
+
+          var off = i * 4;
+          if (!inside) {
+            if (origArr) {
+              arr[off]     = origArr[off];
+              arr[off + 1] = origArr[off + 1];
+              arr[off + 2] = origArr[off + 2];
+              arr[off + 3] = origArr[off + 3];
+            }
+          } else {
+            var color = elevationToRGBA(pz, zMin, zMax);
+            arr[off]     = color[0];
+            arr[off + 1] = color[1];
+            arr[off + 2] = color[2];
+            arr[off + 3] = color[3];
+          }
+        }
+        rgba.needsUpdate = true;
+      }
+    }
+
+    // Color a single geometry node by elevation (for newly loaded nodes during zoom)
+    function colorNodeByElevation(node, pc, zMin, zMax, cropBounds) {
+      if (!node.geometry || !node.geometry.attributes.rgba || !node.geometry.attributes.position) return;
+      var posAttr = node.geometry.attributes.position;
+      var rgba = node.geometry.attributes.rgba;
+      var arr = rgba.array;
+      var geo = pc.pcoGeometry;
+      var pcoOffset = geo.offset;
+      var bbMin = node.boundingBox
+        ? { x: node.boundingBox.min.x, y: node.boundingBox.min.y, z: node.boundingBox.min.z }
+        : { x: 0, y: 0, z: 0 };
+      var tx = pcoOffset.x + bbMin.x;
+      var ty = pcoOffset.y + bbMin.y;
+      var tz = pcoOffset.z + bbMin.z;
+      var tolerance = (zMax - zMin) * 0.10;
+      var exclInvMats = buildExclusionInvMats();
+      var hasExclusions = exclInvMats.length > 0;
+
+      // Back up original RGBA for this node if not already saved
+      if (elevationOrigRGBA && !elevationOrigRGBA.has(node)) {
+        elevationOrigRGBA.set(node, new Uint8Array(arr));
+      }
+      var origArr = elevationOrigRGBA ? elevationOrigRGBA.get(node) : null;
+
+      for (var i = 0; i < posAttr.count; i++) {
+        var px = posAttr.array[i * 3] + tx;
+        var py = posAttr.array[i * 3 + 1] + ty;
+        var pz = posAttr.array[i * 3 + 2] + tz;
+        var off = i * 4;
+
+        var inside = true;
+        if (cropBounds) {
+          if (px < cropBounds.min[0] || px > cropBounds.max[0] ||
+              py < cropBounds.min[1] || py > cropBounds.max[1] ||
+              pz < cropBounds.min[2] || pz > cropBounds.max[2]) {
+            inside = false;
+          }
+        }
+        if (inside && elevationSurfaceGrid) {
+          inside = isTopSurface(px, py, pz, elevationSurfaceGrid, tolerance);
+        }
+        if (inside && hasExclusions) {
+          if (isPointExcluded(px, py, pz, exclInvMats)) inside = false;
+        }
+
+        if (inside) {
+          var color = elevationToRGBA(pz, zMin, zMax);
+          arr[off] = color[0]; arr[off + 1] = color[1];
+          arr[off + 2] = color[2]; arr[off + 3] = color[3];
+        } else if (origArr) {
+          arr[off] = origArr[off]; arr[off + 1] = origArr[off + 1];
+          arr[off + 2] = origArr[off + 2]; arr[off + 3] = origArr[off + 3];
+        }
+      }
+      rgba.needsUpdate = true;
+    }
+
+    // Per-frame check: color any newly loaded nodes
+    function elevationFrameUpdate() {
+      if (!elevationActive) return;
+      var pc = viewer.scene.pointclouds[0];
+      if (!pc || !pc.pcoGeometry || !pc.pcoGeometry.root) return;
+
+      function traverseAndColor(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry && !elevationColoredNodes.has(node)) {
+          elevationColoredNodes.add(node);
+          colorNodeByElevation(node, pc, elevationZMin, elevationZMax, elevationCropBounds);
+        }
+        if (node.children) {
+          for (var i = 0; i < 8; i++) {
+            if (node.children[i]) traverseAndColor(node.children[i]);
+          }
+        }
+      }
+      traverseAndColor(pc.pcoGeometry.root);
+    }
+
+    function updateElevationLegend(zMin, zMax) {
+      var canvas = document.getElementById('heatmap-legend-canvas');
+      if (!canvas) return;
+      var ctx = canvas.getContext('2d');
+      var w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      var barX = 100, barW = 40, barTop = 60, barBot = h - 20;
+      var barH = barBot - barTop;
+
+      // Draw gradient bar: top = high (red), bottom = low (blue)
+      for (var y = 0; y < barH; y++) {
+        var t = 1 - (y / barH); // top=1, bottom=0
+        var color = elevationToRGBA(zMin + t * (zMax - zMin), zMin, zMax);
+        ctx.fillStyle = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
+        ctx.fillRect(barX, barTop + y, barW, 1);
+      }
+
+      ctx.strokeStyle = '#aaa';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barX, barTop, barW, barH);
+
+      // Use the contour step for legend ticks so they match contour lines
+      var range = zMax - zMin;
+      var step = elevationContourStep;
+      // If step would give too many ticks on the legend, use multiples
+      var nTicks = Math.floor(range / step);
+      var legendStep = step;
+      if (nTicks > 12) {
+        var mult = Math.ceil(nTicks / 8);
+        legendStep = step * mult;
+      }
+
+      // Determine decimal places from step
+      var decimals = 0;
+      if (legendStep < 0.01) decimals = 3;
+      else if (legendStep < 0.1) decimals = 2;
+      else if (legendStep < 1) decimals = 1;
+
+      var tickLen = 6;
+      var labelRight = barX - 8;
+
+      // Draw ticks with labels on the LEFT side of the bar, right-justified
+      ctx.font = '16px sans-serif';
+      ctx.textBaseline = 'middle';
+
+      var firstTick = Math.ceil(zMin / legendStep) * legendStep;
+      for (var v = firstTick; v <= zMax + legendStep * 0.01; v += legendStep) {
+        if (v < zMin || v > zMax) continue;
+        var t = (v - zMin) / range;
+        var yPos = barTop + barH * (1 - t);
+
+        // Tick line
+        ctx.strokeStyle = '#ccc';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(barX - tickLen, yPos);
+        ctx.lineTo(barX, yPos);
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'right';
+        ctx.fillText(v.toFixed(decimals), labelRight, yPos);
+      }
+
+      // Title
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.textAlign = 'center';
+      var centerX = (labelRight + barX + barW) / 2;
+      ctx.fillText('Elevation', centerX, 18);
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('(m)', centerX, 40);
+
+      document.getElementById('heatmap-legend').style.display = 'block';
+    }
+
+    function hideElevationLegend() {
+      var el = document.getElementById('heatmap-legend');
+      if (el) el.style.display = 'none';
+    }
+
+    // ===== ELEVATION MAP — CONTOUR LINES =====
+
+    function smallestEigenvector3x3_local(a00, a01, a02, a11, a12, a22) {
+      var trace = a00 + a11 + a22;
+      var q = trace / 3;
+      var b00 = a00 - q, b11 = a11 - q, b22 = a22 - q;
+      var p2 = b00*b00 + b11*b11 + b22*b22 + 2*(a01*a01 + a02*a02 + a12*a12);
+      var p = Math.sqrt(p2 / 6);
+      if (p < 1e-15) return [0, 0, 1];
+      var invP = 1/p;
+      var B00=b00*invP, B01=a01*invP, B02=a02*invP;
+      var B11=b11*invP, B12=a12*invP, B22=b22*invP;
+      var detB = B00*(B11*B22-B12*B12) - B01*(B01*B22-B12*B02) + B02*(B01*B12-B11*B02);
+      var halfDetB = Math.max(-1, Math.min(1, detB/2));
+      var phi = Math.acos(halfDetB)/3;
+      var lambda0 = q + 2*p*Math.cos(phi + 2*Math.PI/3);
+      var m00=a00-lambda0, m01x=a01, m02x=a02;
+      var m10=a01, m11x=a11-lambda0, m12x=a12;
+      var m20=a02, m21=a12, m22x=a22-lambda0;
+      var nx = m01x*m12x - m02x*m11x;
+      var ny = m02x*m10 - m00*m12x;
+      var nz = m00*m11x - m01x*m10;
+      var len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+      if (len < 1e-12) {
+        nx=m01x*m22x-m02x*m21; ny=m02x*m20-m00*m22x; nz=m00*m21-m01x*m20;
+        len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+      }
+      if (len < 1e-12) {
+        nx=m11x*m22x-m12x*m21; ny=m12x*m20-m10*m22x; nz=m10*m21-m11x*m20;
+        len = Math.sqrt(nx*nx+ny*ny+nz*nz);
+      }
+      if (len < 1e-12) return [0, 0, 1];
+      return [nx/len, ny/len, nz/len];
+    }
+
+    function marchingSquares(grid, cols, rows, level) {
+      var segments = [];
+      function msLerp(va, vb) {
+        if (Math.abs(vb - va) < 1e-10) return 0.5;
+        return (level - va) / (vb - va);
+      }
+      for (var r = 0; r < rows - 1; r++) {
+        for (var c = 0; c < cols - 1; c++) {
+          var v00 = grid[r * cols + c];
+          var v10 = grid[r * cols + c + 1];
+          var v01 = grid[(r + 1) * cols + c];
+          var v11 = grid[(r + 1) * cols + c + 1];
+          if (isNaN(v00) || isNaN(v10) || isNaN(v01) || isNaN(v11)) continue;
+          var b00 = v00 >= level ? 1 : 0;
+          var b10 = v10 >= level ? 1 : 0;
+          var b01 = v01 >= level ? 1 : 0;
+          var b11 = v11 >= level ? 1 : 0;
+          var idx = b00 | (b10 << 1) | (b01 << 2) | (b11 << 3);
+          if (idx === 0 || idx === 15) continue;
+          var bottom = [c + msLerp(v00, v10), r];
+          var top    = [c + msLerp(v01, v11), r + 1];
+          var left   = [c, r + msLerp(v00, v01)];
+          var right  = [c + 1, r + msLerp(v10, v11)];
+          switch (idx) {
+            case 1:  segments.push([bottom[0], bottom[1], left[0], left[1]]); break;
+            case 2:  segments.push([bottom[0], bottom[1], right[0], right[1]]); break;
+            case 3:  segments.push([left[0], left[1], right[0], right[1]]); break;
+            case 4:  segments.push([left[0], left[1], top[0], top[1]]); break;
+            case 5:  segments.push([bottom[0], bottom[1], top[0], top[1]]); break;
+            case 6:
+              var avg = (v00 + v10 + v01 + v11) / 4;
+              if (avg >= level) {
+                segments.push([bottom[0], bottom[1], left[0], left[1]]);
+                segments.push([right[0], right[1], top[0], top[1]]);
+              } else {
+                segments.push([bottom[0], bottom[1], right[0], right[1]]);
+                segments.push([left[0], left[1], top[0], top[1]]);
+              }
+              break;
+            case 7:  segments.push([right[0], right[1], top[0], top[1]]); break;
+            case 8:  segments.push([right[0], right[1], top[0], top[1]]); break;
+            case 9:
+              var avg = (v00 + v10 + v01 + v11) / 4;
+              if (avg >= level) {
+                segments.push([bottom[0], bottom[1], right[0], right[1]]);
+                segments.push([left[0], left[1], top[0], top[1]]);
+              } else {
+                segments.push([bottom[0], bottom[1], left[0], left[1]]);
+                segments.push([right[0], right[1], top[0], top[1]]);
+              }
+              break;
+            case 10: segments.push([bottom[0], bottom[1], top[0], top[1]]); break;
+            case 11: segments.push([left[0], left[1], top[0], top[1]]); break;
+            case 12: segments.push([left[0], left[1], right[0], right[1]]); break;
+            case 13: segments.push([bottom[0], bottom[1], right[0], right[1]]); break;
+            case 14: segments.push([bottom[0], bottom[1], left[0], left[1]]); break;
+          }
+        }
+      }
+      return segments;
+    }
+
+    function createContourLabel(text, color) {
+      var canvas = document.createElement('canvas');
+      canvas.width = 128; canvas.height = 48;
+      var ctx = canvas.getContext('2d');
+
+      // Background pill (matches temporal viewer)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 8);
+      } else {
+        ctx.rect(2, 2, canvas.width - 4, canvas.height - 4);
+      }
+      ctx.fill();
+
+      // Text
+      ctx.fillStyle = color;
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+      var texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      var material = new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: true });
+      var sprite = new THREE.Sprite(material);
+      sprite.scale.set(0.15, 0.06, 1); // overridden by caller based on scan size
+      sprite.raycast = function () {};
+      return sprite;
+    }
+
+    function clearElevationContours() {
+      while (elevationScene.children.length > 0) {
+        var child = elevationScene.children[0];
+        child.traverse(function(obj) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        });
+        elevationScene.remove(child);
+      }
+      elevationContoursVisible = false;
+    }
+
+    function buildElevationContours(positions, zMin, zMax, cropBounds) {
+      clearElevationContours();
+      var tolerance = (zMax - zMin) * 0.10;
+
+      // Collect only top-surface points inside crop box, excluding exclusion zones
+      var exclInvMats = buildExclusionInvMats();
+      var hasExclusions = exclInvMats.length > 0;
+      var pts = [];
+      var count = positions.length / 3;
+      for (var i = 0; i < count; i++) {
+        var px = positions[i * 3];
+        var py = positions[i * 3 + 1];
+        var pz = positions[i * 3 + 2];
+        if (cropBounds) {
+          if (px < cropBounds.min[0] || px > cropBounds.max[0] ||
+              py < cropBounds.min[1] || py > cropBounds.max[1] ||
+              pz < cropBounds.min[2] || pz > cropBounds.max[2]) continue;
+        }
+        if (elevationSurfaceGrid && !isTopSurface(px, py, pz, elevationSurfaceGrid, tolerance)) continue;
+        if (hasExclusions && isPointExcluded(px, py, pz, exclInvMats)) continue;
+        pts.push({ x: px, y: py, z: pz, elev: pz });
+      }
+
+      if (pts.length < 100) { showToast('Too few points for contours'); return; }
+
+      // PCA to find dominant surface plane
+      var cx = 0, cy = 0, cz = 0;
+      for (var i = 0; i < pts.length; i++) {
+        cx += pts[i].x; cy += pts[i].y; cz += pts[i].z;
+      }
+      cx /= pts.length; cy /= pts.length; cz /= pts.length;
+
+      var cxx = 0, cxy = 0, cxz = 0, cyy = 0, cyz = 0, czz = 0;
+      for (var i = 0; i < pts.length; i++) {
+        var dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+        cxx += dx * dx; cxy += dx * dy; cxz += dx * dz;
+        cyy += dy * dy; cyz += dy * dz; czz += dz * dz;
+      }
+
+      var normal = smallestEigenvector3x3_local(cxx, cxy, cxz, cyy, cyz, czz);
+      var absNx = Math.abs(normal[0]), absNy = Math.abs(normal[1]), absNz = Math.abs(normal[2]);
+      var up;
+      if (absNz > absNx && absNz > absNy) up = new THREE.Vector3(1, 0, 0);
+      else if (absNy > absNx) up = new THREE.Vector3(1, 0, 0);
+      else up = new THREE.Vector3(0, 1, 0);
+
+      var N = new THREE.Vector3(normal[0], normal[1], normal[2]);
+      var U = new THREE.Vector3().crossVectors(up, N).normalize();
+      var V = new THREE.Vector3().crossVectors(N, U).normalize();
+
+      // Project onto UV plane
+      var uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+      for (var i = 0; i < pts.length; i++) {
+        var dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+        pts[i].u = dx * U.x + dy * U.y + dz * U.z;
+        pts[i].v = dx * V.x + dy * V.y + dz * V.z;
+        if (pts[i].u < uMin) uMin = pts[i].u; if (pts[i].u > uMax) uMax = pts[i].u;
+        if (pts[i].v < vMin) vMin = pts[i].v; if (pts[i].v > vMax) vMax = pts[i].v;
+      }
+
+      var gridRes = 100;
+      var uRange = uMax - uMin, vRange = vMax - vMin;
+      if (uRange < 0.001 || vRange < 0.001) return;
+      var cellU = uRange / gridRes, cellV = vRange / gridRes;
+
+      // Grid: use max Z per cell (top surface only)
+      var gridMax = new Float32Array(gridRes * gridRes);
+      var gridCount = new Uint16Array(gridRes * gridRes);
+      var gridN = new Float32Array(gridRes * gridRes);
+      var gridNCount = new Uint16Array(gridRes * gridRes);
+      for (var i = 0; i < gridMax.length; i++) gridMax[i] = -Infinity;
+
+      for (var i = 0; i < pts.length; i++) {
+        var iu = Math.floor((pts[i].u - uMin) / cellU);
+        var iv = Math.floor((pts[i].v - vMin) / cellV);
+        if (iu >= gridRes) iu = gridRes - 1;
+        if (iv >= gridRes) iv = gridRes - 1;
+        var idx = iv * gridRes + iu;
+        gridCount[idx]++;
+        // Use average Z of top-surface points (already filtered)
+        if (gridMax[idx] === -Infinity) gridMax[idx] = 0;
+        gridMax[idx] += pts[i].elev;
+        var dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+        gridN[idx] += dx * N.x + dy * N.y + dz * N.z;
+        gridNCount[idx]++;
+      }
+
+      var gridAvg = new Float32Array(gridRes * gridRes);
+      var gridNAvg = new Float32Array(gridRes * gridRes);
+      for (var i = 0; i < gridRes * gridRes; i++) {
+        if (gridCount[i] > 0) {
+          gridAvg[i] = gridMax[i] / gridCount[i];
+          gridNAvg[i] = gridN[i] / gridNCount[i];
+        } else {
+          gridAvg[i] = NaN;
+          gridNAvg[i] = 0;
+        }
+      }
+
+      // Contour levels — use user-set interval
+      var range = zMax - zMin;
+      var step = elevationContourStep;
+
+      // Determine decimal places from step
+      var decimals = 0;
+      if (step < 0.01) decimals = 3;
+      else if (step < 0.1) decimals = 2;
+      else if (step < 1) decimals = 1;
+
+      var contourLevels = [];
+      var firstLevel = Math.ceil(zMin / step) * step;
+      for (var v = firstLevel; v <= zMax + step * 0.01; v += step) {
+        if (v >= zMin && v <= zMax) contourLevels.push(v);
+      }
+
+      // Compute scan diagonal for label sizing
+      var scanDiag = Math.sqrt(uRange * uRange + vRange * vRange);
+      var labelScale = scanDiag * 0.025;
+      if (labelScale < 0.3) labelScale = 0.3;
+
+      var contourMaterial = new THREE.LineBasicMaterial({
+        color: 0x000000, linewidth: 2,
+        depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.8
+      });
+
+      for (var ci = 0; ci < contourLevels.length; ci++) {
+        var level = contourLevels[ci];
+        var segs = marchingSquares(gridAvg, gridRes, gridRes, level);
+        if (segs.length === 0) continue;
+
+        var linePositions = [];
+        for (var si = 0; si < segs.length; si++) {
+          var seg = segs[si];
+          for (var pi = 0; pi < 2; pi++) {
+            var gu = seg[pi * 2], gv = seg[pi * 2 + 1];
+            var uVal = uMin + gu * cellU, vVal = vMin + gv * cellV;
+            var iu = Math.floor(gu), iv = Math.floor(gv);
+            if (iu >= gridRes) iu = gridRes - 1;
+            if (iv >= gridRes) iv = gridRes - 1;
+            var nOffset = gridNAvg[iv * gridRes + iu];
+            var wx = cx + uVal * U.x + vVal * V.x + nOffset * N.x;
+            var wy = cy + uVal * U.y + vVal * V.y + nOffset * N.y;
+            var wz = cz + uVal * U.z + vVal * V.z + nOffset * N.z;
+            linePositions.push(wx, wy, wz);
+          }
+        }
+
+        if (linePositions.length > 0) {
+          var geometry = new THREE.BufferGeometry();
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+          var line = new THREE.LineSegments(geometry, contourMaterial.clone());
+          line.userData.contourLevel = level;
+          line.raycast = function () {};
+          elevationScene.add(line);
+
+          // Elevation labels along contour — always at least 1 per contour
+          var labelText = level.toFixed(decimals) + ' m';
+          var totalSegs = linePositions.length / 6;
+          var labelInterval = Math.max(1, Math.floor(totalSegs / 6));
+          // Always place at least one label (midpoint of first segment)
+          var placedOne = false;
+          for (var li = 0; li < totalSegs; li += labelInterval) {
+            var lx = (linePositions[li * 6] + linePositions[li * 6 + 3]) / 2;
+            var ly = (linePositions[li * 6 + 1] + linePositions[li * 6 + 4]) / 2;
+            var lz = (linePositions[li * 6 + 2] + linePositions[li * 6 + 5]) / 2;
+            var sprite = createContourLabel(labelText, '#ffffff');
+            sprite.scale.set(labelScale, labelScale * 0.4, 1);
+            sprite.position.set(lx, ly, lz);
+            elevationScene.add(sprite);
+            placedOne = true;
+          }
+          // Fallback: if somehow no label placed, place one at first segment
+          if (!placedOne && totalSegs > 0) {
+            var lx = (linePositions[0] + linePositions[3]) / 2;
+            var ly = (linePositions[1] + linePositions[4]) / 2;
+            var lz = (linePositions[2] + linePositions[5]) / 2;
+            var sprite = createContourLabel(labelText, '#ffffff');
+            sprite.scale.set(labelScale, labelScale * 0.4, 1);
+            sprite.position.set(lx, ly, lz);
+            elevationScene.add(sprite);
+          }
+        }
+      }
+
+      elevationContoursVisible = true;
+    }
+
+    // ===== ELEVATION MAP — CROP BOX + ORCHESTRATION =====
+
+    // ===== EXCLUSION ZONES =====
+
+    function onAddExclusion() {
+      var volume = viewer.volumeTool.startInsertion({ clip: false });
+      volume.name = 'Exclusion Zone ' + (exclusionBoxes.length + 1);
+      volume.clip = false;
+      exclusionBoxes.push(volume);
+
+      // Style: nearly invisible fill, black frame, no label
+      function styleExclusionBox(vol) {
+        if (vol.box) {
+          vol.box.material.color.setHex(0x000000);
+          vol.box.material.opacity = 0.03;
+          vol.box.material.needsUpdate = true;
+        }
+        if (vol.frame) {
+          vol.frame.material.color.setHex(0x000000);
+          vol.frame.material.needsUpdate = true;
+        }
+        if (vol.label) vol.label.visible = false;
+      }
+      styleExclusionBox(volume);
+      setTimeout(function() { styleExclusionBox(volume); }, 500);
+
+      $('#btn-clear-exclusions, #btn-hide-exclusion-outlines').show();
+      rebuildExclusionList();
+      showToast('Click and drag to place exclusion zone.');
+    }
+
+    function onClearExclusions() {
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        viewer.scene.removeVolume(exclusionBoxes[i]);
+      }
+      exclusionBoxes = [];
+      _lastExclusionHash = 'force';
+      forceRecolorElevation();
+      $('#btn-clear-exclusions, #btn-hide-exclusion-outlines').hide();
+      _exclusionOutlinesHidden = false;
+      rebuildExclusionList();
+    }
+
+    function removeExclusion(index) {
+      if (index >= 0 && index < exclusionBoxes.length) {
+        viewer.scene.removeVolume(exclusionBoxes[index]);
+        exclusionBoxes.splice(index, 1);
+        _lastExclusionHash = 'force';
+        forceRecolorElevation();
+        if (exclusionBoxes.length === 0) $('#btn-clear-exclusions').hide();
+        rebuildExclusionList();
+      }
+    }
+
+    function toggleExclusion(index) {
+      if (index >= 0 && index < exclusionBoxes.length) {
+        var vol = exclusionBoxes[index];
+        vol._disabled = !vol._disabled;
+        vol.visible = !vol._disabled;
+        _lastExclusionHash = 'force';
+        forceRecolorElevation();
+        rebuildExclusionList();
+      }
+    }
+
+    function forceRecolorElevation() {
+      if (elevationActive && elevationPositions && elevationNodeMap) {
+        var cropBounds = getCropBoxBounds(elevationCropVolume);
+        applyElevationColors(elevationPositions, elevationNodeMap, elevationZMin, elevationZMax, cropBounds);
+        // Reset colored nodes so frame listener picks up new exclusions
+        elevationColoredNodes.clear();
+        for (var ni = 0; ni < elevationNodeMap.length; ni++) {
+          elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
+        }
+        // Rebuild contours if visible
+        if (elevationContoursVisible) {
+          buildElevationContours(elevationPositions, elevationZMin, elevationZMax, cropBounds);
+        }
+      }
+    }
+
+    function rebuildExclusionList() {
+      var $list = $('#exclusion-list');
+      $list.empty();
+      if (exclusionBoxes.length === 0) return;
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        var vol = exclusionBoxes[i];
+        var disabled = vol._disabled;
+        var eyeStyle = disabled ? 'opacity:0.35' : '';
+        var html = '<div style="display:flex;align-items:center;gap:4px;margin:2px 0;padding:3px 6px;background:rgba(255,255,255,0.05);border-radius:3px;font:12px/1.3 sans-serif;color:var(--sidebar-text)">' +
+          '<span style="flex:1">Exclusion ' + (i + 1) + '</span>' +
+          '<button data-idx="' + i + '" class="btn-toggle-exclusion" style="padding:1px 5px;border:1px solid var(--border);border-radius:3px;font:11px sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text);' + eyeStyle + '" title="Toggle">&#128065;</button>' +
+          '<button data-idx="' + i + '" class="btn-remove-exclusion" style="padding:1px 5px;border:1px solid var(--border);border-radius:3px;font:11px sans-serif;cursor:pointer;background:var(--panel-bg);color:var(--sidebar-text)" title="Delete">&times;</button>' +
+          '</div>';
+        $list.append(html);
+      }
+      $list.find('.btn-remove-exclusion').on('click', function() { removeExclusion(parseInt($(this).data('idx'))); });
+      $list.find('.btn-toggle-exclusion').on('click', function() { toggleExclusion(parseInt($(this).data('idx'))); });
+    }
+
+    // Listen for Potree removing volumes (user selects + presses Delete)
+    viewer.scene.addEventListener('volume_removed', function(e) {
+      var vol = e.volume;
+      var idx = exclusionBoxes.indexOf(vol);
+      if (idx >= 0) {
+        exclusionBoxes.splice(idx, 1);
+        _lastExclusionHash = 'force';
+        forceRecolorElevation();
+        if (exclusionBoxes.length === 0) $('#btn-clear-exclusions').hide();
+        rebuildExclusionList();
+      }
+    });
+
+    // Per-frame: detect exclusion box movement and recolor (throttled to max once per 500ms)
+    var _exclusionRecolorTimer = null;
+    viewer.addEventListener('update', function() {
+      if (exclusionBoxes.length > 0 && elevationActive) {
+        var hash = '';
+        for (var i = 0; i < exclusionBoxes.length; i++) {
+          var vol = exclusionBoxes[i];
+          if (vol._disabled) { hash += 'off|'; continue; }
+          var p = vol.position, s = vol.scale;
+          hash += p.x.toFixed(2) + p.y.toFixed(2) + p.z.toFixed(2) +
+                  s.x.toFixed(2) + s.y.toFixed(2) + s.z.toFixed(2) + '|';
+        }
+        if (hash !== _lastExclusionHash) {
+          _lastExclusionHash = hash;
+          if (!_exclusionRecolorTimer) {
+            _exclusionRecolorTimer = setTimeout(function() {
+              _exclusionRecolorTimer = null;
+              if (elevationActive && elevationPositions && elevationNodeMap) {
+                var cropBounds = getCropBoxBounds(elevationCropVolume);
+                applyElevationColors(elevationPositions, elevationNodeMap, elevationZMin, elevationZMax, cropBounds);
+                elevationColoredNodes.clear();
+                for (var ni = 0; ni < elevationNodeMap.length; ni++) {
+                  elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
+                }
+              }
+            }, 250);
+          }
+        }
+      } else if (_lastExclusionHash !== '' && exclusionBoxes.length === 0) {
+        _lastExclusionHash = '';
+        if (elevationActive) forceRecolorElevation();
+      }
+    });
+
+    // Check if a point is inside any active exclusion box
+    function isPointExcluded(px, py, pz, exclInvMats) {
+      for (var ei = 0; ei < exclInvMats.length; ei++) {
+        var local = new THREE.Vector3(px, py, pz).applyMatrix4(exclInvMats[ei]);
+        if (Math.abs(local.x) <= 0.5 && Math.abs(local.y) <= 0.5 && Math.abs(local.z) <= 0.5) return true;
+      }
+      return false;
+    }
+
+    // Build exclusion inverse matrices (for active boxes only)
+    function buildExclusionInvMats() {
+      var mats = [];
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        if (exclusionBoxes[i]._disabled) continue;
+        exclusionBoxes[i].updateMatrixWorld(true);
+        mats.push(new THREE.Matrix4().copy(exclusionBoxes[i].matrixWorld).invert());
+      }
+      return mats;
+    }
+
+    // Show/hide crop box outline (frame + box visuals only, clipping stays)
+    var _cropOutlineHidden = false;
+    function onToggleCropOutline() {
+      if (!elevationCropVolume) return;
+      _cropOutlineHidden = !_cropOutlineHidden;
+      if (_cropOutlineHidden) {
+        if (elevationCropVolume.frame) elevationCropVolume.frame.visible = false;
+        if (elevationCropVolume.box) elevationCropVolume.box.visible = false;
+        if (elevationCropVolume.label) elevationCropVolume.label.visible = false;
+        $('#btn-hide-crop-outline').text('Show Box');
+      } else {
+        if (elevationCropVolume.frame) elevationCropVolume.frame.visible = true;
+        if (elevationCropVolume.box) elevationCropVolume.box.visible = true;
+        $('#btn-hide-crop-outline').text('Hide Box');
+      }
+    }
+
+    // Show/hide all exclusion box outlines
+    var _exclusionOutlinesHidden = false;
+    function onToggleExclusionOutlines() {
+      _exclusionOutlinesHidden = !_exclusionOutlinesHidden;
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        var vol = exclusionBoxes[i];
+        if (vol._disabled) continue;
+        if (_exclusionOutlinesHidden) {
+          if (vol.frame) vol.frame.visible = false;
+          if (vol.box) vol.box.visible = false;
+          if (vol.label) vol.label.visible = false;
+        } else {
+          if (vol.frame) vol.frame.visible = true;
+          if (vol.box) vol.box.visible = true;
+        }
+      }
+      $('#btn-hide-exclusion-outlines').text(_exclusionOutlinesHidden ? 'Show Boxes' : 'Hide Boxes');
+    }
+
+    function onSetElevationCropBox() {
+      if (elevationCropVolume) {
+        viewer.scene.removeVolume(elevationCropVolume);
+        elevationCropVolume = null;
+      }
+
+      // Disable the initial clip box so only the elevation box controls clipping
+      if (initialClipBox) {
+        initialClipBox.clip = false;
+        initialClipBox.visible = false;
+      }
+
+      // Size the elevation box based on the initial clip box (50% volume = ~79% per axis)
+      var center, size;
+      if (initialClipBox) {
+        center = initialClipBox.position.clone();
+        size = initialClipBox.scale.clone().multiplyScalar(0.79);
+      } else {
+        var pc = viewer.scene.pointclouds[0];
+        if (!pc) { showToast('No point cloud loaded'); return; }
+        var bb = pc.pcoGeometry.tightBoundingBox || pc.boundingBox;
+        if (!bb) { showToast('No bounding box available'); return; }
+        var offset = pc.pcoGeometry.offset;
+        var minW = bb.min.clone().add(offset);
+        var maxW = bb.max.clone().add(offset);
+        center = new THREE.Vector3().addVectors(minW, maxW).multiplyScalar(0.5);
+        size = new THREE.Vector3().subVectors(maxW, minW).multiplyScalar(0.79);
+      }
+
+      var volume = new Potree.BoxVolume();
+      volume.name = 'Elevation Crop Box';
+      volume.clip = true;
+      volume.position.copy(center);
+      volume.scale.copy(size);
+      viewer.scene.addVolume(volume);
+
+      elevationCropVolume = volume;
+      elevationCropClipMode = 'soft';
+      viewer.setClipTask(Potree.ClipTask.HIGHLIGHT);
+      viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+
+      $('#btn-clear-elevation-crop, #btn-clip-soft, #btn-clip-hard, #btn-clip-none, #btn-hide-crop-outline').show();
+      _cropOutlineHidden = false;
+      $('#btn-hide-crop-outline').text('Hide Box');
+      $('.clip-btn').removeClass('active');
+      $('#btn-clip-soft').addClass('active');
+      $('#enable-elevation-status').text('Drag box faces to crop. Click Compute when ready.');
+      showToast('Crop box placed. Resize to area of interest.');
+    }
+
+    function onClearElevationCropBox() {
+      if (elevationCropVolume) {
+        viewer.scene.removeVolume(elevationCropVolume);
+        elevationCropVolume = null;
+      }
+      // Re-enable the initial clip box
+      if (initialClipBox) {
+        initialClipBox.clip = true;
+        initialClipBox.visible = true;
+        viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+        viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+      } else {
+        viewer.setClipTask(Potree.ClipTask.NONE);
+      }
+      $('#btn-clear-elevation-crop, #btn-clip-soft, #btn-clip-hard, #btn-clip-none, #btn-hide-crop-outline').hide();
+      $('#enable-elevation-status').text('');
+    }
+
+    function setElevationClipMode(mode) {
+      if (!elevationCropVolume) return;
+      elevationCropClipMode = mode;
+      $('.clip-btn').removeClass('active');
+
+      if (initialClipBox) { initialClipBox.clip = false; initialClipBox.visible = false; }
+
+      if (mode === 'soft') {
+        elevationCropVolume.clip = true;
+        elevationCropVolume.visible = true;
+        viewer.setClipTask(Potree.ClipTask.HIGHLIGHT);
+        $('#btn-clip-soft').addClass('active');
+      } else if (mode === 'hard') {
+        elevationCropVolume.clip = true;
+        elevationCropVolume.visible = true;
+        viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+        $('#btn-clip-hard').addClass('active');
+      } else {
+        // No clip — hide box completely (no green frame)
+        elevationCropVolume.clip = false;
+        elevationCropVolume.visible = false;
+        viewer.setClipTask(Potree.ClipTask.NONE);
+        $('#btn-clip-none').addClass('active');
+      }
+    }
+
+    function onComputeElevation() {
+      var pc = viewer.scene.pointclouds[0];
+      if (!pc) { showToast('No point cloud loaded'); return; }
+
+      elevationCropBounds = getCropBoxBounds(elevationCropVolume);
+      var cropBounds = elevationCropBounds;
+
+      $('#btn-compute-elevation').prop('disabled', true).text('Loading...');
+      $('#enable-elevation-status').text('Force-loading all octree nodes...');
+
+      if (elevationOrigBudget === null) elevationOrigBudget = viewer.getPointBudget();
+      viewer.setPointBudget(20000000);
+
+      forceLoadAllNodes(pc).then(function () {
+        $('#enable-elevation-status').text('Extracting positions...');
+
+        var data = extractPositions(pc);
+        elevationPositions = data.positions;
+        elevationNodeMap = data.nodeMap;
+        elevationOrigRGBA = backupOriginalRGBA(pc);
+
+        // Build top-surface grid from all points in crop bounds
+        $('#enable-elevation-status').text('Building surface grid...');
+        elevationSurfaceGrid = buildSurfaceGrid(elevationPositions, cropBounds, 200);
+
+        // Find Z min/max of TOP SURFACE points only
+        var zMin = Infinity, zMax = -Infinity;
+        var count = data.count;
+        var tolerance_pass1 = 0; // first pass: find raw range, then refine
+        // Raw min/max first
+        for (var i = 0; i < count; i++) {
+          var px = elevationPositions[i * 3];
+          var py = elevationPositions[i * 3 + 1];
+          var pz = elevationPositions[i * 3 + 2];
+          if (cropBounds) {
+            if (px < cropBounds.min[0] || px > cropBounds.max[0] ||
+                py < cropBounds.min[1] || py > cropBounds.max[1] ||
+                pz < cropBounds.min[2] || pz > cropBounds.max[2]) continue;
+          }
+          if (pz < zMin) zMin = pz;
+          if (pz > zMax) zMax = pz;
+        }
+        // Refine: Z range of top-surface points only
+        if (elevationSurfaceGrid && zMin < zMax) {
+          var tol = (zMax - zMin) * 0.10;
+          var tsZMin = Infinity, tsZMax = -Infinity;
+          for (var i = 0; i < count; i++) {
+            var px = elevationPositions[i * 3];
+            var py = elevationPositions[i * 3 + 1];
+            var pz = elevationPositions[i * 3 + 2];
+            if (cropBounds) {
+              if (px < cropBounds.min[0] || px > cropBounds.max[0] ||
+                  py < cropBounds.min[1] || py > cropBounds.max[1] ||
+                  pz < cropBounds.min[2] || pz > cropBounds.max[2]) continue;
+            }
+            if (!isTopSurface(px, py, pz, elevationSurfaceGrid, tol)) continue;
+            if (pz < tsZMin) tsZMin = pz;
+            if (pz > tsZMax) tsZMax = pz;
+          }
+          if (tsZMin < tsZMax) { zMin = tsZMin; zMax = tsZMax; }
+        }
+
+        if (zMin >= zMax) {
+          showToast('No elevation range found in crop region');
+          $('#btn-compute-elevation').prop('disabled', false).text('Compute Elevation Map');
+          $('#enable-elevation-status').text('');
+          if (elevationOrigBudget !== null) { viewer.setPointBudget(elevationOrigBudget); elevationOrigBudget = null; }
+          return;
+        }
+
+        elevationZMin = zMin;
+        elevationZMax = zMax;
+
+        // Set range inputs
+        $('#elev-range-min').val(zMin.toFixed(2));
+        $('#elev-range-max').val(zMax.toFixed(2));
+        $('#enable-elevation-range').show();
+
+        applyElevationColors(elevationPositions, elevationNodeMap, zMin, zMax, cropBounds);
+        updateElevationLegend(zMin, zMax);
+        elevationActive = true;
+
+        // Mark all currently loaded nodes as colored so frame listener skips them
+        elevationColoredNodes.clear();
+        for (var ni = 0; ni < elevationNodeMap.length; ni++) {
+          elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
+        }
+
+        var countInside = 0;
+        for (var i = 0; i < count; i++) {
+          var px = elevationPositions[i * 3];
+          var py = elevationPositions[i * 3 + 1];
+          var pz = elevationPositions[i * 3 + 2];
+          if (!cropBounds || (px >= cropBounds.min[0] && px <= cropBounds.max[0] &&
+              py >= cropBounds.min[1] && py <= cropBounds.max[1] &&
+              pz >= cropBounds.min[2] && pz <= cropBounds.max[2])) countInside++;
+        }
+
+        $('#enable-elevation-status').text(
+          countInside.toLocaleString() + ' points | Z range: ' +
+          zMin.toFixed(2) + ' to ' + zMax.toFixed(2) + ' (' + (zMax - zMin).toFixed(2) + ' m)'
+        );
+        $('#btn-compute-elevation').prop('disabled', false).text('Compute Elevation Map');
+        $('#btn-clear-elevation, #btn-show-contours, #btn-clear-contours, #btn-add-exclusion').show();
+        $('#enable-contour-interval').show();
+        // Keep point budget high so newly loaded nodes get colored by frame listener
+      });
+    }
+
+    function onReapplyElevationRange() {
+      if (!elevationActive || !elevationPositions || !elevationNodeMap) return;
+      var zMin = parseFloat($('#elev-range-min').val());
+      var zMax = parseFloat($('#elev-range-max').val());
+      if (isNaN(zMin) || isNaN(zMax) || zMin >= zMax) { showToast('Invalid range'); return; }
+      elevationZMin = zMin;
+      elevationZMax = zMax;
+      elevationCropBounds = getCropBoxBounds(elevationCropVolume);
+      applyElevationColors(elevationPositions, elevationNodeMap, zMin, zMax, elevationCropBounds);
+      // Reset colored nodes so frame listener re-colors with new range
+      elevationColoredNodes.clear();
+      for (var ni = 0; ni < elevationNodeMap.length; ni++) {
+        elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
+      }
+      updateElevationLegend(zMin, zMax);
+      showToast('Range updated');
+    }
+
+    function onClearElevation() {
+      if (elevationOrigRGBA) {
+        restoreOriginalRGBA(elevationOrigRGBA);
+        elevationOrigRGBA = null;
+      }
+      elevationPositions = null;
+      elevationNodeMap = null;
+      elevationActive = false;
+      elevationColoredNodes.clear();
+      elevationCropBounds = null;
+      elevationSurfaceGrid = null;
+      clearElevationContours();
+      hideElevationLegend();
+      // Restore original point budget
+      if (elevationOrigBudget !== null) {
+        viewer.setPointBudget(elevationOrigBudget);
+        elevationOrigBudget = null;
+      }
+      // Re-enable initial clip box if elevation crop box is still around
+      if (initialClipBox) {
+        initialClipBox.clip = true;
+        initialClipBox.visible = true;
+        viewer.setClipTask(Potree.ClipTask.SHOW_INSIDE);
+        viewer.setClipMethod(Potree.ClipMethod.INSIDE_ANY);
+      }
+      // Remove elevation crop box if present
+      if (elevationCropVolume) {
+        viewer.scene.removeVolume(elevationCropVolume);
+        elevationCropVolume = null;
+      }
+      $('#enable-elevation-range').hide();
+      $('#btn-clear-elevation, #btn-show-contours, #btn-clear-contours, #btn-add-exclusion, #btn-clear-exclusions, #btn-hide-exclusion-outlines').hide();
+      $('#enable-contour-interval').hide();
+      // Clear exclusion zones too
+      for (var i = 0; i < exclusionBoxes.length; i++) {
+        viewer.scene.removeVolume(exclusionBoxes[i]);
+      }
+      exclusionBoxes = [];
+      _lastExclusionHash = '';
+      rebuildExclusionList();
+      $('#btn-clear-elevation-crop, #btn-clip-soft, #btn-clip-hard, #btn-clip-none, #btn-hide-crop-outline').hide();
+      $('#enable-elevation-status').text('');
+      showToast('Elevation map cleared');
+    }
+
+    function onToggleElevationContours() {
+      if (!elevationActive || !elevationPositions) { showToast('Compute elevation map first'); return; }
+      if (elevationContoursVisible) {
+        clearElevationContours();
+        showToast('Contours hidden');
+      } else {
+        var cropBounds = getCropBoxBounds(elevationCropVolume);
+        buildElevationContours(elevationPositions, elevationZMin, elevationZMax, cropBounds);
+        showToast('Contours generated');
+      }
+    }
+
+    function onClearElevationContours() {
+      clearElevationContours();
+      showToast('Contours cleared');
+    }
+
     function injectMarkButtons() {
       const $tools = $('#tools');
       if ($tools.length === 0) { setTimeout(injectMarkButtons, 200); return; }
@@ -2580,7 +3907,43 @@
         '<button id="btn-save-session" title="Save all work to a file">Save Session</button>' +
         '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
         '</div>' +
-        '<input type="file" id="session-file-input" accept=".json" style="display:none">';
+        '<input type="file" id="session-file-input" accept=".json" style="display:none">' +
+        '<div style="margin:10px 0 4px;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;font:bold 13px/1.3 sans-serif;color:var(--sidebar-text,#fbfbfb)">Elevation Map</div>' +
+        '<div id="enable-elevation-buttons">' +
+        '<button id="btn-set-elevation-crop" title="Place a crop box around the scan">Set Crop Box</button>' +
+        '<button id="btn-clear-elevation-crop" title="Remove crop box" style="display:none">Clear Crop Box</button>' +
+        '<button id="btn-hide-crop-outline" title="Show/hide crop box outline" style="display:none">Hide Box</button>' +
+        '</div>' +
+        '<div id="enable-elevation-buttons" style="margin-top:2px">' +
+        '<button id="btn-clip-soft" class="clip-btn active" title="Dim outside points" style="display:none">Soft Clip</button>' +
+        '<button id="btn-clip-hard" class="clip-btn" title="Hide outside points" style="display:none">Hard Clip</button>' +
+        '<button id="btn-clip-none" class="clip-btn" title="Show all points" style="display:none">No Clip</button>' +
+        '</div>' +
+        '<div id="enable-elevation-buttons" style="margin-top:2px">' +
+        '<button id="btn-compute-elevation" title="Color points by elevation">Compute Elevation Map</button>' +
+        '<button id="btn-clear-elevation" title="Restore original colors" style="display:none">Clear</button>' +
+        '</div>' +
+        '<div id="enable-elevation-range" style="display:none">' +
+        '<span>Min:</span><input type="number" id="elev-range-min" step="0.1">' +
+        '<span>Max:</span><input type="number" id="elev-range-max" step="0.1">' +
+        '<button id="btn-apply-elevation-range">Apply</button>' +
+        '</div>' +
+        '<div id="enable-elevation-buttons" style="margin-top:2px">' +
+        '<button id="btn-show-contours" title="Toggle elevation contour lines" style="display:none">Show Contours</button>' +
+        '<button id="btn-clear-contours" title="Clear contour lines" style="display:none">Clear Contours</button>' +
+        '</div>' +
+        '<div id="enable-contour-interval" style="display:none">' +
+        '<span>Interval (m):</span>' +
+        '<input type="number" id="contour-interval-input" value="0.050" min="0.001" max="1" step="0.001">' +
+        '<button id="btn-apply-contour-interval">Apply</button>' +
+        '</div>' +
+        '<div id="enable-elevation-buttons" style="margin-top:4px">' +
+        '<button id="btn-add-exclusion" title="Add an exclusion zone" style="display:none">Add Exclusion</button>' +
+        '<button id="btn-clear-exclusions" title="Clear all exclusion zones" style="display:none">Clear All</button>' +
+        '<button id="btn-hide-exclusion-outlines" title="Show/hide exclusion box outlines" style="display:none">Hide Boxes</button>' +
+        '</div>' +
+        '<div id="exclusion-list"></div>' +
+        '<div id="enable-elevation-status"></div>';
       $tools.after(html);
 
       document.getElementById('btn-mark-mode').addEventListener('click', function() { toggleMarkMode(); });
@@ -2608,6 +3971,42 @@
         };
         reader.readAsText(file);
         e.target.value = ''; // allow re-loading same file
+      });
+
+      // Elevation map buttons
+      document.getElementById('btn-set-elevation-crop').addEventListener('click', function() { onSetElevationCropBox(); });
+      document.getElementById('btn-clear-elevation-crop').addEventListener('click', function() { onClearElevationCropBox(); });
+      document.getElementById('btn-hide-crop-outline').addEventListener('click', function() { onToggleCropOutline(); });
+      document.getElementById('btn-hide-exclusion-outlines').addEventListener('click', function() { onToggleExclusionOutlines(); });
+      document.getElementById('btn-clip-soft').addEventListener('click', function() { setElevationClipMode('soft'); });
+      document.getElementById('btn-clip-hard').addEventListener('click', function() { setElevationClipMode('hard'); });
+      document.getElementById('btn-clip-none').addEventListener('click', function() { setElevationClipMode('none'); });
+      document.getElementById('btn-compute-elevation').addEventListener('click', function() { onComputeElevation(); });
+      document.getElementById('btn-clear-elevation').addEventListener('click', function() { onClearElevation(); });
+      document.getElementById('btn-apply-elevation-range').addEventListener('click', function() { onReapplyElevationRange(); });
+      document.getElementById('btn-add-exclusion').addEventListener('click', function() { onAddExclusion(); });
+      document.getElementById('btn-clear-exclusions').addEventListener('click', function() { onClearExclusions(); });
+      document.getElementById('btn-show-contours').addEventListener('click', function() { onToggleElevationContours(); });
+      document.getElementById('btn-clear-contours').addEventListener('click', function() { onClearElevationContours(); });
+
+      // Contour interval apply
+      document.getElementById('btn-apply-contour-interval').addEventListener('click', function() {
+        var val = parseFloat(document.getElementById('contour-interval-input').value);
+        if (isNaN(val) || val < 0.001 || val > 1) { showToast('Enter a value between 0.001 and 1'); return; }
+        elevationContourStep = val;
+        if (elevationActive && elevationPositions && elevationNodeMap) {
+          var cropBounds = getCropBoxBounds(elevationCropVolume);
+          applyElevationColors(elevationPositions, elevationNodeMap, elevationZMin, elevationZMax, cropBounds);
+          elevationColoredNodes.clear();
+          for (var ni = 0; ni < elevationNodeMap.length; ni++) {
+            elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
+          }
+          if (elevationContoursVisible) {
+            buildElevationContours(elevationPositions, elevationZMin, elevationZMax, cropBounds);
+          }
+          updateElevationLegend(elevationZMin, elevationZMax);
+          showToast('Contour interval updated to ' + val.toFixed(3) + ' m');
+        }
       });
 
       // Version footer at bottom of sidebar
@@ -2991,6 +4390,7 @@
           clipBox.visible = true;
           clipBox.userData = clipBox.userData || {};
           clipBox.userData.persistent = true;     // mark as locked
+          initialClipBox = clipBox;               // store reference for elevation tool
 
           // Disallow editing if API exists
           if (typeof clipBox.setEditable === "function") clipBox.setEditable(false);
