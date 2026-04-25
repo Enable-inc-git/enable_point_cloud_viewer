@@ -309,6 +309,37 @@
       background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
     }
     #enable-elevation-status { font: 11px/1.3 sans-serif; color: rgba(251,251,251,0.5); margin: 2px 0; min-height: 14px; }
+    /* Compute progress overlay — visible during heavy computation */
+    #enable-compute-overlay {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(20, 20, 20, 0.92); color: #fff;
+      border: 1px solid var(--accent, #3EAD4A); border-radius: 6px;
+      padding: 16px 28px; min-width: 280px;
+      font: 13px/1.4 sans-serif; z-index: 100000;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+      display: none;
+    }
+    #enable-compute-overlay.show { display: block; }
+    #enable-compute-overlay .compute-title { font-weight: 700; margin-bottom: 8px; color: var(--accent, #3EAD4A); }
+    #enable-compute-overlay .compute-status { font-size: 12px; color: #ddd; margin-bottom: 10px; }
+    #enable-compute-overlay .compute-bar {
+      width: 100%; height: 6px; background: rgba(255,255,255,0.1);
+      border-radius: 3px; overflow: hidden; position: relative;
+    }
+    /* transform-only animation runs on the compositor thread, so it keeps
+       moving even when the main thread is busy with heavy compute. */
+    #enable-compute-overlay .compute-bar-fill {
+      position: absolute; top: 0; left: 0; height: 100%;
+      width: 30%; background: var(--accent, #3EAD4A);
+      border-radius: 3px;
+      transform: translateX(-100%);
+      animation: compute-bar-slide 1.4s ease-in-out infinite;
+      will-change: transform;
+    }
+    @keyframes compute-bar-slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(450%); }
+    }
     #enable-contour-interval { margin: 4px 0; display: flex; gap: 6px; align-items: center; font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb); }
     #enable-contour-interval input[type="number"] {
       width: 65px; padding: 3px 5px; border: 1px solid var(--border, #333);
@@ -487,6 +518,13 @@
   <!-- Toast element -->
   <div id="enable-toast"></div>
 
+  <!-- Compute progress overlay (shown while elevation map is computing) -->
+  <div id="enable-compute-overlay">
+    <div class="compute-title">Computing Elevation Map</div>
+    <div class="compute-status" id="enable-compute-status-text">Initializing...</div>
+    <div class="compute-bar"><div class="compute-bar-fill"></div></div>
+  </div>
+
   <!-- Elevation legend -->
   <div id="heatmap-legend"><canvas id="heatmap-legend-canvas" width="180" height="520"></canvas></div>
 
@@ -569,6 +607,67 @@
           e.stopImmediatePropagation();
           rightDragPrev = null;
         }
+      }, true);
+    })();
+
+    // -- Click-without-drag on an elevation box = toggle selection (gizmo) --
+    // The box's fill mesh has raycast disabled so click-and-drag inside the
+    // box can pan/rotate the camera. To preserve the "click box → handles
+    // appear" interaction, we manually OBB-test on mousedown and, if the
+    // mouseup happens within ~5px without movement, treat it as a click and
+    // call inputHandler.toggleSelection on the volume.
+    (function() {
+      var domEl = viewer.renderer.domElement;
+      var pendingClick = null;
+      var unitBox = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5),
+                                   new THREE.Vector3( 0.5,  0.5,  0.5));
+
+      domEl.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        if (typeof elevationCropVolumes === 'undefined' || elevationCropVolumes.length === 0) return;
+        if (typeof MARK_MODE !== 'undefined' && MARK_MODE) return;
+        if (typeof constraintPickMode !== 'undefined' && constraintPickMode) return;
+        if (typeof memberPickMode !== 'undefined' && memberPickMode) return;
+        if (typeof zBasePickMode !== 'undefined' && zBasePickMode) return;
+
+        var rect = domEl.getBoundingClientRect();
+        var ndc = {
+          x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          y: -((e.clientY - rect.top) / rect.height) * 2 + 1
+        };
+        var camera = viewer.scene.getActiveCamera();
+        var raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, camera);
+
+        for (var i = 0; i < elevationCropVolumes.length; i++) {
+          var vol = elevationCropVolumes[i];
+          if (vol._disabled) continue;
+          vol.updateMatrixWorld(true);
+          var inv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
+          var localRay = raycaster.ray.clone().applyMatrix4(inv);
+          var hit = new THREE.Vector3();
+          if (localRay.intersectBox(unitBox, hit)) {
+            pendingClick = { vol: vol, x: e.clientX, y: e.clientY };
+            return;
+          }
+        }
+      }, true);
+
+      domEl.addEventListener('mouseup', function(e) {
+        if (e.button !== 0) return;
+        if (!pendingClick) return;
+        var dx = e.clientX - pendingClick.x;
+        var dy = e.clientY - pendingClick.y;
+        var moved = Math.sqrt(dx * dx + dy * dy);
+        var vol = pendingClick.vol;
+        pendingClick = null;
+        if (moved > 5) return;
+        try {
+          var ih = viewer.inputHandler;
+          var alreadySelected = ih.selection && ih.selection.indexOf(vol) >= 0;
+          ih.deselectAll();
+          if (!alreadySelected) ih.toggleSelection(vol);
+        } catch (err) { /* ignore */ }
       }, true);
     })();
 
@@ -3811,12 +3910,27 @@
     // -- Inject sidebar buttons once GUI is ready --
     // ===== ELEVATION MAP — UTILITY FUNCTIONS =====
 
-    function forceLoadAllNodes(pointCloud) {
+    // Force-load octree nodes. If filterAABB is provided, ONLY load nodes
+    // whose bounding box intersects that AABB — critical for large clouds
+    // (otherwise we load 26M+ points to compute a heat map on a small region).
+    function forceLoadAllNodes(pointCloud, filterAABB) {
       return new Promise(function (resolve) {
         var geo = pointCloud.pcoGeometry;
         if (!geo || !geo.root) { resolve(); return; }
+        var pcoOffset = geo.offset;
+        function nodeIntersects(node) {
+          if (!filterAABB) return true;
+          if (!node.boundingBox) return true;
+          var nbb = node.boundingBox;
+          var wxmin = pcoOffset.x + nbb.min.x, wxmax = pcoOffset.x + nbb.max.x;
+          var wymin = pcoOffset.y + nbb.min.y, wymax = pcoOffset.y + nbb.max.y;
+          var wzmin = pcoOffset.z + nbb.min.z, wzmax = pcoOffset.z + nbb.max.z;
+          return !(wxmax < filterAABB.min[0] || wxmin > filterAABB.max[0] ||
+                   wymax < filterAABB.min[1] || wymin > filterAABB.max[1] ||
+                   wzmax < filterAABB.min[2] || wzmin > filterAABB.max[2]);
+        }
         function triggerLoads(node) {
-          if (!node) return;
+          if (!node || !nodeIntersects(node)) return;
           if (!node.loaded) node.load();
           if (node.children) {
             for (var i = 0; i < 8; i++) {
@@ -3839,13 +3953,28 @@
       });
     }
 
-    function extractPositions(pointCloud) {
+    // Extract loaded-node positions, optionally filtered to nodes that
+    // intersect a given AABB. Nodes outside the filter are skipped entirely
+    // to avoid allocating a 300MB merged buffer for points we'll never use.
+    function extractPositions(pointCloud, filterAABB) {
       var geo = pointCloud.pcoGeometry;
       var allPositions = [];
       var nodeMap = [];
       var totalCount = 0;
+      var pcoOffset = geo.offset;
+      function nodeIntersects(node) {
+        if (!filterAABB) return true;
+        if (!node.boundingBox) return true;
+        var nbb = node.boundingBox;
+        var wxmin = pcoOffset.x + nbb.min.x, wxmax = pcoOffset.x + nbb.max.x;
+        var wymin = pcoOffset.y + nbb.min.y, wymax = pcoOffset.y + nbb.max.y;
+        var wzmin = pcoOffset.z + nbb.min.z, wzmax = pcoOffset.z + nbb.max.z;
+        return !(wxmax < filterAABB.min[0] || wxmin > filterAABB.max[0] ||
+                 wymax < filterAABB.min[1] || wymin > filterAABB.max[1] ||
+                 wzmax < filterAABB.min[2] || wzmin > filterAABB.max[2]);
+      }
       function traverse(node) {
-        if (!node) return;
+        if (!node || !nodeIntersects(node)) return;
         if (node.loaded && node.geometry) {
           var posAttr = node.geometry.attributes.position;
           if (posAttr && posAttr.array) {
@@ -4098,6 +4227,11 @@
         var entry = nodeMap[n];
         var node = entry.geometryNode;
         if (!node.geometry || !node.geometry.attributes.rgba) continue;
+        // Tag the BufferGeometry (not the node) so we can detect when Potree
+        // streams a node out and back in: re-streamed nodes get a fresh
+        // geometry without this tag, so elevationFrameUpdate will re-color.
+        if (!node.geometry.userData) node.geometry.userData = {};
+        node.geometry.userData.elevColored = true;
         var rgba = node.geometry.attributes.rgba;
         var arr = rgba.array;
         var start = entry.startIndex;
@@ -4161,8 +4295,13 @@
     }
 
     // Color a single geometry node by elevation (for newly loaded nodes during zoom)
-    function colorNodeByElevation(node, pc) {
+    function colorNodeByElevation(node, pc, cachedBoxes, cachedExcl) {
       if (!node.geometry || !node.geometry.attributes.rgba || !node.geometry.attributes.position) return;
+      // Mark this geometry as colored (per-geometry, so re-streamed nodes will
+      // be re-colored automatically because their fresh BufferGeometry won't
+      // have this flag set).
+      if (!node.geometry.userData) node.geometry.userData = {};
+      node.geometry.userData.elevColored = true;
       var posAttr = node.geometry.attributes.position;
       var rgba = node.geometry.attributes.rgba;
       var arr = rgba.array;
@@ -4174,8 +4313,8 @@
       var tx = pcoOffset.x + bbMin.x;
       var ty = pcoOffset.y + bbMin.y;
       var tz = pcoOffset.z + bbMin.z;
-      var boxes = buildActiveBoxDrawList();
-      var exclInvMats = buildExclusionInvMats();
+      var boxes = cachedBoxes || buildActiveBoxDrawList();
+      var exclInvMats = cachedExcl || buildExclusionInvMats();
       var hasExclusions = exclInvMats.length > 0;
       var v = new THREE.Vector3();
 
@@ -4231,25 +4370,51 @@
       rgba.needsUpdate = true;
     }
 
+    // Throttle: only run a full octree walk when Potree has loaded a new node
+    // since our last pass. Without this we walk the whole tree every frame
+    // (60 FPS × hundreds of nodes), which dominates the per-frame budget on
+    // large clouds and inflates memory through repeated allocations.
+    var _elevWasLoading = false;
+
     // Per-frame check: color any newly loaded nodes
     function elevationFrameUpdate() {
       if (!elevationActive) return;
       var pc = viewer.scene.pointclouds[0];
       if (!pc || !pc.pcoGeometry || !pc.pcoGeometry.root) return;
 
-      function traverseAndColor(node) {
+      // Run only when Potree is actively streaming nodes, OR for one frame
+      // after streaming finishes (to catch the just-finished load). Skipping
+      // entirely otherwise drops elevation per-frame cost to ~zero.
+      var nl = (typeof Potree !== 'undefined' && Potree.numNodesLoading) || 0;
+      var streamFinishedThisFrame = (_elevWasLoading && nl === 0);
+      if (nl === 0 && !streamFinishedThisFrame) return;
+      _elevWasLoading = (nl > 0);
+
+      // Collect uncolored loaded nodes first; compute per-frame caches once
+      // and pass them in so we don't rebuild the active-box / exclusion lists
+      // for every single node coloured this frame.
+      var newNodes = [];
+      function gather(node) {
         if (!node) return;
-        if (node.loaded && node.geometry && !elevationColoredNodes.has(node)) {
-          elevationColoredNodes.add(node);
-          colorNodeByElevation(node, pc);
+        if (node.loaded && node.geometry) {
+          var ud = node.geometry.userData;
+          if (!ud || !ud.elevColored) newNodes.push(node);
         }
         if (node.children) {
           for (var i = 0; i < 8; i++) {
-            if (node.children[i]) traverseAndColor(node.children[i]);
+            if (node.children[i]) gather(node.children[i]);
           }
         }
       }
-      traverseAndColor(pc.pcoGeometry.root);
+      gather(pc.pcoGeometry.root);
+      if (newNodes.length === 0) return;
+
+      var cachedBoxes = buildActiveBoxDrawList();
+      var cachedExcl = buildExclusionInvMats();
+      for (var i = 0; i < newNodes.length; i++) {
+        elevationColoredNodes.add(newNodes[i]);
+        colorNodeByElevation(newNodes[i], pc, cachedBoxes, cachedExcl);
+      }
     }
 
     function updateElevationLegend(zMin, zMax) {
@@ -4695,11 +4860,39 @@
       var offY = N.y * surfOffset * offsetDir;
       var offZ = N.z * surfOffset * offsetDir;
 
+      // Single shared material — cloning per line wasted memory and was
+      // never necessary (every contour line uses identical settings).
       var contourMaterial = new THREE.LineBasicMaterial({
         color: 0x000000, linewidth: 4,
         depthTest: true, depthWrite: false,
         transparent: false
       });
+
+      // Greedy label placement with min world-space spacing across all
+      // levels — prevents perimeter clusters and keeps labels readable.
+      var placedLabelXY = [];
+      var minLabelSpacing = scanDiag * 0.10;
+      var minLabelSpacingSq = minLabelSpacing * minLabelSpacing;
+      var edgeMarginU = uRange * 0.05;
+      var edgeMarginV = vRange * 0.05;
+      var uLo = uMin + edgeMarginU, uHi = uMax - edgeMarginU;
+      var vLo = vMin + edgeMarginV, vHi = vMax - edgeMarginV;
+
+      function tryPlaceLabel(wx, wy, wz, uVal, vVal, labelText, target) {
+        if (uVal < uLo || uVal > uHi || vVal < vLo || vVal > vHi) return false;
+        for (var pi = 0; pi < placedLabelXY.length; pi += 3) {
+          var dx = wx - placedLabelXY[pi];
+          var dy = wy - placedLabelXY[pi + 1];
+          var dz = wz - placedLabelXY[pi + 2];
+          if (dx * dx + dy * dy + dz * dz < minLabelSpacingSq) return false;
+        }
+        placedLabelXY.push(wx, wy, wz);
+        var sprite = createContourLabel(labelText, '#ffffff');
+        sprite.scale.set(labelScale, labelScale * 0.4, 1);
+        sprite.position.set(wx + offX, wy + offY, wz + offZ);
+        target.add(sprite);
+        return true;
+      }
 
       for (var ci = 0; ci < contourLevels.length; ci++) {
         var level = contourLevels[ci];
@@ -4707,11 +4900,14 @@
         if (segs.length === 0) continue;
 
         var linePositions = [];
+        var midData = [];
         for (var si = 0; si < segs.length; si++) {
           var seg = segs[si];
+          var mu = 0, mv = 0;
           for (var pi = 0; pi < 2; pi++) {
             var gu = seg[pi * 2], gv = seg[pi * 2 + 1];
             var uVal = uMin + gu * cellU, vVal = vMin + gv * cellV;
+            mu += uVal; mv += vVal;
             var iu = Math.floor(gu), iv = Math.floor(gv);
             if (iu >= gridRes) iu = gridRes - 1;
             if (iv >= gridRes) iv = gridRes - 1;
@@ -4721,62 +4917,59 @@
             var wz = cz + uVal * U.z + vVal * V.z + nOffset * N.z + offZ;
             linePositions.push(wx, wy, wz);
           }
+          var aIdx = (si * 2) * 3, bIdx = (si * 2 + 1) * 3;
+          midData.push({
+            wx: (linePositions[aIdx] + linePositions[bIdx]) / 2 - offX,
+            wy: (linePositions[aIdx + 1] + linePositions[bIdx + 1]) / 2 - offY,
+            wz: (linePositions[aIdx + 2] + linePositions[bIdx + 2]) / 2 - offZ,
+            u: mu / 2,
+            v: mv / 2
+          });
         }
 
-        if (linePositions.length > 0) {
-          // Render multiple offset copies to create a thicker visible line
-          // Offset in U and V directions on the surface plane
-          var thickness = scanDiag * 0.0008; // ~0.08% of scan size
-          if (thickness < 0.001) thickness = 0.001;
-          var offsets = [
-            [0, 0],
-            [thickness, 0], [-thickness, 0],
-            [0, thickness], [0, -thickness]
-          ];
-          for (var oi = 0; oi < offsets.length; oi++) {
-            var du = offsets[oi][0], dv = offsets[oi][1];
-            var ox2 = U.x * du + V.x * dv;
-            var oy2 = U.y * du + V.y * dv;
-            var oz2 = U.z * du + V.z * dv;
-            var shifted = new Float32Array(linePositions.length);
-            for (var si2 = 0; si2 < linePositions.length; si2 += 3) {
-              shifted[si2]     = linePositions[si2]     + ox2;
-              shifted[si2 + 1] = linePositions[si2 + 1] + oy2;
-              shifted[si2 + 2] = linePositions[si2 + 2] + oz2;
-            }
-            var geometry = new THREE.BufferGeometry();
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(shifted, 3));
-            var line = new THREE.LineSegments(geometry, contourMaterial.clone());
-            line.userData.contourLevel = level;
-            line.raycast = function () {};
-            target.add(line);
-          }
+        if (linePositions.length === 0) continue;
 
-          // Elevation labels along contour — always at least 1 per contour
-          var labelText = level.toFixed(decimals) + ' m';
-          var totalSegs = linePositions.length / 6;
-          var labelInterval = Math.max(1, Math.floor(totalSegs / 6));
-          // Always place at least one label (midpoint of first segment)
-          var placedOne = false;
-          for (var li = 0; li < totalSegs; li += labelInterval) {
-            var lx = (linePositions[li * 6] + linePositions[li * 6 + 3]) / 2;
-            var ly = (linePositions[li * 6 + 1] + linePositions[li * 6 + 4]) / 2;
-            var lz = (linePositions[li * 6 + 2] + linePositions[li * 6 + 5]) / 2;
-            var sprite = createContourLabel(labelText, '#ffffff');
-            sprite.scale.set(labelScale, labelScale * 0.4, 1);
-            sprite.position.set(lx + offX, ly + offY, lz + offZ);
-            target.add(sprite);
-            placedOne = true;
+        var thickness = scanDiag * 0.0008;
+        if (thickness < 0.001) thickness = 0.001;
+        var offsets = [[0, 0], [thickness, 0], [-thickness, 0], [0, thickness], [0, -thickness]];
+        for (var oi = 0; oi < offsets.length; oi++) {
+          var du = offsets[oi][0], dv = offsets[oi][1];
+          var ox2 = U.x * du + V.x * dv;
+          var oy2 = U.y * du + V.y * dv;
+          var oz2 = U.z * du + V.z * dv;
+          var shifted = new Float32Array(linePositions.length);
+          for (var si2 = 0; si2 < linePositions.length; si2 += 3) {
+            shifted[si2]     = linePositions[si2]     + ox2;
+            shifted[si2 + 1] = linePositions[si2 + 1] + oy2;
+            shifted[si2 + 2] = linePositions[si2 + 2] + oz2;
           }
-          // Fallback: if somehow no label placed, place one at first segment
-          if (!placedOne && totalSegs > 0) {
-            var lx = (linePositions[0] + linePositions[3]) / 2;
-            var ly = (linePositions[1] + linePositions[4]) / 2;
-            var lz = (linePositions[2] + linePositions[5]) / 2;
+          var geometry = new THREE.BufferGeometry();
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(shifted, 3));
+          var line = new THREE.LineSegments(geometry, contourMaterial);
+          line.userData.contourLevel = level;
+          line.raycast = function () {};
+          target.add(line);
+        }
+
+        var labelText = level.toFixed(decimals) + ' m';
+        var placedAny = false;
+        var stride = Math.max(1, Math.floor(midData.length / 24));
+        for (var li = 0; li < midData.length; li += stride) {
+          var m = midData[li];
+          if (tryPlaceLabel(m.wx, m.wy, m.wz, m.u, m.v, labelText, target)) {
+            placedAny = true;
+          }
+        }
+        if (!placedAny) {
+          for (var li = 0; li < midData.length; li++) {
+            var m = midData[li];
+            if (m.u < uLo || m.u > uHi || m.v < vLo || m.v > vHi) continue;
+            placedLabelXY.push(m.wx, m.wy, m.wz);
             var sprite = createContourLabel(labelText, '#ffffff');
             sprite.scale.set(labelScale, labelScale * 0.4, 1);
-            sprite.position.set(lx + offX, ly + offY, lz + offZ);
+            sprite.position.set(m.wx + offX, m.wy + offY, m.wz + offZ);
             target.add(sprite);
+            break;
           }
         }
       }
@@ -4983,13 +5176,19 @@
     // ===== Elevation Crop Box management (multi-box) =====
 
     function styleElevationBox(vol) {
-      // Always transparent fill (clickable but invisible), green wireframe
+      // Transparent fill (invisible), green wireframe. The fill mesh has its
+      // raycast disabled so click-and-drag INSIDE the box pans/rotates the
+      // camera (Potree's InputHandler doesn't grab it as a drag target).
+      // A custom mousedown/mouseup pair below detects a click-without-drag
+      // over the box and toggles its selection so the resize/move gizmo
+      // still appears — without blocking camera controls.
       if (vol.box) {
         vol.box.visible = true;
         vol.box.material.color.setHex(0x000000);
         vol.box.material.opacity = 0.0;
         vol.box.material.transparent = true;
         vol.box.material.needsUpdate = true;
+        vol.box.raycast = function() {};
       }
       if (vol.frame) {
         vol.frame.material.color.setHex(0x44cc44);
@@ -5438,6 +5637,25 @@
       }
     }
 
+    // ===== COMPUTE PROGRESS OVERLAY =====
+    function showComputeOverlay(text) {
+      var ov = document.getElementById('enable-compute-overlay');
+      var st = document.getElementById('enable-compute-status-text');
+      if (st) st.textContent = text || 'Computing...';
+      if (ov) ov.classList.add('show');
+    }
+    function setComputeProgress(text) {
+      var st = document.getElementById('enable-compute-status-text');
+      if (st) st.textContent = text;
+    }
+    function hideComputeOverlay() {
+      var ov = document.getElementById('enable-compute-overlay');
+      if (ov) ov.classList.remove('show');
+    }
+    function _yieldToPaint() {
+      return new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 0); }); });
+    }
+
     function onComputeElevation() {
       var pc = viewer.scene.pointclouds[0];
       if (!pc) { showToast('No point cloud loaded'); return; }
@@ -5451,28 +5669,57 @@
       if (selCfg.mode === 'plane' && !selCfg.refPlane) { showToast('Select a reference plane first'); return; }
       if (selCfg.mode === 'plane' && !selCfg.sideSet) { showToast('Pick the viewing side first'); return; }
 
+      showComputeOverlay('Preparing region...');
+
       // This box's own crop bounds (OBB AABB)
       var boxBounds = getCropBoxBounds(targetVol);
       selCfg.cropBounds = boxBounds;
       targetVol.updateMatrixWorld(true);
       var boxInv = new THREE.Matrix4().copy(targetVol.matrixWorld).invert();
 
-      $('#enable-elevation-status').text('Force-loading all octree nodes...');
+      // Build the union AABB of every active box plus the one we're about to
+      // compute, padded by ~5%. forceLoadAllNodes/extractPositions use this
+      // filter so we don't load the entire cloud just to color a small region.
+      var loadAABB = (function() {
+        var u = getElevationCropBounds();
+        var b = boxBounds;
+        var lo = [
+          Math.min((u ? u.min[0] : Infinity), b.min[0]),
+          Math.min((u ? u.min[1] : Infinity), b.min[1]),
+          Math.min((u ? u.min[2] : Infinity), b.min[2])
+        ];
+        var hi = [
+          Math.max((u ? u.max[0] : -Infinity), b.max[0]),
+          Math.max((u ? u.max[1] : -Infinity), b.max[1]),
+          Math.max((u ? u.max[2] : -Infinity), b.max[2])
+        ];
+        var pad = [(hi[0] - lo[0]) * 0.05, (hi[1] - lo[1]) * 0.05, (hi[2] - lo[2]) * 0.05];
+        return {
+          min: [lo[0] - pad[0], lo[1] - pad[1], lo[2] - pad[2]],
+          max: [hi[0] + pad[0], hi[1] + pad[1], hi[2] + pad[2]]
+        };
+      })();
+
+      $('#enable-elevation-status').text('Loading octree nodes for region...');
+      setComputeProgress('Loading octree nodes for region...');
 
       if (elevationOrigBudget === null) elevationOrigBudget = viewer.getPointBudget();
       viewer.setPointBudget(20000000);
 
-      forceLoadAllNodes(pc).then(function () {
-        $('#enable-elevation-status').text('Extracting positions...');
-
-        var data = extractPositions(pc);
+      forceLoadAllNodes(pc, loadAABB).then(function () {
+        setComputeProgress('Extracting positions...');
+        return _yieldToPaint();
+      }).then(function () {
+        var data = extractPositions(pc, loadAABB);
         elevationPositions = data.positions;
         elevationNodeMap = data.nodeMap;
         if (!elevationOrigRGBA) {
           elevationOrigRGBA = backupOriginalRGBA(pc);
         }
-
         $('#enable-elevation-status').text('Building surface grid...');
+        setComputeProgress('Building surface grid (' + data.count.toLocaleString() + ' pts)...');
+        return _yieldToPaint().then(function() { return data; });
+      }).then(function (data) {
         // Build this box's surface grid using only points INSIDE this box (OBB)
         var v = new THREE.Vector3();
         var count = data.count;
@@ -5538,6 +5785,7 @@
           $('#enable-elevation-status').text('');
           if (elevationOrigBudget !== null) { viewer.setPointBudget(elevationOrigBudget); elevationOrigBudget = null; }
           rebuildElevationBoxList();
+          hideComputeOverlay();
           return;
         }
 
@@ -5555,6 +5803,7 @@
         elevationZMin = zMin;
         elevationZMax = zMax;
 
+        setComputeProgress('Coloring points...');
         applyElevationColors(elevationPositions, elevationNodeMap);
         updateElevationLegend(zMin, zMax);
         elevationActive = true;
@@ -5563,6 +5812,30 @@
         for (var ni = 0; ni < elevationNodeMap.length; ni++) {
           elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
         }
+
+        // Belt-and-suspenders: also color every loaded node not already in
+        // nodeMap (the AABB filter on extractPositions can skip nodes whose
+        // bounding box doesn't intersect the elevation AABB but which Potree
+        // still chooses to render). For points outside the box OBB this is a
+        // cheap no-op that just restores originals.
+        (function() {
+          var cachedBoxes = buildActiveBoxDrawList();
+          var cachedExcl = buildExclusionInvMats();
+          function walk(node) {
+            if (!node) return;
+            if (node.loaded && node.geometry) {
+              var ud = node.geometry.userData;
+              if (!ud || !ud.elevColored) {
+                colorNodeByElevation(node, pc, cachedBoxes, cachedExcl);
+                elevationColoredNodes.add(node);
+              }
+            }
+            if (node.children) {
+              for (var k = 0; k < 8; k++) if (node.children[k]) walk(node.children[k]);
+            }
+          }
+          walk(pc.pcoGeometry.root);
+        })();
 
         // Count points inside this box
         var countInside = 0;
@@ -5590,6 +5863,24 @@
           _elevBoxTransformCache += elevationCropVolumes[bi].matrixWorld.elements.join(',') + '|';
         }
         syncHighlightBoxes();
+
+        // Restore the original point budget. The 20M bump was only needed
+        // during compute to keep in-region nodes loaded; colored buffers
+        // persist after compute, and elevationFrameUpdate re-colors any
+        // nodes that get re-loaded as the user navigates.
+        if (elevationOrigBudget !== null) {
+          viewer.setPointBudget(elevationOrigBudget);
+          elevationOrigBudget = null;
+        }
+        hideComputeOverlay();
+      }).catch(function(err) {
+        console.error('Elevation compute failed:', err);
+        showToast('Elevation compute failed — see console');
+        if (elevationOrigBudget !== null) {
+          viewer.setPointBudget(elevationOrigBudget);
+          elevationOrigBudget = null;
+        }
+        hideComputeOverlay();
       });
     }
 
