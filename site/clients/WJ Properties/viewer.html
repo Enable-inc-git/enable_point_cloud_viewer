@@ -841,6 +841,14 @@
           });
           markerScene.remove(m.visual);
           markedPoints.splice(i, 1);
+          // Clean up any elevation boxes referencing this mark as Z=0 base.
+          // Recompute each affected box so the heat map reflects the missing reference.
+          var affected = getElevBoxesReferencingMark(id);
+          for (var ai = 0; ai < affected.length; ai++) {
+            var c = getBoxConfig(affected[ai]);
+            c.zBaseMarkId = null;
+            forceRecomputeBox(affected[ai]);
+          }
           rebuildMarkList();
           return;
         }
@@ -877,7 +885,14 @@
 
           var nameSpan = document.createElement('span');
           nameSpan.className = 'mark-name';
-          nameSpan.textContent = m.name;
+          var refs = getElevBoxesReferencingMark(m.id);
+          if (refs.length > 0) {
+            var refNames = refs.map(function(v) { return v.name; }).join(', ');
+            nameSpan.textContent = m.name + ' \u2014 Z=0 for: ' + refNames;
+            nameSpan.title = 'Referenced as Z=0 base by: ' + refNames;
+          } else {
+            nameSpan.textContent = m.name;
+          }
           row.appendChild(nameSpan);
 
           var visBtn = document.createElement('button');
@@ -1010,6 +1025,7 @@
           refPlane: null,
           refSide: 1,
           sideSet: false,
+          zBaseMarkId: null,      // Z-mode only: id of mark used as Z=0 reference
           zMin: null,   // null = auto-detect
           zMax: null,
           contourStep: 0.05,
@@ -1023,6 +1039,115 @@
         });
       }
       return elevationBoxConfigs.get(volume);
+    }
+
+    // Resolve the Z offset to subtract for a given box's elev calc. Returns 0
+    // unless the box is in Z mode with a valid zBaseMarkId pointing to a
+    // currently-existing mark.
+    function getZBaseZ(cfg) {
+      if (!cfg || cfg.mode !== 'z' || cfg.zBaseMarkId == null) return 0;
+      for (var i = 0; i < markedPoints.length; i++) {
+        if (markedPoints[i].id === cfg.zBaseMarkId) {
+          return markedPoints[i].visual.position.z;
+        }
+      }
+      return 0;
+    }
+
+    // Like findNearestMarker but ignores the locked filter (we want the user
+    // to be able to pick ANY existing mark as a Z=0 base, even locked ones).
+    function findAnyMarkerNear(mousePixel) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 25;
+      var bestMark = null;
+      for (var i = 0; i < markedPoints.length; i++) {
+        var m = markedPoints[i];
+        if (!m.visible) continue;
+        var pt = m.visual.position.clone().project(camera);
+        var screenX = (pt.x * 0.5 + 0.5) * rect.width;
+        var screenY = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+        var dx = screenX - mousePixel.x;
+        var dy = screenY - mousePixel.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestMark = m;
+        }
+      }
+      return bestMark;
+    }
+
+    // Return the elevation box volumes that reference `markId` as their Z=0 base.
+    function getElevBoxesReferencingMark(markId) {
+      var refs = [];
+      if (markId == null) return refs;
+      for (var i = 0; i < elevationCropVolumes.length; i++) {
+        var v = elevationCropVolumes[i];
+        var c = getBoxConfig(v);
+        if (c.mode === 'z' && c.zBaseMarkId === markId) refs.push(v);
+      }
+      return refs;
+    }
+
+    // ===== Z-BASE PICK MODE =====
+    var zBasePickMode = false;
+    var zBasePickTargetVol = null;
+
+    function startZBasePick(vol) {
+      // Cancel other pick modes
+      if (constraintPickMode) cancelConstraintPick();
+      if (memberPickMode) cancelMemberPick();
+      if (MARK_MODE) toggleMarkMode(true);
+      zBasePickMode = true;
+      zBasePickTargetVol = vol;
+      document.body.classList.add('mark-mode'); // crosshair cursor
+      var hint = markedPoints.length > 0
+        ? 'Click an existing mark to use as Z=0, or click any point to place a new one'
+        : 'Click any point in the cloud to place a Z=0 reference mark';
+      showToast(hint + ' for ' + vol.name, 5000);
+    }
+
+    function cancelZBasePick() {
+      zBasePickMode = false;
+      zBasePickTargetVol = null;
+      document.body.classList.remove('mark-mode');
+    }
+
+    // Recompute a single box's elevation (forces re-detect of zMin/zMax in the
+    // new offset space and re-applies colors / contours).
+    function forceRecomputeBox(vol) {
+      if (!vol) return;
+      var cfg = getBoxConfig(vol);
+      // Reset auto-detect range so it picks up the new offset
+      cfg.zMin = null;
+      cfg.zMax = null;
+      if (cfg.active) {
+        _selectedElevBox = vol;
+        syncElevGlobals();
+        onComputeElevation();
+      }
+      rebuildElevationBoxList();
+      rebuildMarkList();
+    }
+
+    function assignZBaseMark(vol, markId) {
+      var cfg = getBoxConfig(vol);
+      cfg.zBaseMarkId = markId;
+      forceRecomputeBox(vol);
+      var name = '';
+      for (var i = 0; i < markedPoints.length; i++) {
+        if (markedPoints[i].id === markId) { name = markedPoints[i].name; break; }
+      }
+      showToast('Z=0 base set to ' + name + ' for ' + vol.name);
+    }
+
+    function clearZBaseMark(vol) {
+      var cfg = getBoxConfig(vol);
+      if (cfg.zBaseMarkId == null) return;
+      cfg.zBaseMarkId = null;
+      forceRecomputeBox(vol);
+      showToast('Z=0 base cleared for ' + vol.name);
     }
 
     // Get elevation value for a point — checks which box it's in, uses that box's mode
@@ -3443,6 +3568,7 @@
                 refConstraintIdx: cfg.refConstraintIdx,
                 refSide: cfg.refSide,
                 sideSet: cfg.sideSet,
+                zBaseMarkId: cfg.zBaseMarkId,
                 zMin: cfg.zMin,
                 zMax: cfg.zMax,
                 contourStep: cfg.contourStep,
@@ -3645,6 +3771,7 @@
               cfg.refConstraintIdx = sv.config.refConstraintIdx;
               cfg.refSide = sv.config.refSide || 1;
               cfg.sideSet = !!sv.config.sideSet;
+              cfg.zBaseMarkId = (sv.config.zBaseMarkId != null) ? sv.config.zBaseMarkId : null;
               cfg.zMin = sv.config.zMin;
               cfg.zMax = sv.config.zMax;
               cfg.contourStep = sv.config.contourStep || 0.05;
@@ -4043,7 +4170,7 @@
               var s1 = cfg2.refSide || 1;
               elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
             } else {
-              elev = pz;
+              elev = pz - getZBaseZ(cfg2);
             }
             var color = elevationToRGBA(elev, cfg2.zMin, cfg2.zMax);
             arr[off]     = color[0];
@@ -4114,7 +4241,7 @@
             var s1 = cfg2.refSide || 1;
             elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
           } else {
-            elev = pz;
+            elev = pz - getZBaseZ(cfg2);
           }
           var color = elevationToRGBA(elev, cfg2.zMin, cfg2.zMax);
           arr[off] = color[0]; arr[off + 1] = color[1];
@@ -4474,7 +4601,7 @@
           var ss = refSide || 1;
           elevVal = ((px - cc.x) * nn.x + (py - cc.y) * nn.y + (pz - cc.z) * nn.z) * ss;
         } else {
-          elevVal = pz;
+          elevVal = pz - (boxCfg ? getZBaseZ(boxCfg) : 0);
         }
         pts.push({ x: px, y: py, z: pz, elev: elevVal });
       }
@@ -5079,6 +5206,49 @@
           modeRow.appendChild(modeSelect);
           panel.appendChild(modeRow);
 
+          // Z-mode: Z=0 base mark picker
+          if (cfg.mode === 'z') {
+            var zbRow = document.createElement('div');
+            zbRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0';
+            zbRow.innerHTML = '<span style="min-width:60px">Z=0 base:</span>';
+            var zbLabel = document.createElement('span');
+            zbLabel.style.cssText = 'flex:1;color:var(--muted,#9aa3b2);font-size:10px';
+            var baseName = '';
+            if (cfg.zBaseMarkId != null) {
+              for (var zi = 0; zi < markedPoints.length; zi++) {
+                if (markedPoints[zi].id === cfg.zBaseMarkId) {
+                  baseName = markedPoints[zi].name + ' (z=' + markedPoints[zi].visual.position.z.toFixed(3) + ')';
+                  break;
+                }
+              }
+              if (!baseName) baseName = '(mark deleted)';
+            }
+            zbLabel.textContent = baseName || 'Not set';
+            var zbPickBtn = document.createElement('button');
+            zbPickBtn.textContent = (zBasePickMode && zBasePickTargetVol === vol) ? 'Picking...' : 'Pick';
+            zbPickBtn.style.cssText = btnStyle;
+            zbPickBtn.title = 'Click an existing mark or place a new one as Z=0';
+            zbPickBtn.addEventListener('click', function() {
+              if (zBasePickMode && zBasePickTargetVol === vol) {
+                cancelZBasePick();
+                rebuildElevationBoxList();
+              } else {
+                startZBasePick(vol);
+                rebuildElevationBoxList();
+              }
+            });
+            var zbClearBtn = document.createElement('button');
+            zbClearBtn.textContent = 'Clear';
+            zbClearBtn.style.cssText = btnStyle;
+            zbClearBtn.disabled = (cfg.zBaseMarkId == null);
+            zbClearBtn.style.opacity = (cfg.zBaseMarkId == null) ? '0.4' : '1';
+            zbClearBtn.addEventListener('click', function() { clearZBaseMark(vol); });
+            zbRow.appendChild(zbLabel);
+            zbRow.appendChild(zbPickBtn);
+            zbRow.appendChild(zbClearBtn);
+            panel.appendChild(zbRow);
+          }
+
           // Plane deviation settings (only if mode=plane)
           if (cfg.mode === 'plane') {
             // Reference plane
@@ -5349,7 +5519,7 @@
             var s = selCfg.refSide || 1;
             return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
           }
-          return pz;
+          return pz - getZBaseZ(selCfg);
         }
         for (var i = 0; i < count; i++) {
           var px = elevationPositions[i * 3];
@@ -6097,7 +6267,7 @@
           return;
         }
       }
-      if (!MARK_MODE && !constraintPickMode && !memberPickMode) return;
+      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) return;
       if (e.button !== 0) return; // left-click only for placing points
       mouseDownPos = { x: e.clientX, y: e.clientY };
     }, true);
@@ -6228,9 +6398,18 @@
     renderArea.addEventListener('mouseup', function(e) {
       // Finalize marker drag
       if (markerDragActive) {
+        var draggedMark = markerDragInfo ? markerDragInfo.mark : null;
         markerDragActive = false;
         markerDragInfo = null;
         document.body.classList.remove('marker-drag');
+        // If the dragged mark is being used as a Z=0 base, the offset has
+        // changed — recompute every referencing box's heat map.
+        if (draggedMark) {
+          var refsAffected = getElevBoxesReferencingMark(draggedMark.id);
+          for (var ai2 = 0; ai2 < refsAffected.length; ai2++) {
+            forceRecomputeBox(refsAffected[ai2]);
+          }
+        }
         return;
       }
 
@@ -6250,7 +6429,7 @@
         return;
       }
 
-      if ((!MARK_MODE && !constraintPickMode && !memberPickMode) || !mouseDownPos) return;
+      if ((!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) || !mouseDownPos) return;
 
       // Drag guard: only place marker if mouse moved < 5px
       const dx = e.clientX - mouseDownPos.x;
@@ -6265,6 +6444,33 @@
 
       // Pick point using Potree's own utility (same as measurement tool uses)
       const camera = viewer.scene.getActiveCamera();
+
+      // Z-base pick mode: try to snap to an existing mark first, otherwise
+      // place a new mark and use it as the Z=0 reference for the target box.
+      if (zBasePickMode) {
+        var existing = findAnyMarkerNear(mouse);
+        if (existing) {
+          var targetVol = zBasePickTargetVol;
+          cancelZBasePick();
+          assignZBaseMark(targetVol, existing.id);
+          return;
+        }
+        // Otherwise place a new mark at the picked location
+        var zbPick = Potree.Utils.getMousePointCloudIntersection(
+          mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
+        );
+        if (zbPick && zbPick.location) {
+          var targetVol = zBasePickTargetVol;
+          cancelZBasePick();
+          placeMarker(zbPick.location);
+          var newMark = markedPoints[markedPoints.length - 1];
+          if (newMark) assignZBaseMark(targetVol, newMark.id);
+        } else {
+          showToast('No point found under cursor');
+        }
+        return;
+      }
+
       const pickResult = Potree.Utils.getMousePointCloudIntersection(
         mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
       );
@@ -6440,7 +6646,8 @@
       }
 
       if (ev.key === 'Escape') {
-        if (constraintPickMode) cancelConstraintPick();
+        if (zBasePickMode) { cancelZBasePick(); rebuildElevationBoxList(); }
+        else if (constraintPickMode) cancelConstraintPick();
         else if (memberPickMode) cancelMemberPick();
         else if (MARK_MODE) toggleMarkMode(true);
         // Hard-cancel any active Potree measurement insertion: dispatches
