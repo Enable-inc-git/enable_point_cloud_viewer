@@ -1014,7 +1014,8 @@
           if (cfg.mode === 'plane' && cfg.refPlane) {
             var n = cfg.refPlane.normal;
             var c = cfg.refPlane.centroid;
-            return (px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z;
+            var s = cfg.refSide || 1;
+            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
           }
           return pz;
         }
@@ -1034,7 +1035,8 @@
           if (cfg.mode === 'plane' && cfg.refPlane) {
             var n = cfg.refPlane.normal;
             var c = cfg.refPlane.centroid;
-            return (px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z;
+            var s = cfg.refSide || 1;
+            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
           }
           return pz;
         }
@@ -1357,10 +1359,10 @@
         var btn = document.getElementById('btn-fit-plane');
         if (btn) btn.classList.add('active');
       } else {
-        constraintPickTarget = type === 'plane' ? 3 : 2;
+        constraintPickTarget = 2;
         document.body.classList.add('constraint-pick-mode');
         showToast('Pick point (1/' + constraintPickTarget + ') for ' + type, 5000);
-        var btn = document.getElementById(type === 'plane' ? 'btn-set-plane' : 'btn-set-axis');
+        var btn = document.getElementById('btn-set-axis');
         if (btn) btn.classList.add('active');
       }
     }
@@ -1432,32 +1434,7 @@
       var pts = constraintPickPoints;
       var constraint = null;
 
-      if (type === 'plane') {
-        var v1 = new THREE.Vector3().subVectors(pts[1], pts[0]);
-        var v2 = new THREE.Vector3().subVectors(pts[2], pts[0]);
-        var normal = new THREE.Vector3().crossVectors(v1, v2);
-        if (normal.length() < 0.001) {
-          showToast('Points are collinear \u2014 cannot define plane');
-          cancelConstraintPick();
-          return;
-        }
-        normal.normalize();
-        var plane = new THREE.Plane();
-        plane.setFromNormalAndCoplanarPoint(normal, pts[0]);
-        var centroid = new THREE.Vector3().add(pts[0]).add(pts[1]).add(pts[2]).divideScalar(3);
-        constraint = {
-          id: nextConstraintId++,
-          type: 'plane',
-          name: 'Plane ' + (nextConstraintId - 1),
-          plane: plane,
-          normal: normal,
-          centroid: centroid,
-          points: pts,
-          visual: null,
-          visible: true,
-          locked: true
-        };
-      } else if (type === 'fit-plane') {
+      if (type === 'fit-plane') {
         if (pts.length < 3) {
           showToast('Need at least 3 points for best-fit plane');
           cancelConstraintPick();
@@ -3534,7 +3511,8 @@
             var elev;
             if (cfg2.mode === 'plane' && cfg2.refPlane) {
               var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
-              elev = (px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z;
+              var s1 = cfg2.refSide || 1;
+              elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
             } else {
               elev = pz;
             }
@@ -3604,7 +3582,8 @@
           var elev;
           if (cfg2.mode === 'plane' && cfg2.refPlane) {
             var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
-            elev = (px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z;
+            var s1 = cfg2.refSide || 1;
+            elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
           } else {
             elev = pz;
           }
@@ -3963,7 +3942,8 @@
         var elevVal;
         if (mode === 'plane' && refPlane) {
           var nn = refPlane.normal, cc = refPlane.centroid;
-          elevVal = (px - cc.x) * nn.x + (py - cc.y) * nn.y + (pz - cc.z) * nn.z;
+          var ss = refSide || 1;
+          elevVal = ((px - cc.x) * nn.x + (py - cc.y) * nn.y + (pz - cc.z) * nn.z) * ss;
         } else {
           elevVal = pz;
         }
@@ -4837,7 +4817,8 @@
         function elevFor(px, py, pz) {
           if (selCfg.mode === 'plane' && selCfg.refPlane) {
             var n = selCfg.refPlane.normal, c = selCfg.refPlane.centroid;
-            return (px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z;
+            var s = selCfg.refSide || 1;
+            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
           }
           return pz;
         }
@@ -5306,7 +5287,6 @@
           '<div id="enable-mark-list"></div>' +
           '<div class="enable-subsection-label" style="margin-top:10px">Constraints</div>' +
           '<div id="enable-constraint-buttons">' +
-            '<button id="btn-set-plane" title="Define a constraint plane (3 points)">Set Plane</button>' +
             '<button id="btn-fit-plane" title="Best-fit plane from many points (Enter to finalize)">Fit Plane</button>' +
             '<button id="btn-set-axis" title="Define a constraint axis (2 points)">Set Axis</button>' +
           '</div>' +
@@ -5438,7 +5418,6 @@
       // --- Event listeners (unchanged) ---
       document.getElementById('btn-mark-mode').addEventListener('click', function() { toggleMarkMode(); });
       document.getElementById('btn-clear-marks').addEventListener('click', function() { clearAllMarkers(); });
-      document.getElementById('btn-set-plane').addEventListener('click', function() { startConstraintPick('plane'); });
       document.getElementById('btn-fit-plane').addEventListener('click', function() { startConstraintPick('fit-plane'); });
       document.getElementById('btn-set-axis').addEventListener('click', function() { startConstraintPick('axis'); });
       document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
