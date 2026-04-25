@@ -7,13 +7,13 @@
   --bg:               #1d1d1d;   /* main page background */
   --sidebar-bg:       #363636;   /* sidebar container */
   --sidebar-text:     #fbfbfb;   /* default text */
-  --accent:           #25cd1f;   /* active pills / highlights */
+  --accent:           #3EAD4A;   /* Enable-green (matches logo "e") */
   --muted:            #9aa3b2;   /* secondary text */
   --panel-bg:         #6b6b6b;   /* inner cards/panels / inputs */
   --border:           #000102;   /* hairlines */
 
   /* NEW: header/section controls */
-  --logo-panel-bg:    #ffffff;   /* strip behind the logo */
+  --logo-panel-bg:    #1a1a1a;   /* strip behind the logo — near-black */
   --section-bg:       #252525;   /* bars: Tools / Scene / About */
   --section-text:     #e8eaf0;
   --section-border:   #a0a0a0;
@@ -176,19 +176,30 @@ html, body, #potree_render_area{
   color: var(--sidebar-text) !important;
 }
 #jstree_scene .jstree-anchor.jstree-clicked{
-  background: rgba(77,182,255,0.15) !important;
+  background: rgba(62,173,74,0.15) !important;
   border-radius: 4px;
 }
 
-/* scrollbars (WebKit) */
-#potree_sidebar::-webkit-scrollbar{
+/* scrollbars — override Potree's blue-tinted defaults */
+#potree_sidebar_container{
+  scrollbar-color: #555 #1a1a1a !important;
+  scrollbar-width: thin !important;
+}
+#potree_sidebar_container::-webkit-scrollbar,
+#potree_sidebar::-webkit-scrollbar,
+::-webkit-scrollbar{
   width: 10px;
+  background-color: #1a1a1a !important;
 }
-#potree_sidebar::-webkit-scrollbar-track{
-  background: #222;
+#potree_sidebar_container::-webkit-scrollbar-track,
+#potree_sidebar::-webkit-scrollbar-track,
+::-webkit-scrollbar-track{
+  background: #1a1a1a !important;
 }
-#potree_sidebar::-webkit-scrollbar-thumb{
-  background: #444;
+#potree_sidebar_container::-webkit-scrollbar-thumb,
+#potree_sidebar::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb{
+  background: #555 !important;
 }
 
 /* Logo strip (the bar behind the logo image) */
@@ -232,7 +243,7 @@ html, body, #potree_render_area{
   display:block; margin:8px auto; background:transparent !important; box-shadow:none !important;
 }
 
-/* 2) Section bars: “Tools”, “Scene”, “About”, etc. (cover all common variants) */
+/* 2) Section bars: "Tools", "Scene", "About", etc. (cover all common variants) */
 #potree_menu :is(
   h3.ui-accordion-header,
   .ui-accordion-header,
@@ -312,6 +323,7 @@ html, body { background: var(--bg) !important; }
 }
 
 /* The actual sidebar + its internal jQuery-UI containers */
+#potree_sidebar_container,
 #potree_sidebar,
 #potree_menu,
 #potree_sidebar .ui-widget,

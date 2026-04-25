@@ -18,7 +18,13 @@
       "Bash(./PotreeConverter.exe \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\mar 31.las\" -o \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\mar31\" --attributes RGB INTENSITY CLASSIFICATION --material RGB --offset-method AUTO)",
       "Bash(node:*)",
       "Bash(git:*)",
-      "Bash(/c/PotreeTools/PotreeConverter_1.7_windows_x64/PotreeConverter.exe:*)"
+      "Bash(/c/PotreeTools/PotreeConverter_1.7_windows_x64/PotreeConverter.exe:*)",
+      "Bash(ls *)",
+      "Read(//tmp/**)",
+      "Bash(start chrome *)",
+      "Bash(C:/PotreeTools/PotreeConverter_1.7_windows_x64/PotreeConverter.exe *)",
+      "Bash(cp \"site/clients/Pomerleau/viewer.html\" \"site/clients/WJ Properties/viewer.html\")",
+      "Bash(cp \"site/clients/Solar Restoration/custom.css\" \"site/clients/WJ Properties/custom.css\")"
     ]
   }
 }

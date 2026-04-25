@@ -57612,6 +57612,10 @@ uniform int clipMethod;
 	uniform mat4 exclusionBoxes[num_exclusionboxes];
 #endif
 
+#if defined(num_highlightboxes) && num_highlightboxes > 0
+	uniform mat4 highlightBoxes[num_highlightboxes];
+#endif
+
 #if defined(num_clipspheres) && num_clipspheres > 0
 	uniform mat4 uClipSpheres[num_clipspheres];
 #endif
@@ -58410,7 +58414,7 @@ void doClipping(){
 		}
 	}
 
-	// Exclusion boxes: points INSIDE any exclusion box get darkened + shrunk
+	// Exclusion boxes: points INSIDE any exclusion box are fully hidden
 	#if defined(num_exclusionboxes) && num_exclusionboxes > 0
 		for(int i = 0; i < num_exclusionboxes; i++){
 			vec4 exclPos = exclusionBoxes[i] * modelMatrix * vec4(position, 1.0);
@@ -58418,8 +58422,21 @@ void doClipping(){
 			insideExcl = insideExcl && -0.5 <= exclPos.y && exclPos.y <= 0.5;
 			insideExcl = insideExcl && -0.5 <= exclPos.z && exclPos.z <= 0.5;
 			if(insideExcl){
-				vColor = vColor * 0.25;
-				gl_PointSize = gl_PointSize * 0.005;
+				gl_Position = vec4(100.0, 100.0, 100.0, 1.0);
+				break;
+			}
+		}
+	#endif
+
+	// Highlight boxes: points INSIDE any highlight box are tinted green
+	#if defined(num_highlightboxes) && num_highlightboxes > 0
+		for(int i = 0; i < num_highlightboxes; i++){
+			vec4 hlPos = highlightBoxes[i] * modelMatrix * vec4(position, 1.0);
+			bool insideHl = -0.5 <= hlPos.x && hlPos.x <= 0.5;
+			insideHl = insideHl && -0.5 <= hlPos.y && hlPos.y <= 0.5;
+			insideHl = insideHl && -0.5 <= hlPos.z && hlPos.z <= 0.5;
+			if(insideHl){
+				vColor = vec3(0.2, 0.9, 0.3);
 				break;
 			}
 		}
@@ -59210,6 +59227,7 @@ void main() {
 				clipPolygonCount:	{ type: "i", value: 0 },
 				clipBoxes:			{ type: "Matrix4fv", value: [] },
 				exclusionBoxes:		{ type: "Matrix4fv", value: [] },
+				highlightBoxes:		{ type: "Matrix4fv", value: [] },
 				//clipSpheres:		{ type: "Matrix4fv", value: [] },
 				clipPolygons:		{ type: "3fv", value: [] },
 				clipPolygonVCount:	{ type: "iv", value: [] },
@@ -59434,6 +59452,33 @@ void main() {
 			for (let i = 0; i < this.uniforms.exclusionBoxes.value.length; i++) {
 				if (Number.isNaN(this.uniforms.exclusionBoxes.value[i])) {
 					this.uniforms.exclusionBoxes.value[i] = Infinity;
+				}
+			}
+		}
+
+		setHighlightBoxes (highlightBoxes) {
+			if (!highlightBoxes) {
+				return;
+			}
+
+			let doUpdate = (!this.highlightBoxes || this.highlightBoxes.length !== highlightBoxes.length);
+
+			this.highlightBoxes = highlightBoxes;
+
+			if (doUpdate) {
+				this.updateShaderSource();
+			}
+
+			this.uniforms.highlightBoxes.value = new Float32Array(highlightBoxes.length * 16);
+
+			for (let i = 0; i < highlightBoxes.length; i++) {
+				let box = highlightBoxes[i];
+				this.uniforms.highlightBoxes.value.set(box.inverse.elements, 16 * i);
+			}
+
+			for (let i = 0; i < this.uniforms.highlightBoxes.value.length; i++) {
+				if (Number.isNaN(this.uniforms.highlightBoxes.value[i])) {
+					this.uniforms.highlightBoxes.value[i] = Infinity;
 				}
 			}
 		}
@@ -63541,6 +63586,7 @@ void main() {
 					let numClipSpheres = (params.clipSpheres && params.clipSpheres.length) ? params.clipSpheres.length : 0;
 					let numClipPolygons = (material.clipPolygons && material.clipPolygons.length) ? material.clipPolygons.length : 0;
 					let numExclusionBoxes = (material.exclusionBoxes && material.exclusionBoxes.length) ? material.exclusionBoxes.length : 0;
+					let numHighlightBoxes = (material.highlightBoxes && material.highlightBoxes.length) ? material.highlightBoxes.length : 0;
 
 					let defines = [
 						`#define num_shadowmaps ${shadowMaps.length}`,
@@ -63549,6 +63595,7 @@ void main() {
 						`#define num_clipspheres ${numClipSpheres}`,
 						`#define num_clippolygons ${numClipPolygons}`,
 						`#define num_exclusionboxes ${numExclusionBoxes}`,
+						`#define num_highlightboxes ${numHighlightBoxes}`,
 					];
 
 
@@ -63709,6 +63756,13 @@ void main() {
 					const lExclBoxes = shader.uniformLocations["exclusionBoxes[0]"];
 					if (lExclBoxes) {
 						gl.uniformMatrix4fv(lExclBoxes, false, material.uniforms.exclusionBoxes.value);
+					}
+				}
+
+				if (material.highlightBoxes && material.highlightBoxes.length > 0) {
+					const lHlBoxes = shader.uniformLocations["highlightBoxes[0]"];
+					if (lHlBoxes) {
+						gl.uniformMatrix4fv(lHlBoxes, false, material.uniforms.highlightBoxes.value);
 					}
 				}
 
@@ -70446,23 +70500,26 @@ void main() {
 			renderer.render(viewer.clippingTool.sceneVolume, camera);
 
 			renderer.render(viewer.controls.sceneControls, camera);
-			
+
+			// depth_overlay — point cloud depth is already in screen buffer for non-EDL renderer
+			viewer.dispatchEvent({type: "render.pass.depth_overlay", viewer: viewer});
+
 			renderer.clearDepth();
-			
+
 			viewer.transformationTool.update();
-			
+
 			viewer.dispatchEvent({type: "render.pass.perspective_overlay",viewer: viewer});
 
 			// renderer.render(viewer.controls.sceneControls, camera);
 			// renderer.render(viewer.clippingTool.sceneVolume, camera);
 			// renderer.render(viewer.transformationTool.scene, camera);
-			
-			// renderer.setViewport(width - viewer.navigationCube.width, 
-			// 							height - viewer.navigationCube.width, 
+
+			// renderer.setViewport(width - viewer.navigationCube.width,
+			// 							height - viewer.navigationCube.width,
 			// 							viewer.navigationCube.width, viewer.navigationCube.width);
-			// renderer.render(viewer.navigationCube, viewer.navigationCube.camera);		
+			// renderer.render(viewer.navigationCube, viewer.navigationCube.camera);
 			// renderer.setViewport(0, 0, width, height);
-			
+
 			viewer.dispatchEvent({type: "render.pass.end",viewer: viewer});
 		}
 
@@ -70789,6 +70846,44 @@ void main() {
 
 			viewer.dispatchEvent({type: "render.pass.scene", viewer: viewer});
 
+			// Restore point cloud depth from EDL render target into screen depth buffer
+			// so that objects rendered in depth_overlay are properly occluded by point cloud geometry
+			{
+				if (!this._depthBlitMaterial) {
+					this._depthBlitMaterial = new ShaderMaterial({
+						uniforms: {
+							uDepth: { value: null }
+						},
+						vertexShader: [
+							'varying vec2 vUv;',
+							'void main() {',
+							'  vUv = uv;',
+							'  gl_Position = vec4(position.xy, 0.0, 1.0);',
+							'}'
+						].join('\n'),
+						fragmentShader: [
+							'uniform sampler2D uDepth;',
+							'varying vec2 vUv;',
+							'void main() {',
+							'  float d = texture2D(uDepth, vUv).r;',
+							'  gl_FragDepth = d;',
+							'  gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);',
+							'}'
+						].join('\n'),
+						depthTest: false,
+						depthWrite: true,
+						transparent: true,
+						blending: NoBlending
+					});
+					this._depthBlitMaterial.colorWrite = false;
+				}
+				this._depthBlitMaterial.uniforms.uDepth.value = this.rtEDL.depthTexture;
+				Utils.screenPass.render(viewer.renderer, this._depthBlitMaterial);
+			}
+
+			// Dispatch depth_overlay — listeners can render with depthTest:true against point cloud depth
+			viewer.dispatchEvent({type: "render.pass.depth_overlay", viewer: viewer});
+
 			viewer.renderer.clearDepth();
 
 			viewer.transformationTool.update();
@@ -70798,7 +70893,7 @@ void main() {
 			viewer.renderer.render(viewer.controls.sceneControls, camera);
 			viewer.renderer.render(viewer.clippingTool.sceneVolume, camera);
 			viewer.renderer.render(viewer.transformationTool.scene, camera);
-			
+
 			viewer.dispatchEvent({type: "render.pass.end",viewer: viewer});
 
 		}
@@ -71100,6 +71195,9 @@ void main() {
 
 			viewer.dispatchEvent({type: "render.pass.scene", viewer: viewer});
 
+			// depth_overlay — render depth-tested overlays before depth is cleared
+			viewer.dispatchEvent({type: "render.pass.depth_overlay", viewer: viewer});
+
 			viewer.renderer.clearDepth();
 
 			viewer.transformationTool.update();
@@ -71110,12 +71208,12 @@ void main() {
 			viewer.renderer.render(viewer.clippingTool.sceneVolume, camera);
 			viewer.renderer.render(viewer.transformationTool.scene, camera);
 
-			viewer.renderer.setViewport(width - viewer.navigationCube.width, 
-										height - viewer.navigationCube.width, 
+			viewer.renderer.setViewport(width - viewer.navigationCube.width,
+										height - viewer.navigationCube.width,
 										viewer.navigationCube.width, viewer.navigationCube.width);
-			viewer.renderer.render(viewer.navigationCube, viewer.navigationCube.camera);		
+			viewer.renderer.render(viewer.navigationCube, viewer.navigationCube.camera);
 			viewer.renderer.setViewport(0, 0, width, height);
-			
+
 			viewer.dispatchEvent({type: "render.pass.end",viewer: viewer});
 
 		}
