@@ -332,7 +332,34 @@
     .measurement_content #distances_table { display: none !important; }
 
     /* ===== Persistent measurement list ===== */
-    #enable-measurement-list { margin: 4px 0; }
+    #enable-measurement-list,
+    #enable-area-list,
+    #enable-angle-list,
+    #enable-volume-list { margin: 4px 0; }
+    .enable-list-section-label {
+      font: bold 11px/1.3 sans-serif;
+      color: var(--muted, #9aa3b2);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin: 8px 0 2px 0;
+    }
+    .enable-meas-points {
+      display: flex; flex-wrap: wrap; gap: 3px;
+      margin: 3px 0; font: 11px/1.3 sans-serif;
+    }
+    .enable-meas-points .point-chip {
+      display: inline-flex; align-items: center; gap: 1px;
+      padding: 1px 3px 1px 5px; border-radius: 3px;
+      background: rgba(255,255,255,0.06);
+      color: var(--sidebar-text, #fbfbfb);
+    }
+    .enable-meas-points .point-chip button {
+      background: none; border: none; color: #f88;
+      font: 13px/1 sans-serif; cursor: pointer; padding: 0 3px;
+    }
+    .enable-meas-points .point-chip button:hover {
+      color: #fff; background: rgba(255,68,68,0.35); border-radius: 2px;
+    }
     .enable-meas-item {
       padding: 4px 6px; border-radius: 3px; margin: 3px 0;
       font: 12px/1.3 sans-serif; color: var(--sidebar-text, #fbfbfb);
@@ -1296,14 +1323,18 @@
       } else if (action.type === 'measurement-point') {
         var meas = action.measure;
         if (meas && meas.points && meas.points.length > 0) {
-          if (meas.points.length <= 1) {
-            // Remove the whole measurement if only 1 point
+          var minReq = _measureMinPoints(meas);
+          // If removing the last point would leave the measurement below its
+          // required minimum, remove the entire measurement (no orphan
+          // 1-point distance/height or <3-point area/angle measurements).
+          if (meas.points.length - 1 < minReq) {
+            if (pendingMeasurement === meas) cancelPotreeInsertion();
             viewer.scene.removeMeasurement(meas);
+            showToast('Undid measurement');
           } else {
-            // Remove last point
             meas.removeMarker(meas.points.length - 1);
+            showToast('Undid measurement point');
           }
-          showToast('Undid measurement point');
         }
       } else if (action.type === 'volume-transform') {
         action.apply();
@@ -2494,15 +2525,32 @@
 
       // Elevation contours moved to render.pass.depth_overlay (depth-tested against point cloud)
 
-      // Measurement point labels — offset above point, scale, render
+      // Measurement point labels — push outward along the segment so the D#
+      // label is on the OPPOSITE side of the endpoint from the segment midpoint
+      // (where Potree's edge/height/area dimension labels sit). Guarantees the
+      // D# label never sits on top of the dimension value.
       if (measureLabelScene.children.length > 0) {
         var cw = viewer.renderer.getSize(new THREE.Vector2()).width;
         var ch = viewer.renderer.getSize(new THREE.Vector2()).height;
         var isOrtho = camera instanceof THREE.OrthographicCamera;
+        var OFFSET_PX = 26;
         measurePointLabels.forEach(function(labels, measure) {
+          var pts = measure.points;
+          // Pre-project all this measure's points to screen space
+          var projected = new Array(pts.length);
+          for (var pi = 0; pi < pts.length; pi++) {
+            var pp = pts[pi].position ? pts[pi].position : pts[pi];
+            if (!pp) { projected[pi] = null; continue; }
+            var sp = pp.clone().project(camera);
+            projected[pi] = {
+              x: (sp.x + 1) * cw / 2,
+              y: (-sp.y + 1) * ch / 2,
+              z: sp.z
+            };
+          }
           for (var li = 0; li < labels.length; li++) {
             var lbl = labels[li];
-            var pt = measure.points[li];
+            var pt = pts[li];
             if (!pt) continue;
             var worldPos = pt.position ? pt.position : pt;
             var dist = camera.position.distanceTo(worldPos);
@@ -2511,22 +2559,48 @@
             var s = (70 / pr);
             lbl.scale.set(s, s, s);
 
-            // Offset label above the point in screen space
-            var screenPos = worldPos.clone().project(camera);
-            var screenX = (screenPos.x + 1) * cw / 2;
-            var screenY = (-screenPos.y + 1) * ch / 2;
-            screenY -= 30; // 30 pixels above the dot
+            var thisScr = projected[li];
+            if (!thisScr) continue;
 
-            // Unproject back to world — works for both perspective and ortho
+            // Compute outward direction in screen space — sum of unit vectors
+            // pointing AWAY from each adjacent point.
+            var outX = 0, outY = 0, contributors = 0;
+            var neighborIdxs = [li - 1, li + 1];
+            for (var ni = 0; ni < neighborIdxs.length; ni++) {
+              var nIdx = neighborIdxs[ni];
+              if (nIdx < 0 || nIdx >= pts.length) continue;
+              var nScr = projected[nIdx];
+              if (!nScr) continue;
+              var dxs = thisScr.x - nScr.x;
+              var dys = thisScr.y - nScr.y;
+              var slen = Math.sqrt(dxs * dxs + dys * dys);
+              if (slen > 0.5) {
+                outX += dxs / slen;
+                outY += dys / slen;
+                contributors++;
+              }
+            }
+            if (contributors === 0) {
+              outY = -1;
+            } else {
+              var olen = Math.sqrt(outX * outX + outY * outY);
+              if (olen < 0.001) {
+                outX = 0; outY = -1;
+              } else {
+                outX /= olen; outY /= olen;
+              }
+            }
+
+            var screenX = thisScr.x + outX * OFFSET_PX;
+            var screenY = thisScr.y + outY * OFFSET_PX;
+
             var ndcX = (screenX / cw) * 2 - 1;
             var ndcY = -(screenY / ch) * 2 + 1;
-            var nearPoint = new THREE.Vector3(ndcX, ndcY, screenPos.z).unproject(camera);
+            var nearPoint = new THREE.Vector3(ndcX, ndcY, thisScr.z).unproject(camera);
 
             if (isOrtho) {
-              // For ortho, unprojected point is already at the right world position
               lbl.position.copy(nearPoint);
             } else {
-              // For perspective, project along the ray from camera to get correct depth
               var dir = nearPoint.sub(camera.position).normalize();
               lbl.position.copy(camera.position.clone().add(dir.multiplyScalar(dist)));
             }
@@ -2571,7 +2645,11 @@
       label.setTextColor({r: 255, g: 0, b: 0, a: 1.0});
       label.setBorderColor({r: 0, g: 0, b: 0, a: 0.0});
       label.setBackgroundColor({r: 0, g: 0, b: 0, a: 0.0});
+      // TextSprite generates its texture in its constructor at the default fontsize (28).
+      // Setting .fontsize alone does NOT regenerate the texture; we must call update()
+      // to re-render the canvas at the new size so D# matches Potree's edge labels (16).
       label.fontsize = 16;
+      label.update();
       label.material.depthTest = false;
       label.material.depthWrite = false;
       label.material.transparent = true;
@@ -2660,18 +2738,76 @@
     var _measListTimer = null;
     function debouncedRebuildMeasList() {
       clearTimeout(_measListTimer);
-      _measListTimer = setTimeout(rebuildMeasurementList, 80);
+      _measListTimer = setTimeout(rebuildAllMeasurementLists, 80);
+    }
+
+    // ===== INSERTION-STATE TRACKING =====
+    // Potree's MeasuringTool/VolumeTool startInsertion does not auto-cancel a
+    // previously started insertion, and `cancel_insertions` only removes its
+    // mouseup listeners — it leaves the dangling cursor-follow sphere in scene
+    // and the InputHandler still mid-drag. So we track which measurement is
+    // currently being inserted and provide a hard "cancel + cleanup" routine.
+    var pendingMeasurement = null;
+    var lastMeasurementToolArgs = null;
+    var lastVolumeToolArgs = null;
+
+    function _measureMinPoints(m) {
+      if (!m) return 2;
+      if (m.showArea || m.showAngles) return 3;
+      return 2;
+    }
+
+    function cleanupOrphanMeasurements() {
+      var meas = (viewer.scene.measurements || []).slice();
+      for (var i = 0; i < meas.length; i++) {
+        var m = meas[i];
+        if (m.points.length < _measureMinPoints(m)) {
+          viewer.scene.removeMeasurement(m);
+        }
+      }
+    }
+
+    function cancelPotreeInsertion() {
+      try { viewer.dispatchEvent({ type: 'cancel_insertions' }); } catch (_) {}
+      try { if (viewer.inputHandler) viewer.inputHandler.drag = null; } catch (_) {}
+      cleanupOrphanMeasurements();
+      pendingMeasurement = null;
     }
 
     function setupMeasurementLabelEvents() {
+      try {
+        if (viewer.measuringTool && !viewer.measuringTool._enableWrapped) {
+          var origMS = viewer.measuringTool.startInsertion.bind(viewer.measuringTool);
+          viewer.measuringTool.startInsertion = function(args) {
+            cancelPotreeInsertion();
+            lastMeasurementToolArgs = args || {};
+            var m = origMS(args);
+            pendingMeasurement = m;
+            return m;
+          };
+          viewer.measuringTool._enableWrapped = true;
+        }
+        if (viewer.volumeTool && !viewer.volumeTool._enableWrapped) {
+          var origVS = viewer.volumeTool.startInsertion.bind(viewer.volumeTool);
+          viewer.volumeTool.startInsertion = function(args) {
+            lastVolumeToolArgs = args || {};
+            return origVS(args);
+          };
+          viewer.volumeTool._enableWrapped = true;
+        }
+      } catch (e) { console.warn('Tool wrapping failed:', e); }
+
       viewer.scene.addEventListener('measurement_added', function(e) {
         var m = e.measurement;
         syncMeasurePointLabels(m);
-        rebuildMeasurementList();
+        rebuildAllMeasurementLists();
         m.addEventListener('marker_added', function() {
           syncMeasurePointLabels(m);
           debouncedRebuildMeasList();
           undoStack.push({ type: 'measurement-point', measure: m });
+          if (pendingMeasurement === m && m.maxMarkers && m.points.length >= m.maxMarkers) {
+            pendingMeasurement = null;
+          }
         });
         m.addEventListener('marker_moved', function() {
           syncMeasurePointLabels(m);
@@ -2684,8 +2820,79 @@
       });
       viewer.scene.addEventListener('measurement_removed', function(e) {
         removeMeasurePointLabels(e.measurement);
-        rebuildMeasurementList();
+        if (pendingMeasurement === e.measurement) pendingMeasurement = null;
+        rebuildAllMeasurementLists();
       });
+      viewer.scene.addEventListener('volume_added', function(e) {
+        debouncedRebuildMeasList();
+        var vol = e.volume;
+        if (!vol || !isUserVolumeMeasurement(vol)) return;
+        vol.addEventListener('scale_changed', debouncedRebuildMeasList);
+        vol.addEventListener('position_changed', debouncedRebuildMeasList);
+        vol.addEventListener('orientation_changed', debouncedRebuildMeasList);
+      });
+      viewer.scene.addEventListener('volume_removed', function() {
+        debouncedRebuildMeasList();
+      });
+    }
+
+    function restartLastMeasurementTool() {
+      if (lastMeasurementToolArgs && viewer.measuringTool) {
+        viewer.measuringTool.startInsertion(lastMeasurementToolArgs);
+        return true;
+      }
+      if (lastVolumeToolArgs && viewer.volumeTool) {
+        viewer.volumeTool.startInsertion(lastVolumeToolArgs);
+        return true;
+      }
+      return false;
+    }
+
+    function deleteMeasurementPoint(measure, idx) {
+      if (!measure || !measure.points || idx < 0 || idx >= measure.points.length) return;
+      var minReq = _measureMinPoints(measure);
+      if (measure.points.length - 1 < minReq) {
+        viewer.scene.removeMeasurement(measure);
+        showToast('Removed measurement (would have too few points)');
+      } else {
+        measure.removeMarker(idx);
+        showToast('Removed point');
+      }
+    }
+
+    // ===== TRUE 3D POLYGON AREA (Newell's method) =====
+    // Potree's getArea() uses an XY-only shoelace formula, so any polygon on
+    // a vertical or angled surface returns 0 m². Newell's method computes the
+    // best-fit-plane normal and gives the true 3D surface area regardless of
+    // polygon orientation.
+    function compute3DPolygonArea(pts) {
+      if (!pts || pts.length < 3) return 0;
+      var nx = 0, ny = 0, nz = 0;
+      for (var i = 0; i < pts.length; i++) {
+        var a = pts[i].position ? pts[i].position : pts[i];
+        var b = pts[(i + 1) % pts.length].position ? pts[(i + 1) % pts.length].position : pts[(i + 1) % pts.length];
+        nx += (a.y - b.y) * (a.z + b.z);
+        ny += (a.z - b.z) * (a.x + b.x);
+        nz += (a.x - b.x) * (a.y + b.y);
+      }
+      return 0.5 * Math.sqrt(nx * nx + ny * ny + nz * nz);
+    }
+
+    // ===== USER-CREATED VOLUMES (excludes our internally managed boxes) =====
+    function isUserVolumeMeasurement(vol) {
+      if (!vol) return false;
+      if (typeof initialClipBox !== 'undefined' && vol === initialClipBox) return false;
+      if (typeof planeOrthoSlab !== 'undefined' && vol === planeOrthoSlab) return false;
+      if (typeof cutoutBoxes !== 'undefined' && cutoutBoxes.indexOf(vol) >= 0) return false;
+      if (typeof elevationCropVolumes !== 'undefined' && elevationCropVolumes.indexOf(vol) >= 0) return false;
+      return true;
+    }
+
+    function rebuildAllMeasurementLists() {
+      rebuildMeasurementList();
+      rebuildAreaList();
+      rebuildAngleList();
+      rebuildVolumeList();
     }
 
     // ===== PERSISTENT MEASUREMENT SIDEBAR LIST =====
@@ -2694,11 +2901,11 @@
       var listEl = document.getElementById('enable-measurement-list');
       if (!listEl) return;
       var measurements = viewer.scene.measurements || [];
-      // Only show distance measurements
+      // Show distance and vertical-height measurements (skip area/angle/coord-only)
       var distMeasures = [];
       for (var i = 0; i < measurements.length; i++) {
         var m = measurements[i];
-        if (m.showDistances && !m.showArea && !m.showAngles) distMeasures.push(m);
+        if ((m.showDistances || m.showHeight) && !m.showArea && !m.showAngles) distMeasures.push(m);
       }
 
       if (distMeasures.length === 0) {
@@ -2706,7 +2913,7 @@
         return;
       }
 
-      var html = '';
+      var html = '<div class="enable-list-section-label">Distance &amp; Height</div>';
       for (var mi = 0; mi < distMeasures.length; mi++) {
         var measure = distMeasures[mi];
         var nums = measurePointNumbers.get(measure);
@@ -2728,6 +2935,18 @@
           '<button class="meas-delete" data-meas-idx="' + mi + '" title="Delete measurement">\u00d7</button>' +
           '</div>';
 
+        // Per-point delete chips
+        var chipsHtml = '<div class="enable-meas-points">';
+        for (var ci = 0; ci < pts.length; ci++) {
+          var cName = ci < nums.length ? 'D' + nums[ci] : ('P' + (ci + 1));
+          chipsHtml += '<span class="point-chip">' + cName +
+            '<button data-pt-list="dist" data-pt-mi="' + mi + '" data-pt-idx="' + ci + '" title="Delete this point">\u00d7</button>' +
+            '</span>';
+        }
+        chipsHtml += '</div>';
+        html += chipsHtml;
+
+        var isHeight = measure.showHeight && !measure.showDistances;
         var total3D = 0, totalXY = 0, totalZ = 0;
         for (var si = 0; si < pts.length - 1; si++) {
           var a = pts[si].position ? pts[si].position : pts[si];
@@ -2739,16 +2958,22 @@
           var zSign = dz >= 0 ? '+' : '-';
           total3D += d3d; totalXY += dxy; totalZ += absZ;
 
+          var segVals = isHeight
+            ? 'Vert:' + absZ.toFixed(3) + '(' + zSign + ')'
+            : '3D:' + d3d.toFixed(3) + ' XY:' + dxy.toFixed(3) + ' Z:' + absZ.toFixed(3) + '(' + zSign + ')';
           html += '<div class="enable-meas-seg">' +
             '<span class="seg-name">D' + nums[si] + '\u2192D' + nums[si + 1] + '</span>' +
-            '<span class="seg-vals">3D:' + d3d.toFixed(3) + ' XY:' + dxy.toFixed(3) + ' Z:' + absZ.toFixed(3) + '(' + zSign + ')</span>' +
+            '<span class="seg-vals">' + segVals + '</span>' +
             '</div>';
         }
         // Total row if multi-segment
         if (pts.length > 2) {
+          var totalVals = isHeight
+            ? 'Vert:' + totalZ.toFixed(3)
+            : '3D:' + total3D.toFixed(3) + ' XY:' + totalXY.toFixed(3) + ' Z:' + totalZ.toFixed(3);
           html += '<div class="enable-meas-seg seg-total">' +
             '<span class="seg-name">Total</span>' +
-            '<span class="seg-vals">3D:' + total3D.toFixed(3) + ' XY:' + totalXY.toFixed(3) + ' Z:' + totalZ.toFixed(3) + '</span>' +
+            '<span class="seg-vals">' + totalVals + '</span>' +
             '</div>';
         }
         html += '</div>';
@@ -2764,33 +2989,239 @@
           }
         });
       });
+      // Per-point delete chips
+      listEl.querySelectorAll('.point-chip button').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var mi = parseInt(btn.getAttribute('data-pt-mi'));
+          var pi = parseInt(btn.getAttribute('data-pt-idx'));
+          if (distMeasures[mi]) deleteMeasurementPoint(distMeasures[mi], pi);
+        });
+      });
+    }
+
+    // ===== AREA LIST =====
+    function rebuildAreaList() {
+      var listEl = document.getElementById('enable-area-list');
+      if (!listEl) return;
+      var measurements = viewer.scene.measurements || [];
+      var areaMeasures = [];
+      for (var i = 0; i < measurements.length; i++) {
+        if (measurements[i].showArea) areaMeasures.push(measurements[i]);
+      }
+      if (areaMeasures.length === 0) { listEl.innerHTML = ''; return; }
+
+      var html = '<div class="enable-list-section-label">Areas</div>';
+      for (var mi = 0; mi < areaMeasures.length; mi++) {
+        var measure = areaMeasures[mi];
+        var nums = measurePointNumbers.get(measure);
+        var pts = measure.points;
+        if (!pts || pts.length < 3) {
+          var pName = (nums && nums.length > 0) ? 'D' + nums[0] : '...';
+          html += '<div class="enable-meas-item">' +
+            '<div class="meas-header"><span class="meas-title">' + pName + '... (picking, need 3+)</span></div>' +
+            '</div>';
+          continue;
+        }
+        var firstName = nums && nums.length > 0 ? 'D' + nums[0] : 'D?';
+        var lastName  = nums && nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
+        var area3D = compute3DPolygonArea(pts);
+        var areaXY = (typeof measure.getArea === 'function') ? measure.getArea() : 0;
+        var perim = 0;
+        for (var pi = 0; pi < pts.length; pi++) {
+          var a = pts[pi].position ? pts[pi].position : pts[pi];
+          var b = pts[(pi + 1) % pts.length].position ? pts[(pi + 1) % pts.length].position : pts[(pi + 1) % pts.length];
+          var dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+          perim += Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        var aChips = '<div class="enable-meas-points">';
+        for (var aci = 0; aci < pts.length; aci++) {
+          var acName = nums && aci < nums.length ? 'D' + nums[aci] : ('P' + (aci + 1));
+          aChips += '<span class="point-chip">' + acName +
+            '<button data-pt-list="area" data-pt-mi="' + mi + '" data-pt-idx="' + aci + '" title="Delete this point">\u00d7</button>' +
+            '</span>';
+        }
+        aChips += '</div>';
+        html += '<div class="enable-meas-item">' +
+          '<div class="meas-header">' +
+          '<span class="meas-title">' + firstName + ' \u2192 ' + lastName + ' (' + pts.length + ' pts)</span>' +
+          '<button class="meas-delete" data-area-idx="' + mi + '" title="Delete area">\u00d7</button>' +
+          '</div>' +
+          aChips +
+          '<div class="enable-meas-seg">' +
+            '<span class="seg-name">Surface</span>' +
+            '<span class="seg-vals">' + area3D.toFixed(3) + ' m\u00b2</span>' +
+          '</div>' +
+          '<div class="enable-meas-seg">' +
+            '<span class="seg-name">Plan (XY)</span>' +
+            '<span class="seg-vals">' + areaXY.toFixed(3) + ' m\u00b2</span>' +
+          '</div>' +
+          '<div class="enable-meas-seg">' +
+            '<span class="seg-name">Perimeter</span>' +
+            '<span class="seg-vals">' + perim.toFixed(3) + ' m</span>' +
+          '</div>' +
+          '</div>';
+      }
+      listEl.innerHTML = html;
+      listEl.querySelectorAll('.meas-delete').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var idx = parseInt(btn.getAttribute('data-area-idx'));
+          if (areaMeasures[idx]) viewer.scene.removeMeasurement(areaMeasures[idx]);
+        });
+      });
+      listEl.querySelectorAll('.point-chip button').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var mi = parseInt(btn.getAttribute('data-pt-mi'));
+          var pi = parseInt(btn.getAttribute('data-pt-idx'));
+          if (areaMeasures[mi]) deleteMeasurementPoint(areaMeasures[mi], pi);
+        });
+      });
+    }
+
+    // ===== ANGLE LIST =====
+    function rebuildAngleList() {
+      var listEl = document.getElementById('enable-angle-list');
+      if (!listEl) return;
+      var measurements = viewer.scene.measurements || [];
+      var angleMeasures = [];
+      for (var i = 0; i < measurements.length; i++) {
+        if (measurements[i].showAngles) angleMeasures.push(measurements[i]);
+      }
+      if (angleMeasures.length === 0) { listEl.innerHTML = ''; return; }
+
+      var html = '<div class="enable-list-section-label">Angles</div>';
+      for (var mi = 0; mi < angleMeasures.length; mi++) {
+        var measure = angleMeasures[mi];
+        var nums = measurePointNumbers.get(measure);
+        var pts = measure.points;
+        if (!pts || pts.length < 3) {
+          var pName = (nums && nums.length > 0) ? 'D' + nums[0] : '...';
+          html += '<div class="enable-meas-item">' +
+            '<div class="meas-header"><span class="meas-title">' + pName + '... (picking, need 3+)</span></div>' +
+            '</div>';
+          continue;
+        }
+        var firstName = nums && nums.length > 0 ? 'D' + nums[0] : 'D?';
+        var lastName  = nums && nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
+        html += '<div class="enable-meas-item">' +
+          '<div class="meas-header">' +
+          '<span class="meas-title">' + firstName + ' \u2192 ' + lastName + ' (' + pts.length + ' pts)</span>' +
+          '<button class="meas-delete" data-ang-idx="' + mi + '" title="Delete angle">\u00d7</button>' +
+          '</div>';
+        var gChips = '<div class="enable-meas-points">';
+        for (var gci = 0; gci < pts.length; gci++) {
+          var gcName = nums && gci < nums.length ? 'D' + nums[gci] : ('P' + (gci + 1));
+          gChips += '<span class="point-chip">' + gcName +
+            '<button data-pt-list="angle" data-pt-mi="' + mi + '" data-pt-idx="' + gci + '" title="Delete this point">\u00d7</button>' +
+            '</span>';
+        }
+        gChips += '</div>';
+        html += gChips;
+        var lastIdx = pts.length - 1;
+        var loop = !!measure.closed;
+        for (var ai = 0; ai < pts.length; ai++) {
+          if (!loop && (ai === 0 || ai === lastIdx)) continue;
+          var rad = (typeof measure.getAngle === 'function') ? measure.getAngle(ai) : 0;
+          if (!isFinite(rad)) rad = 0;
+          var deg = rad * (180 / Math.PI);
+          var nm = nums && ai < nums.length ? 'D' + nums[ai] : ('P' + (ai + 1));
+          html += '<div class="enable-meas-seg">' +
+            '<span class="seg-name">' + nm + '</span>' +
+            '<span class="seg-vals">' + deg.toFixed(2) + '\u00b0</span>' +
+            '</div>';
+        }
+        html += '</div>';
+      }
+      listEl.innerHTML = html;
+      listEl.querySelectorAll('.meas-delete').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var idx = parseInt(btn.getAttribute('data-ang-idx'));
+          if (angleMeasures[idx]) viewer.scene.removeMeasurement(angleMeasures[idx]);
+        });
+      });
+      listEl.querySelectorAll('.point-chip button').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var mi = parseInt(btn.getAttribute('data-pt-mi'));
+          var pi = parseInt(btn.getAttribute('data-pt-idx'));
+          if (angleMeasures[mi]) deleteMeasurementPoint(angleMeasures[mi], pi);
+        });
+      });
+    }
+
+    // ===== VOLUME LIST =====
+    function rebuildVolumeList() {
+      var listEl = document.getElementById('enable-volume-list');
+      if (!listEl) return;
+      var allVolumes = (viewer.scene.volumes || []);
+      var userVolumes = [];
+      for (var i = 0; i < allVolumes.length; i++) {
+        if (isUserVolumeMeasurement(allVolumes[i])) userVolumes.push(allVolumes[i]);
+      }
+      if (userVolumes.length === 0) { listEl.innerHTML = ''; return; }
+
+      var html = '<div class="enable-list-section-label">Volumes</div>';
+      for (var vi = 0; vi < userVolumes.length; vi++) {
+        var vol = userVolumes[vi];
+        var name = vol.name || ('Volume ' + (vi + 1));
+        var sx = Math.abs(vol.scale.x), sy = Math.abs(vol.scale.y), sz = Math.abs(vol.scale.z);
+        var v3 = (typeof vol.getVolume === 'function') ? vol.getVolume() : (sx * sy * sz);
+        html += '<div class="enable-meas-item">' +
+          '<div class="meas-header">' +
+          '<span class="meas-title">' + name + '</span>' +
+          '<button class="meas-delete" data-vol-idx="' + vi + '" title="Delete volume">\u00d7</button>' +
+          '</div>' +
+          '<div class="enable-meas-seg">' +
+            '<span class="seg-name">Volume</span>' +
+            '<span class="seg-vals">' + v3.toFixed(3) + ' m\u00b3</span>' +
+          '</div>' +
+          '<div class="enable-meas-seg">' +
+            '<span class="seg-name">Size</span>' +
+            '<span class="seg-vals">' + sx.toFixed(3) + ' \u00d7 ' + sy.toFixed(3) + ' \u00d7 ' + sz.toFixed(3) + ' m</span>' +
+          '</div>' +
+          '</div>';
+      }
+      listEl.innerHTML = html;
+      listEl.querySelectorAll('.meas-delete').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var idx = parseInt(btn.getAttribute('data-vol-idx'));
+          if (userVolumes[idx]) viewer.scene.removeVolume(userVolumes[idx]);
+        });
+      });
     }
 
     // ===== EXPORT ALL MEASUREMENTS TO TXT =====
     function exportAllMeasurements() {
       var measurements = viewer.scene.measurements || [];
-      var distMeasures = [];
+      var distMeasures = [], areaMeasures = [], angleMeasures = [];
       for (var i = 0; i < measurements.length; i++) {
         var m = measurements[i];
-        if (m.showDistances && !m.showArea && !m.showAngles && m.points.length >= 2) {
-          distMeasures.push(m);
-        }
+        if (m.showArea && m.points.length >= 3) areaMeasures.push(m);
+        else if (m.showAngles && m.points.length >= 3) angleMeasures.push(m);
+        else if ((m.showDistances || m.showHeight) && m.points.length >= 2) distMeasures.push(m);
       }
-      if (distMeasures.length === 0) { showToast('No measurements to export'); return; }
+      var allVolumes = (viewer.scene.volumes || []);
+      var userVolumes = [];
+      for (var vi = 0; vi < allVolumes.length; vi++) {
+        if (isUserVolumeMeasurement(allVolumes[vi])) userVolumes.push(allVolumes[vi]);
+      }
+      var totalCount = distMeasures.length + areaMeasures.length + angleMeasures.length + userVolumes.length;
+      if (totalCount === 0) { showToast('No measurements to export'); return; }
 
       var lines = [];
       lines.push('Measurements Export');
-      lines.push('Total measurements: ' + distMeasures.length);
+      lines.push('Distances/Heights: ' + distMeasures.length + ' | Areas: ' + areaMeasures.length +
+                 ' | Angles: ' + angleMeasures.length + ' | Volumes: ' + userVolumes.length);
       lines.push('');
 
       for (var mi = 0; mi < distMeasures.length; mi++) {
         var measure = distMeasures[mi];
         var nums = measurePointNumbers.get(measure) || [];
         var pts = measure.points;
+        var isHeight = measure.showHeight && !measure.showDistances;
+        var typeLabel = isHeight ? ' [Vertical]' : '';
 
         var firstName = nums.length > 0 ? 'D' + nums[0] : 'D?';
         var lastName = nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
-        lines.push('=== Measurement ' + (mi + 1) + ': ' + firstName + ' -> ' + lastName + ' ===');
+        lines.push('=== Measurement ' + (mi + 1) + typeLabel + ': ' + firstName + ' -> ' + lastName + ' ===');
         lines.push('');
 
         lines.push('Point Coordinates:');
@@ -2814,10 +3245,83 @@
           total3D += d3d; totalXY += dxy; totalZ += absZ;
           var sn1 = si < nums.length ? 'D' + nums[si] : 'D?';
           var sn2 = (si + 1) < nums.length ? 'D' + nums[si + 1] : 'D?';
-          lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + d3d.toFixed(3) + '  XY: ' + dxy.toFixed(3) + '  Z: ' + absZ.toFixed(3) + ' ' + zSign);
+          if (isHeight) {
+            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  Vertical: ' + absZ.toFixed(3) + ' ' + zSign);
+          } else {
+            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + d3d.toFixed(3) + '  XY: ' + dxy.toFixed(3) + '  Z: ' + absZ.toFixed(3) + ' ' + zSign);
+          }
         }
         lines.push('');
-        lines.push('Totals:  3D: ' + total3D.toFixed(3) + '  XY: ' + totalXY.toFixed(3) + '  Z: ' + totalZ.toFixed(3));
+        if (isHeight) {
+          lines.push('Totals:  Vertical: ' + totalZ.toFixed(3));
+        } else {
+          lines.push('Totals:  3D: ' + total3D.toFixed(3) + '  XY: ' + totalXY.toFixed(3) + '  Z: ' + totalZ.toFixed(3));
+        }
+        lines.push('');
+      }
+
+      // Areas
+      for (var ai = 0; ai < areaMeasures.length; ai++) {
+        var measure = areaMeasures[ai];
+        var nums = measurePointNumbers.get(measure) || [];
+        var pts = measure.points;
+        var firstName = nums.length > 0 ? 'D' + nums[0] : 'D?';
+        var lastName = nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
+        lines.push('=== Area ' + (ai + 1) + ': ' + firstName + ' -> ' + lastName + ' (' + pts.length + ' pts) ===');
+        lines.push('');
+        lines.push('Point Coordinates:');
+        for (var pi = 0; pi < pts.length; pi++) {
+          var p = pts[pi].position ? pts[pi].position : pts[pi];
+          var pn = pi < nums.length ? 'D' + nums[pi] : 'D?';
+          lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
+        }
+        var area3D = compute3DPolygonArea(pts);
+        var areaXY = (typeof measure.getArea === 'function') ? measure.getArea() : 0;
+        var perim = 0;
+        for (var pj = 0; pj < pts.length; pj++) {
+          var ap = pts[pj].position ? pts[pj].position : pts[pj];
+          var bp = pts[(pj + 1) % pts.length].position ? pts[(pj + 1) % pts.length].position : pts[(pj + 1) % pts.length];
+          perim += Math.sqrt((bp.x - ap.x) * (bp.x - ap.x) + (bp.y - ap.y) * (bp.y - ap.y) + (bp.z - ap.z) * (bp.z - ap.z));
+        }
+        lines.push('');
+        lines.push('Surface area (3D): ' + area3D.toFixed(3) + ' m^2');
+        lines.push('Plan area (XY):    ' + areaXY.toFixed(3) + ' m^2');
+        lines.push('Perimeter:         ' + perim.toFixed(3) + ' m');
+        lines.push('');
+      }
+
+      // Angles
+      for (var gi = 0; gi < angleMeasures.length; gi++) {
+        var measure = angleMeasures[gi];
+        var nums = measurePointNumbers.get(measure) || [];
+        var pts = measure.points;
+        var firstName = nums.length > 0 ? 'D' + nums[0] : 'D?';
+        var lastName = nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
+        lines.push('=== Angle ' + (gi + 1) + ': ' + firstName + ' -> ' + lastName + ' (' + pts.length + ' pts) ===');
+        lines.push('');
+        var lastIdx = pts.length - 1;
+        var loop = !!measure.closed;
+        for (var aii = 0; aii < pts.length; aii++) {
+          if (!loop && (aii === 0 || aii === lastIdx)) continue;
+          var rad = (typeof measure.getAngle === 'function') ? measure.getAngle(aii) : 0;
+          if (!isFinite(rad)) rad = 0;
+          var deg = rad * (180 / Math.PI);
+          var nm = nums && aii < nums.length ? 'D' + nums[aii] : ('P' + (aii + 1));
+          lines.push('  ' + nm + ': ' + deg.toFixed(2) + ' deg');
+        }
+        lines.push('');
+      }
+
+      // Volumes
+      for (var vi2 = 0; vi2 < userVolumes.length; vi2++) {
+        var vol = userVolumes[vi2];
+        var name = vol.name || ('Volume ' + (vi2 + 1));
+        var sx = Math.abs(vol.scale.x), sy = Math.abs(vol.scale.y), sz = Math.abs(vol.scale.z);
+        var v3 = (typeof vol.getVolume === 'function') ? vol.getVolume() : (sx * sy * sz);
+        lines.push('=== Volume ' + (vi2 + 1) + ': ' + name + ' ===');
+        lines.push('  Volume: ' + v3.toFixed(3) + ' m^3');
+        lines.push('  Size:   ' + sx.toFixed(3) + ' x ' + sy.toFixed(3) + ' x ' + sz.toFixed(3) + ' m');
+        lines.push('  Center: X=' + vol.position.x.toFixed(4) + ', Y=' + vol.position.y.toFixed(4) + ', Z=' + vol.position.z.toFixed(4));
         lines.push('');
       }
 
@@ -2831,7 +3335,7 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast('Exported ' + distMeasures.length + ' measurement(s) to .txt');
+      showToast('Exported ' + totalCount + ' measurement(s) to .txt');
     }
 
     // ===== SAVE / LOAD SESSION =====
@@ -2885,14 +3389,19 @@
           var allMeas = viewer.scene.measurements || [];
           for (var i = 0; i < allMeas.length; i++) {
             var m = allMeas[i];
-            if (!m.showDistances || m.showArea || m.showAngles) continue;
+            if (!(m.showDistances || m.showHeight) || m.showArea || m.showAngles) continue;
             var pts = [];
             for (var j = 0; j < m.points.length; j++) {
               var p = m.points[j].position || m.points[j];
               pts.push(v3toObj(p));
             }
             var nums = measurePointNumbers.get(m) || [];
-            arr.push({ points: pts, pointNumbers: nums.slice() });
+            arr.push({
+              points: pts,
+              pointNumbers: nums.slice(),
+              showDistances: !!m.showDistances,
+              showHeight: !!m.showHeight
+            });
           }
           return arr;
         })(),
@@ -3025,7 +3534,11 @@
           var sm2 = data.measurements[mi2];
           if (!sm2.points || sm2.points.length < 2) continue;
           var measure = new Potree.Measure();
-          measure.showDistances = true;
+          // Default to a distance measurement; honor saved type if present
+          var savedShowH = !!sm2.showHeight;
+          var savedShowD = sm2.showDistances !== false && !savedShowH;
+          measure.showDistances = savedShowD;
+          measure.showHeight = savedShowH;
           measure.showArea = false;
           measure.showAngles = false;
           measure.closed = false;
@@ -3041,7 +3554,7 @@
           }
         }
       }
-      rebuildMeasurementList();
+      rebuildAllMeasurementLists();
 
       // Restore marks
       if (data.marks) {
@@ -5272,6 +5785,9 @@
         createGroup('measurements', 'Measurements', true) +
           '<div id="enable-meas-tools-slot"></div>' +  // Potree measurement tool buttons moved here
           '<div id="enable-measurement-list"></div>' +
+          '<div id="enable-area-list"></div>' +
+          '<div id="enable-angle-list"></div>' +
+          '<div id="enable-volume-list"></div>' +
           '<div id="enable-measurement-buttons-export">' +
             '<button id="btn-export-measurements" title="Export all measurements to .txt">Export Measurements (.txt)</button>' +
           '</div>' +
@@ -5318,7 +5834,7 @@
           '</div>' +
           '<div class="enable-subsection-label" style="margin-top:10px">Exclusion Zones</div>' +
           '<div id="enable-exclusion-buttons">' +
-            '<button id="btn-add-exclusion" title="Add an exclusion zone" style="display:none">Add Exclusion</button>' +
+            '<button id="btn-add-exclusion" title="Add an exclusion zone">Add Exclusion</button>' +
             '<button id="btn-clear-exclusions" title="Clear all exclusion zones" style="display:none">Clear All</button>' +
             '<button id="btn-hide-exclusion-outlines" title="Show/hide exclusion box outlines" style="display:none">Hide Boxes</button>' +
           '</div>' +
@@ -5890,18 +6406,31 @@
       // Undo
       if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
 
-      // Enter finalizes fit-plane mode
-      if (ev.key === 'Enter' && constraintPickMode && constraintPickType === 'fit-plane') {
-        ev.preventDefault();
-        finalizeConstraint();
+      // Enter: finalize fit-plane (when in that mode), otherwise restart
+      // the last measurement/volume tool used (skip when typing in inputs).
+      if (ev.key === 'Enter') {
+        if (constraintPickMode && constraintPickType === 'fit-plane') {
+          ev.preventDefault();
+          finalizeConstraint();
+        } else {
+          var t = ev.target;
+          var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+          if (!typing && !constraintPickMode && !memberPickMode && !MARK_MODE && !pendingMeasurement) {
+            if (restartLastMeasurementTool()) {
+              ev.preventDefault();
+            }
+          }
+        }
       }
 
       if (ev.key === 'Escape') {
         if (constraintPickMode) cancelConstraintPick();
         else if (memberPickMode) cancelMemberPick();
         else if (MARK_MODE) toggleMarkMode(true);
-        // Cancel any active Potree measurement insertion
-        viewer.dispatchEvent({ type: 'cancel_insertions' });
+        // Hard-cancel any active Potree measurement insertion: dispatches
+        // cancel_insertions, stops the InputHandler drag, and removes any
+        // orphan measurement that has fewer than the required points.
+        cancelPotreeInsertion();
       }
     });
   })();

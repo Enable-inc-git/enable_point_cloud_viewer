@@ -24,7 +24,9 @@
       "Bash(start chrome *)",
       "Bash(C:/PotreeTools/PotreeConverter_1.7_windows_x64/PotreeConverter.exe *)",
       "Bash(cp \"site/clients/Pomerleau/viewer.html\" \"site/clients/WJ Properties/viewer.html\")",
-      "Bash(cp \"site/clients/Solar Restoration/custom.css\" \"site/clients/WJ Properties/custom.css\")"
+      "Bash(cp \"site/clients/Solar Restoration/custom.css\" \"site/clients/WJ Properties/custom.css\")",
+      "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/WJ Properties/viewer.html\")",
+      "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/Pomerleau/viewer.html\")"
     ]
   }
 }
