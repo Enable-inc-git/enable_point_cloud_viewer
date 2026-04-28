@@ -4638,11 +4638,27 @@
         var tol = (cfg.mode === 'thickness')
           ? 0.10  // 100mm — generous for slab top-surface variation
           : (cfg.zMax - cfg.zMin) * 0.10;
-        list.push({
+        // Hoist per-box mode constants once so the per-point loops in
+        // applyElevationColors / colorNodeByElevation don't re-resolve
+        // them N times.
+        var entry = {
           invMat: new THREE.Matrix4().copy(vol.matrixWorld).invert(),
           cfg: cfg,
-          tolerance: tol
-        });
+          tolerance: tol,
+          mode: cfg.mode || 'z'
+        };
+        if (entry.mode === 'plane' && cfg.refPlane) {
+          entry.pNx = cfg.refPlane.normal.x;
+          entry.pNy = cfg.refPlane.normal.y;
+          entry.pNz = cfg.refPlane.normal.z;
+          entry.pCx = cfg.refPlane.centroid.x;
+          entry.pCy = cfg.refPlane.centroid.y;
+          entry.pCz = cfg.refPlane.centroid.z;
+          entry.pSide = cfg.refSide || 1;
+        } else if (entry.mode !== 'thickness') {
+          entry.zBaseZ = getZBaseZ(cfg);
+        }
+        list.push(entry);
       }
       return list;
     }
@@ -4705,15 +4721,13 @@
             }
           } else {
             var cfg2 = hitBox.cfg;
-            var elev = null;
-            if (cfg2.mode === 'plane' && cfg2.refPlane) {
-              var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
-              var s1 = cfg2.refSide || 1;
-              elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
-            } else if (cfg2.mode === 'thickness') {
+            var elev;
+            if (hitBox.mode === 'plane') {
+              elev = ((px - hitBox.pCx) * hitBox.pNx + (py - hitBox.pCy) * hitBox.pNy + (pz - hitBox.pCz) * hitBox.pNz) * hitBox.pSide;
+            } else if (hitBox.mode === 'thickness') {
               elev = getThicknessForPoint(px, py, pz, cfg2.thicknessGrid);
             } else {
-              elev = pz - getZBaseZ(cfg2);
+              elev = pz - hitBox.zBaseZ;
             }
             if (elev === null) {
               // Thickness lookup said this point isn't on the slab — restore original
@@ -4796,15 +4810,13 @@
 
         if (keep) {
           var cfg2 = hitBox.cfg;
-          var elev = null;
-          if (cfg2.mode === 'plane' && cfg2.refPlane) {
-            var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
-            var s1 = cfg2.refSide || 1;
-            elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
-          } else if (cfg2.mode === 'thickness') {
+          var elev;
+          if (hitBox.mode === 'plane') {
+            elev = ((px - hitBox.pCx) * hitBox.pNx + (py - hitBox.pCy) * hitBox.pNy + (pz - hitBox.pCz) * hitBox.pNz) * hitBox.pSide;
+          } else if (hitBox.mode === 'thickness') {
             elev = getThicknessForPoint(px, py, pz, cfg2.thicknessGrid);
           } else {
-            elev = pz - getZBaseZ(cfg2);
+            elev = pz - hitBox.zBaseZ;
           }
           if (elev === null) {
             keep = false;
@@ -6278,14 +6290,30 @@
         setComputeProgress('Building surface grid (' + data.count.toLocaleString() + ' pts)...');
         return _yieldToPaint().then(function() { return data; });
       }).then(function (data) {
-        // Build this box's surface grid using only points INSIDE this box (OBB)
+        // Build this box's surface grid using only points INSIDE this box (OBB).
+        // For Z mode the surface grid is fused into Pass A below — we walk the
+        // points only twice total (range/count/grid in Pass A, top-surface
+        // refine in Pass B) instead of the previous four times.
         var v = new THREE.Vector3();
         var count = data.count;
-        // Thickness mode: build BOTH the regular top-surface grid (so the
-        // apply loop's existing top-surface filter colors only top-surface
-        // points, exactly like Z mode does) AND the thickness grid (for the
-        // per-cell thickness VALUE). Coverage will mirror Z mode's coverage.
-        if (selCfg.mode === 'thickness') {
+
+        // Hoist mode-specific elev constants once. Avoids per-point function
+        // calls (getZBaseZ linearly searched markedPoints) and per-point
+        // property lookups (refPlane.normal.x, etc.) inside the inner loops.
+        var modeIsThickness = (selCfg.mode === 'thickness');
+        var modeIsPlane = (selCfg.mode === 'plane' && !!selCfg.refPlane);
+        var zBaseZ = 0;
+        var pNx, pNy, pNz, pCx, pCy, pCz, pSide;
+        if (modeIsPlane) {
+          pNx = selCfg.refPlane.normal.x; pNy = selCfg.refPlane.normal.y; pNz = selCfg.refPlane.normal.z;
+          pCx = selCfg.refPlane.centroid.x; pCy = selCfg.refPlane.centroid.y; pCz = selCfg.refPlane.centroid.z;
+          pSide = selCfg.refSide || 1;
+        } else if (!modeIsThickness) {
+          zBaseZ = getZBaseZ(selCfg);
+        }
+
+        // Allocate auxiliary grids. Z-mode surfaceGrid is filled inline in Pass A.
+        if (modeIsThickness) {
           setComputeProgress('Computing slab thickness grid...');
           selCfg.surfaceGrid = buildSurfaceGrid(elevationPositions, boxBounds, 200);
           selCfg.planeSurfGrid = null;
@@ -6301,32 +6329,40 @@
               minComponentArea: 0.1
             }
           );
-        } else if (selCfg.mode === 'plane' && selCfg.refPlane) {
+        } else if (modeIsPlane) {
           selCfg.surfaceGrid = null;
           selCfg.planeSurfGrid = buildPlaneSurfaceGrid(
             elevationPositions, boxBounds, 200, selCfg.refPlane, selCfg.refSide);
           selCfg.thicknessGrid = null;
         } else {
-          selCfg.surfaceGrid = buildSurfaceGrid(elevationPositions, boxBounds, 200);
+          // Pre-allocate the Z surface grid; Pass A populates it inline.
+          var _gxMin = boxBounds.min[0], _gxMax = boxBounds.max[0];
+          var _gyMin = boxBounds.min[1], _gyMax = boxBounds.max[1];
+          var _gxRange = _gxMax - _gxMin, _gyRange = _gyMax - _gyMin;
+          if (_gxRange < 1e-6 || _gyRange < 1e-6) {
+            selCfg.surfaceGrid = null;
+          } else {
+            var _gridRes = 200;
+            var _maxZ = new Float32Array(_gridRes * _gridRes);
+            for (var _ii = 0; _ii < _maxZ.length; _ii++) _maxZ[_ii] = -Infinity;
+            selCfg.surfaceGrid = {
+              maxZ: _maxZ, gridRes: _gridRes,
+              xMin: _gxMin, yMin: _gyMin,
+              cellX: _gxRange / _gridRes, cellY: _gyRange / _gridRes
+            };
+          }
           selCfg.planeSurfGrid = null;
           selCfg.thicknessGrid = null;
         }
 
-        // Compute this box's min/max from top-surface points inside its OBB
+        // Pass A — fused: range scan (OBB), count points inside (OBB), and
+        // for Z mode also build the surface grid (AABB filter) in the same
+        // walk over the points.
         var rawZMin = Infinity, rawZMax = -Infinity;
         var zMin = Infinity, zMax = -Infinity;
-        function elevFor(px, py, pz) {
-          if (selCfg.mode === 'plane' && selCfg.refPlane) {
-            var n = selCfg.refPlane.normal, c = selCfg.refPlane.centroid;
-            var s = selCfg.refSide || 1;
-            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
-          }
-          if (selCfg.mode === 'thickness') {
-            return getThicknessForPoint(px, py, pz, selCfg.thicknessGrid);
-          }
-          return pz - getZBaseZ(selCfg);
-        }
-        if (selCfg.mode === 'thickness') {
+        var countInside = 0;
+
+        if (modeIsThickness) {
           // Range comes directly from the thickness grid's valid cells.
           var tg = selCfg.thicknessGrid;
           if (tg) {
@@ -6338,38 +6374,84 @@
               if (t > zMax) zMax = t;
             }
           }
-        } else {
+          // Still need countInside for the status string.
           for (var i = 0; i < count; i++) {
             var px = elevationPositions[i * 3];
             var py = elevationPositions[i * 3 + 1];
             var pz = elevationPositions[i * 3 + 2];
             v.set(px, py, pz).applyMatrix4(boxInv);
+            if (v.x >= -0.5 && v.x <= 0.5 && v.y >= -0.5 && v.y <= 0.5 && v.z >= -0.5 && v.z <= 0.5) countInside++;
+          }
+        } else {
+          var sg = selCfg.surfaceGrid;
+          var sgMaxZ = sg ? sg.maxZ : null;
+          var sgRes = sg ? sg.gridRes : 0;
+          var sgXMin = sg ? sg.xMin : 0, sgYMin = sg ? sg.yMin : 0;
+          var sgCellX = sg ? sg.cellX : 1, sgCellY = sg ? sg.cellY : 1;
+          var bbMinX = boxBounds.min[0], bbMinY = boxBounds.min[1], bbMinZ = boxBounds.min[2];
+          var bbMaxX = boxBounds.max[0], bbMaxY = boxBounds.max[1], bbMaxZ = boxBounds.max[2];
+
+          for (var i = 0; i < count; i++) {
+            var px = elevationPositions[i * 3];
+            var py = elevationPositions[i * 3 + 1];
+            var pz = elevationPositions[i * 3 + 2];
+
+            // Z-mode surface grid: AABB filter, populate maxZ inline.
+            if (sgMaxZ &&
+                px >= bbMinX && px <= bbMaxX &&
+                py >= bbMinY && py <= bbMaxY &&
+                pz >= bbMinZ && pz <= bbMaxZ) {
+              var ix = Math.floor((px - sgXMin) / sgCellX);
+              var iy = Math.floor((py - sgYMin) / sgCellY);
+              if (ix >= sgRes) ix = sgRes - 1; else if (ix < 0) ix = 0;
+              if (iy >= sgRes) iy = sgRes - 1; else if (iy < 0) iy = 0;
+              var idx = iy * sgRes + ix;
+              if (pz > sgMaxZ[idx]) sgMaxZ[idx] = pz;
+            }
+
+            // OBB filter for range scan + count.
+            v.set(px, py, pz).applyMatrix4(boxInv);
             if (v.x < -0.5 || v.x > 0.5 || v.y < -0.5 || v.y > 0.5 || v.z < -0.5 || v.z > 0.5) continue;
+
+            countInside++;
             if (pz < rawZMin) rawZMin = pz;
             if (pz > rawZMax) rawZMax = pz;
-            var e = elevFor(px, py, pz);
+
+            var e = modeIsPlane
+              ? ((px - pCx) * pNx + (py - pCy) * pNy + (pz - pCz) * pNz) * pSide
+              : (pz - zBaseZ);
             if (e < zMin) zMin = e;
             if (e > zMax) zMax = e;
           }
         }
-        // Refine to top-surface points only
+
+        // Pass B — refine range to top-surface points only.
         if (selCfg.surfaceGrid || selCfg.planeSurfGrid) {
           var range = zMax - zMin;
           var tol = range > 0 ? range * 0.10 : (rawZMax - rawZMin) * 0.10;
           var tsMin = Infinity, tsMax = -Infinity;
+          var planeGrid = selCfg.planeSurfGrid, zGrid = selCfg.surfaceGrid;
+          var thickGrid = selCfg.thicknessGrid;
           for (var i = 0; i < count; i++) {
             var px = elevationPositions[i * 3];
             var py = elevationPositions[i * 3 + 1];
             var pz = elevationPositions[i * 3 + 2];
             v.set(px, py, pz).applyMatrix4(boxInv);
             if (v.x < -0.5 || v.x > 0.5 || v.y < -0.5 || v.y > 0.5 || v.z < -0.5 || v.z > 0.5) continue;
-            if (selCfg.planeSurfGrid) {
-              if (!isPlaneTopSurface(px, py, pz, selCfg.planeSurfGrid, tol)) continue;
-            } else if (selCfg.surfaceGrid) {
-              if (!isTopSurface(px, py, pz, selCfg.surfaceGrid, tol)) continue;
+            if (planeGrid) {
+              if (!isPlaneTopSurface(px, py, pz, planeGrid, tol)) continue;
+            } else if (zGrid) {
+              if (!isTopSurface(px, py, pz, zGrid, tol)) continue;
             }
-            var e = elevFor(px, py, pz);
-            if (e === null) continue;
+            var e;
+            if (modeIsPlane) {
+              e = ((px - pCx) * pNx + (py - pCy) * pNy + (pz - pCz) * pNz) * pSide;
+            } else if (modeIsThickness) {
+              e = getThicknessForPoint(px, py, pz, thickGrid);
+              if (e === null) continue;
+            } else {
+              e = pz - zBaseZ;
+            }
             if (e < tsMin) tsMin = e;
             if (e > tsMax) tsMax = e;
           }
@@ -6432,16 +6514,6 @@
           }
           walk(pc.pcoGeometry.root);
         })();
-
-        // Count points inside this box
-        var countInside = 0;
-        for (var i = 0; i < count; i++) {
-          var px = elevationPositions[i * 3];
-          var py = elevationPositions[i * 3 + 1];
-          var pz = elevationPositions[i * 3 + 2];
-          v.set(px, py, pz).applyMatrix4(boxInv);
-          if (v.x >= -0.5 && v.x <= 0.5 && v.y >= -0.5 && v.y <= 0.5 && v.z >= -0.5 && v.z <= 0.5) countInside++;
-        }
 
         var rangeLabel = selCfg.mode === 'plane' ? 'Deviation' :
                          (selCfg.mode === 'thickness' ? 'Thickness' : 'Z');
