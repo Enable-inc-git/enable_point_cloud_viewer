@@ -1126,6 +1126,11 @@
           refSide: 1,
           sideSet: false,
           zBaseMarkId: null,      // Z-mode only: id of mark used as Z=0 reference
+          // Thickness-mode parameters
+          thicknessExpectedMin: 0.10, // m — flag voids/openings below this
+          thicknessExpectedMax: 0.60, // m — reject columns/capitals above this
+          thicknessGapTol: 0.025,     // m — air-gap break for fixture rejection
+          thicknessGrid: null,        // built per-compute, persistent until clear
           zMin: null,   // null = auto-detect
           zMax: null,
           contourStep: 0.05,
@@ -1417,6 +1422,392 @@
       } else {
         return nDist <= surfDist + tolerance;
       }
+    }
+
+    // ===== THICKNESS GRID (slab thickness heatmap) =====
+    // Build a 2D grid of slab thickness over a box. Memory-conscious: typed
+    // arrays throughout, all temp buffers freed before return; persistent
+    // output is ~520 KB at gridRes=200 (5 Float32/Uint8 grids).
+    //
+    // Algorithm passes (per docs):
+    //   A: Top-surface band detection per cell (densest contiguous bins
+    //      starting from highest depth bin)
+    //   B: Downward region-grow to find slab bottom, stopping at first gap
+    //      larger than gapTolerance — ignores air-gapped fixtures
+    //   C: Sanity filter — reject cells outside [expectedMin, expectedMax]
+    //   D: 3×3 median filter — kill isolated outliers
+    //   E: Connected-component footprint — reject "fat" components below
+    //      minComponentArea (handles flush-mounted small fixtures)
+    function buildThicknessGrid(positions, count, boxInv, refPlane, refSide, opts) {
+      opts = opts || {};
+      var gridRes        = opts.gridRes        || 100;
+      var binSize        = opts.binSize        || 0.005;
+      var gapTol         = opts.gapTolerance   || 0.025;
+      var expectedMin    = opts.expectedMin    || 0.05;
+      var expectedMax    = opts.expectedMax    || 1.0;
+      var minCellPoints  = opts.minCellPoints  || 3;
+      var minComponentM2 = opts.minComponentArea || 0.1;
+
+      // Build U, V, N basis. With a refPlane the slab is measured along that
+      // plane's normal; without one we fall back to world Z (good for level
+      // slabs in surveyed clouds).
+      var U, V, N, C;
+      if (refPlane) {
+        N = refPlane.normal.clone();
+        if (refSide && refSide < 0) N.negate();
+        var worldUp = Math.abs(N.y) < 0.9 ? new THREE.Vector3(0, 1, 0)
+                                          : new THREE.Vector3(1, 0, 0);
+        U = new THREE.Vector3().crossVectors(worldUp, N).normalize();
+        V = new THREE.Vector3().crossVectors(N, U).normalize();
+        C = refPlane.centroid.clone();
+      } else {
+        U = new THREE.Vector3(1, 0, 0);
+        V = new THREE.Vector3(0, 1, 0);
+        N = new THREE.Vector3(0, 0, 1);
+        C = new THREE.Vector3(0, 0, 0);
+      }
+
+      var v3 = new THREE.Vector3();
+
+      // Pass 1 — scan in-box points; find UV / depth ranges and per-cell
+      // counts in a single iteration.
+      var uMin = Infinity, uMax = -Infinity;
+      var vMin = Infinity, vMax = -Infinity;
+      var dMin = Infinity, dMax = -Infinity;
+      var inBoxTotal = 0;
+      // First a pre-scan to find UV ranges (we need them before bucketing)
+      for (var i = 0; i < count; i++) {
+        var px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+        v3.set(px, py, pz).applyMatrix4(boxInv);
+        if (v3.x < -0.5 || v3.x > 0.5 || v3.y < -0.5 || v3.y > 0.5 || v3.z < -0.5 || v3.z > 0.5) continue;
+        var dx = px - C.x, dy = py - C.y, dz = pz - C.z;
+        var u = dx * U.x + dy * U.y + dz * U.z;
+        var vv = dx * V.x + dy * V.y + dz * V.z;
+        var d = dx * N.x + dy * N.y + dz * N.z;
+        if (u < uMin) uMin = u; if (u > uMax) uMax = u;
+        if (vv < vMin) vMin = vv; if (vv > vMax) vMax = vv;
+        if (d < dMin) dMin = d; if (d > dMax) dMax = d;
+        inBoxTotal++;
+      }
+      if (inBoxTotal === 0 || uMax - uMin < 1e-6 || vMax - vMin < 1e-6) return null;
+
+      var uRange = uMax - uMin, vRange = vMax - vMin;
+      var cellU = uRange / gridRes, cellV = vRange / gridRes;
+
+      // Pass 2 — count per cell
+      var cellCount = new Uint32Array(gridRes * gridRes);
+      for (var i = 0; i < count; i++) {
+        var px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+        v3.set(px, py, pz).applyMatrix4(boxInv);
+        if (v3.x < -0.5 || v3.x > 0.5 || v3.y < -0.5 || v3.y > 0.5 || v3.z < -0.5 || v3.z > 0.5) continue;
+        var dx = px - C.x, dy = py - C.y, dz = pz - C.z;
+        var u = dx * U.x + dy * U.y + dz * U.z;
+        var vv = dx * V.x + dy * V.y + dz * V.z;
+        var iu = Math.floor((u - uMin) / cellU);
+        var iv = Math.floor((vv - vMin) / cellV);
+        if (iu >= gridRes) iu = gridRes - 1; if (iu < 0) iu = 0;
+        if (iv >= gridRes) iv = gridRes - 1; if (iv < 0) iv = 0;
+        cellCount[iv * gridRes + iu]++;
+      }
+
+      // Prefix-sum offsets
+      var nCells = gridRes * gridRes;
+      var cellOffset = new Uint32Array(nCells + 1);
+      var s = 0;
+      for (var i = 0; i < nCells; i++) { cellOffset[i] = s; s += cellCount[i]; }
+      cellOffset[nCells] = s;
+
+      // Pass 3 — fill per-cell depth slices into one packed Float32Array
+      var depths = new Float32Array(s);
+      var cursor = new Uint32Array(nCells);
+      for (var i = 0; i < count; i++) {
+        var px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+        v3.set(px, py, pz).applyMatrix4(boxInv);
+        if (v3.x < -0.5 || v3.x > 0.5 || v3.y < -0.5 || v3.y > 0.5 || v3.z < -0.5 || v3.z > 0.5) continue;
+        var dx = px - C.x, dy = py - C.y, dz = pz - C.z;
+        var u = dx * U.x + dy * U.y + dz * U.z;
+        var vv = dx * V.x + dy * V.y + dz * V.z;
+        var d = dx * N.x + dy * N.y + dz * N.z;
+        var iu = Math.floor((u - uMin) / cellU);
+        var iv = Math.floor((vv - vMin) / cellV);
+        if (iu >= gridRes) iu = gridRes - 1; if (iu < 0) iu = 0;
+        if (iv >= gridRes) iv = gridRes - 1; if (iv < 0) iv = 0;
+        var idx = iv * gridRes + iu;
+        depths[cellOffset[idx] + cursor[idx]] = d;
+        cursor[idx]++;
+      }
+      // Phase 1 — simple per-cell top/bottom from min/max with constraint.
+      // The top surface is "the topmost point in the cell". The bottom is
+      // "the deepest point in [topD - expectedMax, topD - expectedMin]".
+      // This mirrors how Z mode's surfaceGrid works.
+      var topAll      = new Float32Array(nCells);
+      var hasTop      = new Uint8Array(nCells);
+      var bottomAll   = new Float32Array(nCells);
+      var hasBottom   = new Uint8Array(nCells);
+
+      // Also compute a GLOBAL bottom — the deepest depth across the whole
+      // box that's at least expectedMin below dMax and within expectedMax.
+      // We use this as a fallback for hasTop cells that have no local
+      // bottom-scan data, so a single underside-scan-coverage gap doesn't
+      // wipe out the entire heat map.
+      var globalBottomD = Infinity;
+      var globalLowerB = dMax - expectedMax;
+      var globalUpperB = dMax - expectedMin;
+
+      for (var ci = 0; ci < nCells; ci++) {
+        var cnt = cellCount[ci];
+        if (cnt < minCellPoints) continue;
+
+        var off = cellOffset[ci];
+        // Pass A: topD = max depth in cell
+        var localMax = -Infinity;
+        for (var k = 0; k < cnt; k++) {
+          var d = depths[off + k];
+          if (d > localMax) localMax = d;
+        }
+        topAll[ci] = localMax;
+        hasTop[ci] = 1;
+
+        // Pass B: bottomD = min depth in [topD - expectedMax, topD - expectedMin]
+        var bottomThresh = localMax - expectedMin;
+        var farthestThresh = localMax - expectedMax;
+        var localMinBot = Infinity;
+        for (var k = 0; k < cnt; k++) {
+          var d = depths[off + k];
+          if (d > bottomThresh) continue;
+          if (d < farthestThresh) continue;
+          if (d < localMinBot) localMinBot = d;
+          // Track the global slab-bottom too.
+          if (d >= globalLowerB && d <= globalUpperB && d < globalBottomD) {
+            globalBottomD = d;
+          }
+        }
+        if (localMinBot === Infinity) continue;
+        bottomAll[ci] = localMinBot;
+        hasBottom[ci] = 1;
+      }
+
+      // Fallback seeding: any hasTop cell still without a local bottom gets
+      // the global bottom value. Ensures cells in regions with no underside
+      // scan still get a thickness reading (assuming any underside was
+      // scanned anywhere in the box). Per-cell measurements take priority.
+      if (globalBottomD < Infinity) {
+        for (var ci = 0; ci < nCells; ci++) {
+          if (hasTop[ci] && !hasBottom[ci]) {
+            bottomAll[ci] = globalBottomD;
+            hasBottom[ci] = 1;
+          }
+        }
+      }
+
+      depths = null;
+      cellOffset = null;
+      cellCount = null;
+
+      // Phase 2 — bottom-surface infill via iterative neighbor averaging.
+      // The slab underside is mostly continuous, so cells with a top scan
+      // but no detected bottom can borrow a bottom estimate from valid
+      // neighbors. Drop panels and slab steps survive because their cells
+      // have their own measured bottom that overrides the infill.
+      var bottomFilled = new Float32Array(bottomAll);
+      var hasBottomF = new Uint8Array(hasBottom);
+      var pending = new Float32Array(nCells);
+      var pendingMask = new Uint8Array(nCells);
+      var maxIters = Math.max(gridRes, 50); // enough to cross the box
+      for (var iter = 0; iter < maxIters; iter++) {
+        var changed = false;
+        for (var iy = 0; iy < gridRes; iy++) {
+          for (var ix = 0; ix < gridRes; ix++) {
+            var ci = iy * gridRes + ix;
+            if (hasBottomF[ci]) continue;
+            if (!hasTop[ci]) continue; // only fill cells that have a top
+            var sum = 0, n = 0;
+            if (ix > 0)            { var nci = ci - 1;       if (hasBottomF[nci]) { sum += bottomFilled[nci]; n++; } }
+            if (ix < gridRes - 1)  { var nci = ci + 1;       if (hasBottomF[nci]) { sum += bottomFilled[nci]; n++; } }
+            if (iy > 0)            { var nci = ci - gridRes; if (hasBottomF[nci]) { sum += bottomFilled[nci]; n++; } }
+            if (iy < gridRes - 1)  { var nci = ci + gridRes; if (hasBottomF[nci]) { sum += bottomFilled[nci]; n++; } }
+            if (n > 0) {
+              pending[ci] = sum / n;
+              pendingMask[ci] = 1;
+              changed = true;
+            }
+          }
+        }
+        if (!changed) break;
+        for (var i = 0; i < nCells; i++) {
+          if (pendingMask[i]) {
+            bottomFilled[i] = pending[i];
+            hasBottomF[i] = 1;
+            pendingMask[i] = 0;
+          }
+        }
+      }
+      pending = null; pendingMask = null;
+
+      // Phase 3 — Pass C sanity filter on (top, infilled-bottom) pairs.
+      // Free originals once we've used them for infill seeding.
+      var thickness = new Float32Array(nCells);
+      var topD      = new Float32Array(nCells);
+      var bottomD   = new Float32Array(nCells);
+      var valid     = new Uint8Array(nCells);
+      for (var ci = 0; ci < nCells; ci++) {
+        if (!hasTop[ci] || !hasBottomF[ci]) continue;
+        var t = topAll[ci] - bottomFilled[ci];
+        if (t < expectedMin || t > expectedMax) continue;
+        thickness[ci] = t;
+        topD[ci] = topAll[ci];
+        bottomD[ci] = bottomFilled[ci];
+        valid[ci] = 1;
+      }
+      topAll = null; hasTop = null;
+      bottomAll = null; hasBottom = null;
+      bottomFilled = null; hasBottomF = null;
+
+      // Pass D — 3×3 median filter; reject cells differing > 30% from median
+      var thicknessF = new Float32Array(nCells);
+      var validF     = new Uint8Array(nCells);
+      var topF       = new Float32Array(nCells);
+      var botF       = new Float32Array(nCells);
+      var nbrBuf     = new Float32Array(9);
+      for (var iy = 0; iy < gridRes; iy++) {
+        for (var ix = 0; ix < gridRes; ix++) {
+          var ci = iy * gridRes + ix;
+          if (!valid[ci]) continue;
+          var nN = 0;
+          for (var dy = -1; dy <= 1; dy++) {
+            var ny = iy + dy; if (ny < 0 || ny >= gridRes) continue;
+            for (var dx = -1; dx <= 1; dx++) {
+              var nx = ix + dx; if (nx < 0 || nx >= gridRes) continue;
+              var nci = ny * gridRes + nx;
+              if (valid[nci]) nbrBuf[nN++] = thickness[nci];
+            }
+          }
+          if (nN < 3) {
+            // Too few neighbours to validate — keep as-is
+            thicknessF[ci] = thickness[ci];
+            validF[ci] = 1;
+            topF[ci] = topD[ci]; botF[ci] = bottomD[ci];
+            continue;
+          }
+          // Insertion sort on small array
+          for (var ii = 1; ii < nN; ii++) {
+            var x = nbrBuf[ii], jj = ii - 1;
+            while (jj >= 0 && nbrBuf[jj] > x) { nbrBuf[jj + 1] = nbrBuf[jj]; jj--; }
+            nbrBuf[jj + 1] = x;
+          }
+          var med = nbrBuf[nN >> 1];
+          if (med > 0 && Math.abs(thickness[ci] - med) / med <= 0.50) {
+            thicknessF[ci] = thickness[ci];
+            validF[ci] = 1;
+            topF[ci] = topD[ci]; botF[ci] = bottomD[ci];
+          }
+        }
+      }
+      thickness = null; valid = null; topD = null; bottomD = null; nbrBuf = null;
+
+      // Pass E — connected-component footprint rejection.
+      // Find global median of valid cells; mark "fat" cells (> median*1.3),
+      // flood-fill components, drop components below minComponentM2.
+      var sortBuf = [];
+      for (var i = 0; i < nCells; i++) if (validF[i]) sortBuf.push(thicknessF[i]);
+      if (sortBuf.length > 0) {
+        sortBuf.sort(function(a, b) { return a - b; });
+        var medAll = sortBuf[sortBuf.length >> 1];
+        var fatLimit = medAll * 1.30;
+        var cellArea = cellU * cellV;
+        var minCellsKeep = Math.max(2, Math.ceil(minComponentM2 / cellArea));
+
+        var component = new Int32Array(nCells); // 0 = not visited
+        var stack = [];
+        var compId = 1;
+        var compSize = [0]; // index 0 unused
+        for (var iy = 0; iy < gridRes; iy++) {
+          for (var ix = 0; ix < gridRes; ix++) {
+            var ci = iy * gridRes + ix;
+            if (component[ci] !== 0) continue;
+            if (!validF[ci] || thicknessF[ci] <= fatLimit) continue;
+            // Flood fill
+            stack.length = 0;
+            stack.push(ci);
+            component[ci] = compId;
+            var sz = 0;
+            while (stack.length > 0) {
+              var cci = stack.pop();
+              sz++;
+              var cy = (cci / gridRes) | 0;
+              var cx = cci - cy * gridRes;
+              // 4-connected neighbours
+              if (cx > 0) {
+                var nci = cci - 1;
+                if (component[nci] === 0 && validF[nci] && thicknessF[nci] > fatLimit) {
+                  component[nci] = compId; stack.push(nci);
+                }
+              }
+              if (cx < gridRes - 1) {
+                var nci = cci + 1;
+                if (component[nci] === 0 && validF[nci] && thicknessF[nci] > fatLimit) {
+                  component[nci] = compId; stack.push(nci);
+                }
+              }
+              if (cy > 0) {
+                var nci = cci - gridRes;
+                if (component[nci] === 0 && validF[nci] && thicknessF[nci] > fatLimit) {
+                  component[nci] = compId; stack.push(nci);
+                }
+              }
+              if (cy < gridRes - 1) {
+                var nci = cci + gridRes;
+                if (component[nci] === 0 && validF[nci] && thicknessF[nci] > fatLimit) {
+                  component[nci] = compId; stack.push(nci);
+                }
+              }
+            }
+            compSize[compId] = sz;
+            compId++;
+          }
+        }
+        for (var i = 0; i < nCells; i++) {
+          var cid = component[i];
+          if (cid > 0 && compSize[cid] < minCellsKeep) {
+            validF[i] = 0;
+          }
+        }
+        component = null; sortBuf = null;
+      }
+
+      return {
+        grid:     thicknessF,
+        valid:    validF,
+        topD:     topF,
+        bottomD:  botF,
+        gridRes:  gridRes,
+        uMin:     uMin,  vMin: vMin,
+        cellU:    cellU, cellV: cellV,
+        U:        U,     V: V,    N: N,    C: C,
+        binSize:  binSize
+      };
+    }
+
+    // Look up thickness for a world point. Returns the cell's thickness if
+    // valid AND the point is inside the cell's slab band [bottomD, topD]
+    // (with a small tolerance). Returns null otherwise so coloring restores
+    // the original RGB — keeps off-slab points uncolored even when their
+    // (u,v) cell is valid (e.g. a hanger sticking below a real cell).
+    // Look up cell's thickness for a world point. The top-surface filter
+    // (cfg.surfaceGrid) already does the spatial gating in the apply loop,
+    // so we don't need a depth-band check here — we just need the cell's
+    // thickness value to drive the color.
+    function getThicknessForPoint(px, py, pz, tg) {
+      if (!tg) return null;
+      var dx = px - tg.C.x, dy = py - tg.C.y, dz = pz - tg.C.z;
+      var u = dx * tg.U.x + dy * tg.U.y + dz * tg.U.z;
+      var vv = dx * tg.V.x + dy * tg.V.y + dz * tg.V.z;
+      var iu = Math.floor((u - tg.uMin) / tg.cellU);
+      var iv = Math.floor((vv - tg.vMin) / tg.cellV);
+      if (iu < 0 || iu >= tg.gridRes || iv < 0 || iv >= tg.gridRes) return null;
+      var idx = iv * tg.gridRes + iu;
+      if (!tg.valid[idx]) return null;
+      return tg.grid[idx];
     }
 
     // ===== MEASUREMENT POINT LABELS =====
@@ -3669,6 +4060,9 @@
                 refSide: cfg.refSide,
                 sideSet: cfg.sideSet,
                 zBaseMarkId: cfg.zBaseMarkId,
+                thicknessExpectedMin: cfg.thicknessExpectedMin,
+                thicknessExpectedMax: cfg.thicknessExpectedMax,
+                thicknessGapTol: cfg.thicknessGapTol,
                 zMin: cfg.zMin,
                 zMax: cfg.zMax,
                 contourStep: cfg.contourStep,
@@ -3872,6 +4266,9 @@
               cfg.refSide = sv.config.refSide || 1;
               cfg.sideSet = !!sv.config.sideSet;
               cfg.zBaseMarkId = (sv.config.zBaseMarkId != null) ? sv.config.zBaseMarkId : null;
+              if (sv.config.thicknessExpectedMin != null) cfg.thicknessExpectedMin = sv.config.thicknessExpectedMin;
+              if (sv.config.thicknessExpectedMax != null) cfg.thicknessExpectedMax = sv.config.thicknessExpectedMax;
+              if (sv.config.thicknessGapTol != null) cfg.thicknessGapTol = sv.config.thicknessGapTol;
               cfg.zMin = sv.config.zMin;
               cfg.zMax = sv.config.zMax;
               cfg.contourStep = sv.config.contourStep || 0.05;
@@ -4232,10 +4629,19 @@
         if (cfg.heatmapHidden) continue;
         if (cfg.zMin == null || cfg.zMax == null || cfg.zMin >= cfg.zMax) continue;
         vol.updateMatrixWorld(true);
+        // Surface-filter tolerance: Z mode and Plane mode have zMin/zMax in
+        // the same SPATIAL units the surface grid is built in, so 10% of
+        // their range is a sensible tolerance. Thickness mode's zMin/zMax
+        // are THICKNESS values (~10s of cm) and cfg.surfaceGrid is in Z
+        // space, so 10% of thickness range is far too tight (rejects the
+        // whole top surface). Use a fixed slab-friendly Z tolerance instead.
+        var tol = (cfg.mode === 'thickness')
+          ? 0.10  // 100mm — generous for slab top-surface variation
+          : (cfg.zMax - cfg.zMin) * 0.10;
         list.push({
           invMat: new THREE.Matrix4().copy(vol.matrixWorld).invert(),
           cfg: cfg,
-          tolerance: (cfg.zMax - cfg.zMin) * 0.10
+          tolerance: tol
         });
       }
       return list;
@@ -4299,19 +4705,31 @@
             }
           } else {
             var cfg2 = hitBox.cfg;
-            var elev;
+            var elev = null;
             if (cfg2.mode === 'plane' && cfg2.refPlane) {
               var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
               var s1 = cfg2.refSide || 1;
               elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
+            } else if (cfg2.mode === 'thickness') {
+              elev = getThicknessForPoint(px, py, pz, cfg2.thicknessGrid);
             } else {
               elev = pz - getZBaseZ(cfg2);
             }
-            var color = elevationToRGBA(elev, cfg2.zMin, cfg2.zMax);
-            arr[off]     = color[0];
-            arr[off + 1] = color[1];
-            arr[off + 2] = color[2];
-            arr[off + 3] = color[3];
+            if (elev === null) {
+              // Thickness lookup said this point isn't on the slab — restore original
+              if (origArr) {
+                arr[off]     = origArr[off];
+                arr[off + 1] = origArr[off + 1];
+                arr[off + 2] = origArr[off + 2];
+                arr[off + 3] = origArr[off + 3];
+              }
+            } else {
+              var color = elevationToRGBA(elev, cfg2.zMin, cfg2.zMax);
+              arr[off]     = color[0];
+              arr[off + 1] = color[1];
+              arr[off + 2] = color[2];
+              arr[off + 3] = color[3];
+            }
           }
         }
         rgba.needsUpdate = true;
@@ -4378,18 +4796,25 @@
 
         if (keep) {
           var cfg2 = hitBox.cfg;
-          var elev;
+          var elev = null;
           if (cfg2.mode === 'plane' && cfg2.refPlane) {
             var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
             var s1 = cfg2.refSide || 1;
             elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
+          } else if (cfg2.mode === 'thickness') {
+            elev = getThicknessForPoint(px, py, pz, cfg2.thicknessGrid);
           } else {
             elev = pz - getZBaseZ(cfg2);
           }
-          var color = elevationToRGBA(elev, cfg2.zMin, cfg2.zMax);
-          arr[off] = color[0]; arr[off + 1] = color[1];
-          arr[off + 2] = color[2]; arr[off + 3] = color[3];
-        } else if (origArr) {
+          if (elev === null) {
+            keep = false;
+          } else {
+            var color = elevationToRGBA(elev, cfg2.zMin, cfg2.zMax);
+            arr[off] = color[0]; arr[off + 1] = color[1];
+            arr[off + 2] = color[2]; arr[off + 3] = color[3];
+          }
+        }
+        if (!keep && origArr) {
           arr[off] = origArr[off]; arr[off + 1] = origArr[off + 1];
           arr[off + 2] = origArr[off + 2]; arr[off + 3] = origArr[off + 3];
         }
@@ -4774,6 +5199,10 @@
           var nn = refPlane.normal, cc = refPlane.centroid;
           var ss = refSide || 1;
           elevVal = ((px - cc.x) * nn.x + (py - cc.y) * nn.y + (pz - cc.z) * nn.z) * ss;
+        } else if (mode === 'thickness' && boxCfg && boxCfg.thicknessGrid) {
+          var tval = getThicknessForPoint(px, py, pz, boxCfg.thicknessGrid);
+          if (tval === null) continue;
+          elevVal = tval;
         } else {
           elevVal = pz - (boxCfg ? getZBaseZ(boxCfg) : 0);
         }
@@ -5418,7 +5847,7 @@
           modeRow.innerHTML = '<span style="min-width:40px">Mode:</span>';
           var modeSelect = document.createElement('select');
           modeSelect.style.cssText = 'flex:1;padding:2px 4px;border:1px solid var(--border,#333);border-radius:3px;background:var(--panel-bg,#6b6b6b);color:var(--sidebar-text,#fbfbfb);font:11px sans-serif';
-          modeSelect.innerHTML = '<option value="z">Z Elevation</option><option value="plane">Plane Deviation</option>';
+          modeSelect.innerHTML = '<option value="z">Z Elevation</option><option value="plane">Plane Deviation</option><option value="thickness">Thickness</option>';
           modeSelect.value = cfg.mode;
           modeSelect.addEventListener('change', function() {
             cfg.mode = modeSelect.value;
@@ -5469,6 +5898,85 @@
             zbRow.appendChild(zbPickBtn);
             zbRow.appendChild(zbClearBtn);
             panel.appendChild(zbRow);
+          }
+
+          // Thickness-mode settings: optional reference plane, expected min/max
+          if (cfg.mode === 'thickness') {
+            var inputStyleTh = 'width:100%;padding:2px 4px;border:1px solid var(--border,#333);border-radius:3px;background:var(--panel-bg,#6b6b6b);color:var(--sidebar-text,#fbfbfb);font:11px sans-serif';
+
+            // Reference plane (optional). If unset, world-Z is used.
+            var trefRow = document.createElement('div');
+            trefRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0';
+            trefRow.innerHTML = '<span style="min-width:40px">Plane:</span>';
+            var tplaneSel = document.createElement('select');
+            tplaneSel.style.cssText = 'flex:1;padding:2px 4px;border:1px solid var(--border,#333);border-radius:3px;background:var(--panel-bg,#6b6b6b);color:var(--sidebar-text,#fbfbfb);font:11px sans-serif';
+            tplaneSel.innerHTML = '<option value="">(none — use world Z)</option>';
+            for (var ci2 = 0; ci2 < constraints.length; ci2++) {
+              var con2 = constraints[ci2];
+              if (con2.type === 'plane' || con2.type === 'fit-plane') {
+                var opt2 = document.createElement('option');
+                opt2.value = '' + ci2;
+                opt2.textContent = con2.name || ('Constraint ' + (ci2 + 1));
+                tplaneSel.appendChild(opt2);
+              }
+            }
+            tplaneSel.value = cfg.refConstraintIdx >= 0 ? '' + cfg.refConstraintIdx : '';
+            tplaneSel.addEventListener('change', function() {
+              var ci3 = parseInt(tplaneSel.value);
+              if (!isNaN(ci3) && ci3 >= 0 && ci3 < constraints.length) {
+                cfg.refConstraintIdx = ci3;
+                cfg.refPlane = { normal: constraints[ci3].normal.clone(), centroid: constraints[ci3].centroid.clone() };
+              } else {
+                cfg.refConstraintIdx = -1;
+                cfg.refPlane = null;
+              }
+            });
+            trefRow.appendChild(tplaneSel);
+            panel.appendChild(trefRow);
+
+            // Expected min / max thickness (m)
+            var thRow = document.createElement('div');
+            thRow.style.cssText = 'display:flex;gap:4px;margin:4px 0';
+            var thMinCol = document.createElement('div'); thMinCol.style.cssText = 'flex:1';
+            thMinCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Expect min (m)</div>';
+            var thMinIn = document.createElement('input');
+            thMinIn.type = 'number'; thMinIn.step = '0.01'; thMinIn.style.cssText = inputStyleTh;
+            thMinIn.value = (cfg.thicknessExpectedMin != null ? cfg.thicknessExpectedMin : 0.10).toFixed(3);
+            thMinIn.title = 'Cells thinner than this are flagged (voids/openings)';
+            thMinIn.addEventListener('change', function() {
+              var x = parseFloat(thMinIn.value);
+              if (!isNaN(x) && x > 0) cfg.thicknessExpectedMin = x;
+            });
+            thMinCol.appendChild(thMinIn);
+
+            var thMaxCol = document.createElement('div'); thMaxCol.style.cssText = 'flex:1';
+            thMaxCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Expect max (m)</div>';
+            var thMaxIn = document.createElement('input');
+            thMaxIn.type = 'number'; thMaxIn.step = '0.01'; thMaxIn.style.cssText = inputStyleTh;
+            thMaxIn.value = (cfg.thicknessExpectedMax != null ? cfg.thicknessExpectedMax : 0.60).toFixed(3);
+            thMaxIn.title = 'Cells thicker than this are rejected (columns/capitals)';
+            thMaxIn.addEventListener('change', function() {
+              var x = parseFloat(thMaxIn.value);
+              if (!isNaN(x) && x > 0) cfg.thicknessExpectedMax = x;
+            });
+            thMaxCol.appendChild(thMaxIn);
+
+            var thGapCol = document.createElement('div'); thGapCol.style.cssText = 'flex:1';
+            thGapCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Gap tol (m)</div>';
+            var thGapIn = document.createElement('input');
+            thGapIn.type = 'number'; thGapIn.step = '0.005'; thGapIn.style.cssText = inputStyleTh;
+            thGapIn.value = (cfg.thicknessGapTol != null ? cfg.thicknessGapTol : 0.025).toFixed(3);
+            thGapIn.title = 'Air gap that breaks the slab band (separates fixtures from soffit)';
+            thGapIn.addEventListener('change', function() {
+              var x = parseFloat(thGapIn.value);
+              if (!isNaN(x) && x > 0) cfg.thicknessGapTol = x;
+            });
+            thGapCol.appendChild(thGapIn);
+
+            thRow.appendChild(thMinCol);
+            thRow.appendChild(thMaxCol);
+            thRow.appendChild(thGapCol);
+            panel.appendChild(thRow);
           }
 
           // Plane deviation settings (only if mode=plane)
@@ -5773,15 +6281,35 @@
         // Build this box's surface grid using only points INSIDE this box (OBB)
         var v = new THREE.Vector3();
         var count = data.count;
-        // Filter positions to just this box (fast path for surface grid builders that use AABB)
-        // We still rely on OBB test downstream; grids use AABB + cell test which is fine.
-        if (selCfg.mode === 'plane' && selCfg.refPlane) {
+        // Thickness mode: build BOTH the regular top-surface grid (so the
+        // apply loop's existing top-surface filter colors only top-surface
+        // points, exactly like Z mode does) AND the thickness grid (for the
+        // per-cell thickness VALUE). Coverage will mirror Z mode's coverage.
+        if (selCfg.mode === 'thickness') {
+          setComputeProgress('Computing slab thickness grid...');
+          selCfg.surfaceGrid = buildSurfaceGrid(elevationPositions, boxBounds, 200);
+          selCfg.planeSurfGrid = null;
+          selCfg.thicknessGrid = buildThicknessGrid(
+            elevationPositions, count, boxInv,
+            selCfg.refPlane, selCfg.refSide,
+            {
+              gridRes: 100,
+              expectedMin: selCfg.thicknessExpectedMin || 0.10,
+              expectedMax: selCfg.thicknessExpectedMax || 0.60,
+              gapTolerance: selCfg.thicknessGapTol || 0.025,
+              minCellPoints: 3,
+              minComponentArea: 0.1
+            }
+          );
+        } else if (selCfg.mode === 'plane' && selCfg.refPlane) {
           selCfg.surfaceGrid = null;
           selCfg.planeSurfGrid = buildPlaneSurfaceGrid(
             elevationPositions, boxBounds, 200, selCfg.refPlane, selCfg.refSide);
+          selCfg.thicknessGrid = null;
         } else {
           selCfg.surfaceGrid = buildSurfaceGrid(elevationPositions, boxBounds, 200);
           selCfg.planeSurfGrid = null;
+          selCfg.thicknessGrid = null;
         }
 
         // Compute this box's min/max from top-surface points inside its OBB
@@ -5793,19 +6321,36 @@
             var s = selCfg.refSide || 1;
             return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
           }
+          if (selCfg.mode === 'thickness') {
+            return getThicknessForPoint(px, py, pz, selCfg.thicknessGrid);
+          }
           return pz - getZBaseZ(selCfg);
         }
-        for (var i = 0; i < count; i++) {
-          var px = elevationPositions[i * 3];
-          var py = elevationPositions[i * 3 + 1];
-          var pz = elevationPositions[i * 3 + 2];
-          v.set(px, py, pz).applyMatrix4(boxInv);
-          if (v.x < -0.5 || v.x > 0.5 || v.y < -0.5 || v.y > 0.5 || v.z < -0.5 || v.z > 0.5) continue;
-          if (pz < rawZMin) rawZMin = pz;
-          if (pz > rawZMax) rawZMax = pz;
-          var e = elevFor(px, py, pz);
-          if (e < zMin) zMin = e;
-          if (e > zMax) zMax = e;
+        if (selCfg.mode === 'thickness') {
+          // Range comes directly from the thickness grid's valid cells.
+          var tg = selCfg.thicknessGrid;
+          if (tg) {
+            var nC = tg.gridRes * tg.gridRes;
+            for (var ci = 0; ci < nC; ci++) {
+              if (!tg.valid[ci]) continue;
+              var t = tg.grid[ci];
+              if (t < zMin) zMin = t;
+              if (t > zMax) zMax = t;
+            }
+          }
+        } else {
+          for (var i = 0; i < count; i++) {
+            var px = elevationPositions[i * 3];
+            var py = elevationPositions[i * 3 + 1];
+            var pz = elevationPositions[i * 3 + 2];
+            v.set(px, py, pz).applyMatrix4(boxInv);
+            if (v.x < -0.5 || v.x > 0.5 || v.y < -0.5 || v.y > 0.5 || v.z < -0.5 || v.z > 0.5) continue;
+            if (pz < rawZMin) rawZMin = pz;
+            if (pz > rawZMax) rawZMax = pz;
+            var e = elevFor(px, py, pz);
+            if (e < zMin) zMin = e;
+            if (e > zMax) zMax = e;
+          }
         }
         // Refine to top-surface points only
         if (selCfg.surfaceGrid || selCfg.planeSurfGrid) {
@@ -5824,6 +6369,7 @@
               if (!isTopSurface(px, py, pz, selCfg.surfaceGrid, tol)) continue;
             }
             var e = elevFor(px, py, pz);
+            if (e === null) continue;
             if (e < tsMin) tsMin = e;
             if (e > tsMax) tsMax = e;
           }
@@ -5897,7 +6443,8 @@
           if (v.x >= -0.5 && v.x <= 0.5 && v.y >= -0.5 && v.y <= 0.5 && v.z >= -0.5 && v.z <= 0.5) countInside++;
         }
 
-        var rangeLabel = selCfg.mode === 'plane' ? 'Deviation' : 'Z';
+        var rangeLabel = selCfg.mode === 'plane' ? 'Deviation' :
+                         (selCfg.mode === 'thickness' ? 'Thickness' : 'Z');
         $('#enable-elevation-status').text(
           targetVol.name + ': ' + countInside.toLocaleString() + ' pts | ' + rangeLabel + ': ' +
           zMin.toFixed(3) + ' to ' + zMax.toFixed(3) + ' (' + (zMax - zMin).toFixed(3) + ' m)'
