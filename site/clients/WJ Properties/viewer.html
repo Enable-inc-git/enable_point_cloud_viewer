@@ -1046,6 +1046,24 @@
     let constraintDragActive = false;
     let constraintDragInfo = null; // { constraint, pointIndex }
     let constraintPickMarkers = []; // temporary markers shown while picking
+    // After a plane is fit, we hold it here while the user picks the 2 X-axis
+    // points; only then is the basis populated and the constraint pushed to
+    // `constraints[]`. Cancelling the X-axis pick discards the pending plane.
+    let _pendingPlaneConstraint = null;
+    // Drag state for the 2 X-axis pick markers (refine after placement).
+    let _xAxisPickDragActive = false;
+    let _xAxisPickDragIndex = -1;
+    // Ortho-measure mode: when on AND a plane with a basis is active, every
+    // measurement pick after the first is snapped to one of the active plane's
+    // basis axes from the previous point. In plane-locked mode (default) only
+    // X and Y are candidates; in parallel mode Z (the plane normal) is also a
+    // valid axis, letting the user step to a different elevation and continue
+    // sketching in a parallel plane.
+    let _orthoMeasureMode = false;
+    // Parallel mode: when on, plane-projection follows the previous
+    // measurement point's elevation (drawing plane = active plane offset by
+    // the prior pick's signed distance) instead of the active plane itself.
+    let _orthoParallelMode = false;
 
     // ===== MEMBER SKETCHING TOOL =====
     const members = [];
@@ -1963,7 +1981,76 @@
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
       const result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
       if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive) {
-        result.location = projectPoint(result.location);
+        var _ac0 = constraints.find(function(con) { return con.id === activeConstraintId; });
+        var _hasPrior0 = !!(pendingMeasurement && pendingMeasurement.points.length >= 2);
+        if (!_ac0) {
+          // no-op
+        } else if (_ac0.type !== 'plane') {
+          // Axis: project onto axis as before.
+          result.location = projectPoint(result.location);
+        } else if (_orthoParallelMode && _orthoMeasureMode && _hasPrior0 && _ac0.basis) {
+          // Parallel + ortho with a prior: do NOT project here; the ortho block
+          // below will snap to whichever of X / Y / Z is dominant. Projecting
+          // first would zero out the Z (normal) component and prevent Z snap.
+        } else if (_orthoParallelMode && _hasPrior0) {
+          // Parallel without ortho (or ortho without basis): lock the pick to a
+          // plane parallel to the active plane through the prior committed
+          // point so elevation tracks the chain.
+          var _n0 = _ac0.normal;
+          var _priorPt0 = pendingMeasurement.points[pendingMeasurement.points.length - 2];
+          var _p0 = _priorPt0.position || _priorPt0;
+          var _d0 = (result.location.x - _p0.x) * _n0.x +
+                    (result.location.y - _p0.y) * _n0.y +
+                    (result.location.z - _p0.z) * _n0.z;
+          result.location = result.location.clone().addScaledVector(_n0, -_d0);
+        } else {
+          // Plane-locked, or parallel mode without a prior: project onto the
+          // active plane (offset 0).
+          result.location = projectPoint(result.location);
+        }
+      }
+      // Ortho-measure: lock the pick to whichever of the active plane's basis
+      // axes is most aligned with the cursor's *screen-space* motion from the
+      // previous committed measurement point. We can't compare world-space
+      // components of the raw cloud pick because the cloud is a surface, not
+      // a free 3D space — moving the cursor "up" on a side view still lands
+      // on the floor, killing dz. Screen-space alignment + projection on the
+      // chosen axis line gives the natural ortho behaviour.
+      if (result && result.location && _orthoMeasureMode && pendingMeasurement &&
+          pendingMeasurement.points.length >= 2 && !constraintPickMode &&
+          !memberPickMode && !constraintDragActive && !memberDragActive) {
+        var ac = constraints.find(function(con) { return con.id === activeConstraintId; });
+        if (ac && ac.type === 'plane' && ac.basis) {
+          var _priorPt = pendingMeasurement.points[pendingMeasurement.points.length - 2];
+          var prior = _priorPt.position || _priorPt;
+          var bx = ac.basis.X, by = ac.basis.Y, bz = ac.basis.Z;
+          var _cam = viewer.scene.getActiveCamera();
+          var _rect = renderArea.getBoundingClientRect();
+          var _pNDC = prior.clone().project(_cam);
+          var _pPxX = (_pNDC.x + 1) * 0.5 * _rect.width;
+          var _pPxY = (1 - _pNDC.y) * 0.5 * _rect.height;
+          var _cdx = mouse.x - _pPxX;
+          var _cdy = mouse.y - _pPxY;
+          // For each axis, compute its screen-space pixel direction (per 1
+          // world unit) and the signed projection of the cursor delta onto it.
+          function _axisInfo(axis) {
+            var tip = prior.clone().add(axis);
+            var tNDC = tip.project(_cam);
+            var sx = ((tNDC.x + 1) * 0.5 * _rect.width) - _pPxX;
+            var sy = ((1 - tNDC.y) * 0.5 * _rect.height) - _pPxY;
+            var slen = Math.sqrt(sx * sx + sy * sy);
+            if (slen < 1e-3) return { score: 0, t: 0 };
+            var proj = (_cdx * sx + _cdy * sy) / slen; // pixels along axis
+            return { score: Math.abs(proj), t: proj / slen }; // t in world units (1 unit ≈ slen px)
+          }
+          var rx = _axisInfo(bx);
+          var ry = _axisInfo(by);
+          var rz = _orthoParallelMode ? _axisInfo(bz) : { score: -1, t: 0 };
+          var bestAxis = bx, bestT = rx.t, bestScore = rx.score;
+          if (ry.score > bestScore) { bestAxis = by; bestT = ry.t; bestScore = ry.score; }
+          if (rz.score > bestScore) { bestAxis = bz; bestT = rz.t; bestScore = rz.score; }
+          result.location = prior.clone().addScaledVector(bestAxis, bestT);
+        }
       }
       // Snap for Potree measurement tool (not during our custom picks or drags)
       if (result && result.location && !constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
@@ -1996,6 +2083,8 @@
     function startConstraintPick(type) {
       if (MARK_MODE) toggleMarkMode(true);
       if (memberPickMode) cancelMemberPick();
+      // Discard any plane awaiting an X-axis pick from a previous interaction.
+      if (_pendingPlaneConstraint) _pendingPlaneConstraint = null;
       constraintPickMode = true;
       constraintPickPoints = [];
       constraintPickType = type;
@@ -2047,6 +2136,14 @@
 
     // -- Handle a picked point during constraint definition --
     function handleConstraintPick(position) {
+      // After 2 X-axis picks, additional clicks are ignored — the user drags
+      // the existing markers to refine.
+      if (constraintPickType === 'plane-x-axis' && constraintPickPoints.length >= 2) {
+        showToast('+X already set — drag a marker to refine, Enter to accept', 4000);
+        return;
+      }
+      // X-axis picks are stored at the actual scan-geometry location. Projection
+      // onto the plane happens only inside computePlaneBasis when deriving X/Y.
       constraintPickPoints.push(position.clone());
       placePickMarker(position);
       undoStack.push({ type: 'constraint-point' });
@@ -2056,6 +2153,12 @@
         if (count < 3) status += ' (need at least 3)';
         else status += ' \u2014 Enter to finalize';
         showToast(status, 5000);
+      } else if (constraintPickType === 'plane-x-axis') {
+        if (count < 2) {
+          showToast('Pick +X end point (2/2) \u2014 left \u2192 right on screen', 5000);
+        } else {
+          showToast('+X line set \u2014 drag a marker to refine, Enter to accept, Esc to cancel', 6000);
+        }
       } else if (count < constraintPickTarget) {
         showToast('Pick point (' + (count + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
       } else {
@@ -2065,6 +2168,9 @@
 
     // -- Cancel constraint pick mode --
     function cancelConstraintPick() {
+      var wasXAxis = (constraintPickType === 'plane-x-axis');
+      var wasEdit = wasXAxis && _pendingPlaneConstraint && constraints.indexOf(_pendingPlaneConstraint) !== -1;
+      _pendingPlaneConstraint = null;
       constraintPickMode = false;
       constraintPickPoints = [];
       constraintPickType = null;
@@ -2072,7 +2178,9 @@
       clearPickMarkers();
       document.body.classList.remove('constraint-pick-mode');
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
-      showToast('Constraint picking cancelled');
+      showToast(wasXAxis
+        ? (wasEdit ? 'X axis edit cancelled' : 'Plane discarded — X axis required')
+        : 'Constraint picking cancelled');
     }
 
     // -- Finalize constraint from picked points --
@@ -2170,7 +2278,17 @@
           visible: true,
           locked: true
         };
-        showToast('Best-fit plane from ' + pts.length + ' points (RMS: ' + rms.toFixed(1) + ' mm)', 4000);
+        // Hold the plane while the user picks 2 points to define the +X axis.
+        // The constraint isn't pushed to `constraints[]` until X is set, so
+        // cancelling the X-axis pick discards the plane.
+        _pendingPlaneConstraint = constraint;
+        clearPickMarkers();
+        constraintPickPoints = [];
+        constraintPickType = 'plane-x-axis';
+        constraintPickTarget = 2;
+        constraintPickMode = true;
+        showToast('Plane fit (RMS: ' + rms.toFixed(1) + ' mm). Now pick 2 points for +X axis (left → right)', 6000);
+        return;
       } else if (type === 'axis') {
         var dir = new THREE.Vector3().subVectors(pts[1], pts[0]);
         if (dir.length() < 0.001) {
@@ -2214,7 +2332,119 @@
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
     }
 
+    // -- Re-enter X-axis pick mode for an existing plane (sidebar button) --
+    function startPlaneXAxisEdit(c) {
+      if (!c || c.type !== 'plane') return;
+      if (memberPickMode) cancelMemberPick();
+      if (constraintPickMode) cancelConstraintPick();
+      _pendingPlaneConstraint = c;
+      constraintPickMode = true;
+      constraintPickPoints = [];
+      constraintPickType = 'plane-x-axis';
+      constraintPickTarget = 2;
+      document.body.classList.add('constraint-pick-mode');
+      showToast('Re-pick 2 points for ' + c.name + ' +X axis (Enter to accept, Esc to cancel)', 6000);
+    }
+
+    // -- Finalize the X-axis pick step that follows fit-plane creation --
+    function finalizePlaneXAxis() {
+      var c = _pendingPlaneConstraint;
+      if (!c || constraintPickPoints.length < 2) return;
+      // Validate that the projected X line has non-zero length on the plane.
+      var n = c.normal;
+      var a = constraintPickPoints[0].clone();
+      var b = constraintPickPoints[1].clone();
+      var aOff = (a.x - c.centroid.x) * n.x + (a.y - c.centroid.y) * n.y + (a.z - c.centroid.z) * n.z;
+      var bOff = (b.x - c.centroid.x) * n.x + (b.y - c.centroid.y) * n.y + (b.z - c.centroid.z) * n.z;
+      a.addScaledVector(n, -aOff);
+      b.addScaledVector(n, -bOff);
+      if (a.distanceTo(b) < 1e-4) {
+        // Both picks projected to nearly the same point; ask the user to redo.
+        clearPickMarkers();
+        constraintPickPoints = [];
+        showToast('X-axis points are too close after projection — pick 2 points farther apart', 5000);
+        return;
+      }
+      // Capture the camera's screen-up vector at click time. Column 1 of the
+      // camera's world matrix is its local Y axis = up direction on screen.
+      var cam = viewer.scene.getActiveCamera();
+      var camUp = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+      c.xAxisAnchorA = constraintPickPoints[0].clone();
+      c.xAxisAnchorB = constraintPickPoints[1].clone();
+      c.xAxisCamUp = camUp;
+      c.basis = computePlaneBasis(c);
+
+      clearPickMarkers();
+      var alreadyInList = constraints.indexOf(c) !== -1;
+      if (alreadyInList) {
+        rebuildConstraintVisual(c);
+        showToast(c.name + ' X axis updated');
+      } else {
+        buildConstraintVisual(c);
+        constraints.push(c);
+        rebuildConstraintList();
+        while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'constraint-point') {
+          undoStack.pop();
+        }
+        undoStack.push({ type: 'constraint', id: c.id });
+        showToast(c.name + ' created with custom X axis');
+      }
+
+      _pendingPlaneConstraint = null;
+      constraintPickMode = false;
+      constraintPickPoints = [];
+      constraintPickType = null;
+      constraintPickTarget = 0;
+      document.body.classList.remove('constraint-pick-mode');
+      document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
+    }
+
     // -- Build 3D visual for a constraint --
+    // Compute a plane constraint's local XYZ basis. If the user has set an X
+    // axis (two anchors picked after the plane was fit), X = projection of
+    // (anchorB - anchorA) onto the plane, Y = camera-up at click time
+    // projected onto the plane and made perpendicular to X, Z = X × Y
+    // (right-hand rule). Anchors are stored in world coordinates so a
+    // re-fit (drag of plane definition points) automatically updates the
+    // basis through reprojection. Falls back to the legacy auto-basis
+    // (world-Z projected onto plane) if anchors are missing.
+    function computePlaneBasis(c) {
+      if (c.type !== 'plane') return null;
+      var n = c.normal.clone().normalize();
+      var X, Y, Z;
+      if (c.xAxisAnchorA && c.xAxisAnchorB && c.xAxisCamUp) {
+        // Project both anchors onto the plane to kill any Z drift.
+        var a = c.xAxisAnchorA.clone();
+        var b = c.xAxisAnchorB.clone();
+        var aOff = (a.x - c.centroid.x) * n.x + (a.y - c.centroid.y) * n.y + (a.z - c.centroid.z) * n.z;
+        var bOff = (b.x - c.centroid.x) * n.x + (b.y - c.centroid.y) * n.y + (b.z - c.centroid.z) * n.z;
+        a.addScaledVector(n, -aOff);
+        b.addScaledVector(n, -bOff);
+        var dx = new THREE.Vector3().subVectors(b, a);
+        if (dx.length() < 1e-6) return null;
+        X = dx.normalize();
+        // Camera-up at click time, projected onto plane and made ⊥ to X.
+        var up = c.xAxisCamUp.clone();
+        up.addScaledVector(n, -up.dot(n));
+        up.addScaledVector(X, -up.dot(X));
+        if (up.length() < 1e-6) {
+          // Camera-up is parallel to X — pick an arbitrary perpendicular.
+          up.copy(n).cross(X);
+        }
+        Y = up.normalize();
+        Z = new THREE.Vector3().crossVectors(X, Y).normalize();
+      } else {
+        // Legacy auto-basis (world-Z projected, falling back to world-X).
+        var worldRef = (Math.abs(n.z) < 0.9)
+          ? new THREE.Vector3(0, 0, 1)
+          : new THREE.Vector3(1, 0, 0);
+        X = new THREE.Vector3().crossVectors(worldRef, n).normalize();
+        Y = new THREE.Vector3().crossVectors(n, X).normalize();
+        Z = n;
+      }
+      return { X: X, Y: Y, Z: Z, origin: c.centroid.clone() };
+    }
+
     function buildConstraintVisual(constraint) {
       var group = new THREE.Group();
       group.name = 'constraint-' + constraint.id;
@@ -2262,6 +2492,32 @@
         edgeLine.position.copy(constraint.centroid);
         edgeLine.quaternion.copy(quat);
         group.add(edgeLine);
+
+        // +X (red) and +Y (green) basis arrows from centroid. Anchored from
+        // the user-defined basis if present, falling back to auto-basis.
+        var basis = constraint.basis || computePlaneBasis(constraint);
+        if (basis) {
+          var arrowLen = Math.max(quadSize * 0.28, 0.3);
+          var headLen = arrowLen * 0.22;
+          var headW = headLen * 0.55;
+          var xArrow = new THREE.ArrowHelper(basis.X, constraint.centroid, arrowLen, 0xff3030, headLen, headW);
+          var yArrow = new THREE.ArrowHelper(basis.Y, constraint.centroid, arrowLen, 0x30ff30, headLen, headW);
+          [xArrow, yArrow].forEach(function(arr) {
+            arr.userData.isBasisArrow = true;
+            arr.line.material.transparent = true;
+            arr.line.material.opacity = 0.95;
+            arr.line.material.depthTest = false;
+            arr.line.material.depthWrite = false;
+            arr.cone.material.transparent = true;
+            arr.cone.material.opacity = 0.95;
+            arr.cone.material.depthTest = false;
+            arr.cone.material.depthWrite = false;
+            arr.line.userData.isBasisArrow = true;
+            arr.cone.userData.isBasisArrow = true;
+          });
+          group.add(xArrow);
+          group.add(yArrow);
+        }
       } else if (constraint.type === 'axis') {
         var axDir = constraint.direction;
         var axOrigin = constraint.origin;
@@ -2317,6 +2573,8 @@
           if (obj.material) {
             if (obj.userData && obj.userData.isDefPointRing) {
               obj.material.opacity = 0.9;
+            } else if (obj.userData && obj.userData.isBasisArrow) {
+              // Basis arrows manage their own opacity (always visible).
             } else if (obj.isMesh) {
               obj.material.opacity = isActive ? 0.2 : 0.08;
             } else if (obj.isLine || obj.isLineSegments) {
@@ -2375,6 +2633,15 @@
               viewPlaneOrtho(c);
             });
             row.appendChild(orthoBtn);
+
+            var setXBtn = document.createElement('button');
+            setXBtn.className = 'btn-set-x';
+            setXBtn.textContent = 'X';
+            setXBtn.title = 'Re-pick +X axis for this plane';
+            setXBtn.addEventListener('click', function() {
+              startPlaneXAxisEdit(c);
+            });
+            row.appendChild(setXBtn);
           }
 
           var activateBtn = document.createElement('button');
@@ -2429,12 +2696,27 @@
     function updateConstraintStatus() {
       var el = document.getElementById('enable-constraint-status');
       if (!el) return;
-      if (!activeConstraintId) { el.textContent = ''; return; }
+      if (!activeConstraintId) {
+        var orphanBits = [];
+        if (_orthoMeasureMode) orphanBits.push('Ortho ON');
+        if (_orthoParallelMode) orphanBits.push('Parallel ON');
+        el.textContent = orphanBits.length
+          ? orphanBits.join(', ') + ' (no plane active — inactive)'
+          : '';
+        return;
+      }
       var c = null;
       for (var i = 0; i < constraints.length; i++) {
         if (constraints[i].id === activeConstraintId) { c = constraints[i]; break; }
       }
-      if (c) el.textContent = c.name + ' constraint active';
+      if (c) {
+        var txt = c.name + ' constraint active';
+        if (c.type === 'plane' && c.basis) {
+          if (_orthoMeasureMode) txt += ' | Ortho ON (' + (_orthoParallelMode ? 'X/Y/Z' : 'X/Y') + ')';
+          if (_orthoParallelMode) txt += ' | Parallel';
+        }
+        el.textContent = txt;
+      }
     }
 
     // -- Find nearest definition point to mouse (screen-space hit test) --
@@ -2460,6 +2742,25 @@
         }
       }
       return bestResult;
+    }
+
+    // -- Find nearest X-axis pick marker to mouse (during plane-x-axis pick) --
+    function findNearestXAxisPickMarker(mousePixel) {
+      if (constraintPickType !== 'plane-x-axis') return -1;
+      if (!constraintPickMarkers.length) return -1;
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 25;
+      var bestIdx = -1;
+      for (var i = 0; i < constraintPickMarkers.length; i++) {
+        var pt = constraintPickMarkers[i].position.clone().project(camera);
+        var sx = (pt.x * 0.5 + 0.5) * rect.width;
+        var sy = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+        var dx = sx - mousePixel.x, dy = sy - mousePixel.y;
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      return bestIdx;
     }
 
     // -- Recompute constraint geometry after a point is moved --
@@ -2520,6 +2821,8 @@
         c.direction = dir;
         c.origin = c.points[0].clone();
       }
+      // Refresh plane basis (anchors are world-space; reproject onto new plane).
+      if (c.type === 'plane') c.basis = computePlaneBasis(c);
       return true;
     }
 
@@ -4000,11 +4303,17 @@
         version: 1,
         pointCloudID: pointCloudID,
         constraints: constraints.map(function(c) {
-          return {
+          var out = {
             id: c.id, type: c.type, name: c.name,
             points: c.points.map(v3toObj),
             visible: c.visible, locked: !!c.locked
           };
+          if (c.type === 'plane' && c.xAxisAnchorA && c.xAxisAnchorB) {
+            out.xAxisAnchorA = v3toObj(c.xAxisAnchorA);
+            out.xAxisAnchorB = v3toObj(c.xAxisAnchorB);
+            if (c.xAxisCamUp) out.xAxisCamUp = v3toObj(c.xAxisCamUp);
+          }
+          return out;
         }),
         activeConstraintId: activeConstraintId,
         nextConstraintId: nextConstraintId,
@@ -4136,6 +4445,16 @@
             visible: sc.visible !== false,
             locked: !!sc.locked
           };
+          if (sc.xAxisAnchorA && sc.xAxisAnchorB) {
+            c.xAxisAnchorA = new THREE.Vector3(sc.xAxisAnchorA.x, sc.xAxisAnchorA.y, sc.xAxisAnchorA.z);
+            c.xAxisAnchorB = new THREE.Vector3(sc.xAxisAnchorB.x, sc.xAxisAnchorB.y, sc.xAxisAnchorB.z);
+            if (sc.xAxisCamUp) {
+              c.xAxisCamUp = new THREE.Vector3(sc.xAxisCamUp.x, sc.xAxisCamUp.y, sc.xAxisCamUp.z);
+            } else {
+              // Old session without camUp — synthesize from world Z so basis is consistent.
+              c.xAxisCamUp = new THREE.Vector3(0, 0, 1);
+            }
+          }
           recomputeConstraint(c);
           buildConstraintVisual(c);
           constraints.push(c);
@@ -7204,6 +7523,20 @@
           return;
         }
       }
+      // X-axis pick marker dragging (only during plane-x-axis pick mode)
+      if (e.button === 0 && constraintPickMode && constraintPickType === 'plane-x-axis' && constraintPickMarkers.length > 0) {
+        var rectXA = renderArea.getBoundingClientRect();
+        var mousePixelXA = { x: e.clientX - rectXA.left, y: e.clientY - rectXA.top };
+        var idxXA = findNearestXAxisPickMarker(mousePixelXA);
+        if (idxXA >= 0) {
+          _xAxisPickDragActive = true;
+          _xAxisPickDragIndex = idxXA;
+          document.body.classList.add('constraint-drag');
+          e.stopPropagation();
+          mouseDownPos = null;
+          return;
+        }
+      }
       if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) return;
       if (e.button !== 0) return; // left-click only for placing points
       mouseDownPos = { x: e.clientX, y: e.clientY };
@@ -7252,6 +7585,20 @@
         }
         return;
       }
+      // X-axis pick marker dragging (during plane-x-axis pick mode).
+      // Marker follows the actual scan geometry; projection onto the plane
+      // happens only when the basis is computed.
+      if (_xAxisPickDragActive && _xAxisPickDragIndex >= 0 && _pendingPlaneConstraint) {
+        var rectXAm = renderArea.getBoundingClientRect();
+        var mouseXAm = { x: e.clientX - rectXAm.left, y: e.clientY - rectXAm.top };
+        var cameraXAm = viewer.scene.getActiveCamera();
+        var prXAm = _origPick(mouseXAm, cameraXAm, viewer, viewer.scene.pointclouds, { pickClipped: true });
+        if (prXAm && prXAm.location) {
+          constraintPickPoints[_xAxisPickDragIndex].copy(prXAm.location);
+          constraintPickMarkers[_xAxisPickDragIndex].position.copy(prXAm.location);
+        }
+        return;
+      }
 
     // -- Hover highlight: scale up glow when cursor is near a custom point --
     var rect2 = renderArea.getBoundingClientRect();
@@ -7297,6 +7644,12 @@
         if (child2.userData && child2.userData.isMemberEndpoint) {
           checkHover(child2.getWorldPosition(new THREE.Vector3()), child2);
         }
+      }
+    }
+    // Check X-axis pick markers during plane-x-axis pick mode
+    if (constraintPickType === 'plane-x-axis') {
+      for (var hi4 = 0; hi4 < constraintPickMarkers.length; hi4++) {
+        checkHover(constraintPickMarkers[hi4].position, constraintPickMarkers[hi4]);
       }
     }
 
@@ -7362,6 +7715,14 @@
       if (constraintDragActive) {
         constraintDragActive = false;
         constraintDragInfo = null;
+        document.body.classList.remove('constraint-drag');
+        return;
+      }
+
+      // Finalize X-axis pick marker drag
+      if (_xAxisPickDragActive) {
+        _xAxisPickDragActive = false;
+        _xAxisPickDragIndex = -1;
         document.body.classList.remove('constraint-drag');
         return;
       }
@@ -7562,6 +7923,50 @@
       if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
       // Member shortcut
       if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+      // Ortho-measure toggle (requires an active plane with a basis)
+      if (ev.key === 'o' || ev.key === 'O') {
+        var _t = ev.target;
+        var _typing = _t && (_t.tagName === 'INPUT' || _t.tagName === 'TEXTAREA' || _t.isContentEditable);
+        if (!_typing && !constraintPickMode && !memberPickMode && !MARK_MODE) {
+          if (!_orthoMeasureMode) {
+            var ac = constraints.find(function(con) { return con.id === activeConstraintId; });
+            if (!ac || ac.type !== 'plane' || !ac.basis) {
+              showToast('Activate a plane first to enable ortho measure', 3000);
+            } else {
+              _orthoMeasureMode = true;
+              var axesLbl = _orthoParallelMode ? 'X/Y/Z' : 'X/Y';
+              showToast('Ortho measure ON — picks snap to ' + ac.name + ' ' + axesLbl + ' axes', 3000);
+              updateConstraintStatus();
+            }
+          } else {
+            _orthoMeasureMode = false;
+            showToast('Ortho measure OFF', 2000);
+            updateConstraintStatus();
+          }
+        }
+      }
+      // Parallel mode toggle: switch between drawing on the active plane
+      // (default) and drawing in a parallel plane that follows the prior pick.
+      if (ev.key === 'p' || ev.key === 'P') {
+        var _tp = ev.target;
+        var _typingP = _tp && (_tp.tagName === 'INPUT' || _tp.tagName === 'TEXTAREA' || _tp.isContentEditable);
+        if (!_typingP && !constraintPickMode && !memberPickMode && !MARK_MODE) {
+          if (!_orthoParallelMode) {
+            var acP = constraints.find(function(con) { return con.id === activeConstraintId; });
+            if (!acP || acP.type !== 'plane' || !acP.basis) {
+              showToast('Activate a plane first to enable parallel mode', 3000);
+            } else {
+              _orthoParallelMode = true;
+              showToast('Parallel mode ON — drawing tracks last pick’s elevation; ortho includes Z', 3500);
+              updateConstraintStatus();
+            }
+          } else {
+            _orthoParallelMode = false;
+            showToast('Parallel mode OFF — drawing locked to the active plane', 2500);
+            updateConstraintStatus();
+          }
+        }
+      }
       // Undo
       if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
 
@@ -7571,6 +7976,9 @@
         if (constraintPickMode && constraintPickType === 'fit-plane') {
           ev.preventDefault();
           finalizeConstraint();
+        } else if (constraintPickMode && constraintPickType === 'plane-x-axis' && constraintPickPoints.length >= 2) {
+          ev.preventDefault();
+          finalizePlaneXAxis();
         } else {
           var t = ev.target;
           var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
