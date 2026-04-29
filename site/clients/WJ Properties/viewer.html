@@ -663,12 +663,31 @@
         var vol = pendingClick.vol;
         pendingClick = null;
         if (moved > 5) return; // it was a drag — camera already orbited
+        var ih = viewer.inputHandler;
+        // Volume insertion (placing a new box) and gizmo-handle grabs both run
+        // through inputHandler.startDragging, which sets ih.drag.object. Don't
+        // intervene in those cases — Potree's bubble-phase onMouseUp must run
+        // to fire the 'drop' event that commits placement / ends drag.
+        if (ih && ih.drag && ih.drag.object) return;
+        // If Potree already has the volume in hoveredElements (i.e. the click
+        // landed on the wireframe edge), let Potree's own onMouseUp run — it
+        // does the right thing for selection. We only take over for clicks
+        // INSIDE the box where Potree can't see the volume (fill raycast off)
+        // and would otherwise call deselectAll(), undoing our selection.
+        var hoveredHasVol = ih && ih.hoveredElements && ih.hoveredElements.some(function(h) {
+          var o = h && h.object;
+          while (o) { if (o === vol) return true; o = o.parent; }
+          return false;
+        });
+        if (hoveredHasVol) return;
         try {
-          var ih = viewer.inputHandler;
           var alreadySelected = ih.selection && ih.selection.indexOf(vol) >= 0;
           ih.deselectAll();
           if (!alreadySelected) ih.toggleSelection(vol);
         } catch (err) { /* ignore */ }
+        // Block Potree's bubble-phase onMouseUp; otherwise it sees no
+        // selectable in hoveredElements and runs deselectAll(), wiping us out.
+        e.stopImmediatePropagation();
       }, true);
     })();
 
