@@ -6889,6 +6889,8 @@
         // has resized/moved the box afterward and to live-preview the new region.
         targetVol.updateMatrixWorld(true);
         selCfg.computedBoxMatrix = targetVol.matrixWorld.clone();
+        // Fresh compute → heat map is current with the box transform.
+        _heatMapStaleForDrag = false;
 
         // Expose current box's range for legend / global compat
         elevationZMin = zMin;
@@ -7195,28 +7197,13 @@
     }
 
     // Keep exclusion + highlight boxes in sync each frame. When an active
-    // elevation box is moved/resized after compute, throttle a re-paint of
-    // the heat map so it follows the current OBB live (green-highlight via
-    // syncHighlightBoxes shows the expanded region; the CPU re-paint
-    // restores original color outside the current box where the old heat
-    // map used to be).
+    // elevation box is moved/resized after compute, do a ONE-TIME restore of
+    // the original RGBA on the first detection — the GPU shader green tint
+    // (via syncHighlightBoxes) then shows the current OBB live with zero
+    // per-frame CPU work, exactly like the pre-compute preview. The flag
+    // resets when the user clicks Recompute and the new heat map paints.
     var _elevBoxTransformCache = '';
-    var _elevRepaintPending = false;
-    var _elevRepaintLastFire = 0;
-    var ELEV_REPAINT_MIN_MS = 100; // throttle: 10 Hz CPU re-paint during drag
-    function _scheduleElevRepaint() {
-      if (_elevRepaintPending) return;
-      var now = performance.now();
-      var wait = Math.max(0, ELEV_REPAINT_MIN_MS - (now - _elevRepaintLastFire));
-      _elevRepaintPending = true;
-      setTimeout(function() {
-        _elevRepaintPending = false;
-        _elevRepaintLastFire = performance.now();
-        if (elevationActive && elevationPositions && elevationNodeMap) {
-          applyElevationColors(elevationPositions, elevationNodeMap);
-        }
-      }, wait);
-    }
+    var _heatMapStaleForDrag = false;
     viewer.addEventListener('update', function() {
       if (cutoutBoxes.length > 0) {
         syncExclusionBoxes();
@@ -7225,11 +7212,7 @@
         // Always sync highlights (handles dragging in real-time, including
         // the new "active box transform != computedBoxMatrix" case).
         syncHighlightBoxes();
-        // If any active box has moved/resized since its compute, schedule a
-        // re-paint so the heat-map area follows the current bounds. The
-        // green shader tint already shows the current OBB instantly; this
-        // CPU pass cleans up the heat-map fringes outside it.
-        if (elevationActive) {
+        if (elevationActive && !_heatMapStaleForDrag) {
           var anyModified = false;
           for (var i = 0; i < elevationCropVolumes.length; i++) {
             var v = elevationCropVolumes[i];
@@ -7242,7 +7225,13 @@
               break;
             }
           }
-          if (anyModified) _scheduleElevRepaint();
+          if (anyModified) {
+            // First-frame-after-change: clear the stale heat map so the
+            // green-tint preview is unambiguous. Subsequent frames are
+            // GPU-only via the highlight shader — no per-frame CPU walk.
+            if (elevationOrigRGBA) restoreOriginalRGBA(elevationOrigRGBA);
+            _heatMapStaleForDrag = true;
+          }
         }
       } else {
         _elevBoxTransformCache = '';
