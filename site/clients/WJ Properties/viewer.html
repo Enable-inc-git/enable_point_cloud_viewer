@@ -6073,16 +6073,32 @@
     // Per-box state drives whether a box is highlighted (green preview) or heat-mapped
     var _elevationComputed = false; // legacy; retained for save/load compatibility
 
-    // Push elevation box transforms to highlight boxes (green point tint) or clear them
-    // A box is highlighted iff it is enabled AND its config is not active (not yet computed)
+    // Push elevation box transforms to highlight boxes (green point tint).
+    // A box gets the green highlight if it's enabled AND either:
+    //   - cfg.active is false (never computed → preview mode), OR
+    //   - cfg.active is true BUT the user has moved/resized the box since
+    //     compute (current transform != cfg.computedBoxMatrix). The whole
+    //     current OBB tints green, signalling "this is the new region";
+    //     the heat map still paints inside (modulated by current bounds via
+    //     applyElevationColors, see boxTransformChanged below).
+    function _matricesDiffer(a, b) {
+      if (!a || !b) return !!a !== !!b;
+      var ae = a.elements, be = b.elements;
+      for (var k = 0; k < 16; k++) {
+        if (Math.abs(ae[k] - be[k]) > 1e-6) return true;
+      }
+      return false;
+    }
     function syncHighlightBoxes() {
       var matrixList = [];
       for (var i = 0; i < elevationCropVolumes.length; i++) {
         var vol = elevationCropVolumes[i];
         if (vol._disabled) continue;
         var cfg = getBoxConfig(vol);
-        if (cfg.active) continue; // computed boxes show heat map, not green
         vol.updateMatrixWorld(true);
+        var modifiedSinceCompute = cfg.active && cfg.computedBoxMatrix &&
+          _matricesDiffer(vol.matrixWorld, cfg.computedBoxMatrix);
+        if (cfg.active && !modifiedSinceCompute) continue;
         matrixList.push({ inverse: new THREE.Matrix4().copy(vol.matrixWorld).invert() });
       }
       viewer.scene.pointclouds.forEach(function(pc) {
@@ -6469,15 +6485,10 @@
             onComputeElevation();
           });
           computeRow.appendChild(computeBtn);
-          if (cfg.active) {
-            var clearBtn2 = document.createElement('button');
-            clearBtn2.textContent = 'Clear';
-            clearBtn2.style.cssText = btnStyle + ';margin-left:4px';
-            clearBtn2.addEventListener('click', function() {
-              clearBoxElevation(vol);
-            });
-            computeRow.appendChild(clearBtn2);
-          }
+          // No per-box Clear button — moving/resizing the box automatically
+          // shows the green preview for the new bounds and repaints the
+          // heat map for the current OBB. Click Compute to refresh the heat
+          // map for the new bounds.
           panel.appendChild(computeRow);
 
           // Min / Max / Contour step — per-box overrides (blank = auto-detect on compute)
@@ -6873,6 +6884,11 @@
           selCfg.zMax = zMax;
         }
         selCfg.active = true;
+        // Snapshot the box transform at compute time. Used by the per-frame
+        // syncHighlightBoxes/applyElevationColors logic to detect that a user
+        // has resized/moved the box afterward and to live-preview the new region.
+        targetVol.updateMatrixWorld(true);
+        selCfg.computedBoxMatrix = targetVol.matrixWorld.clone();
 
         // Expose current box's range for legend / global compat
         elevationZMin = zMin;
@@ -7178,31 +7194,55 @@
       });
     }
 
-    // Keep exclusion + highlight boxes in sync each frame, detect elevation box changes
+    // Keep exclusion + highlight boxes in sync each frame. When an active
+    // elevation box is moved/resized after compute, throttle a re-paint of
+    // the heat map so it follows the current OBB live (green-highlight via
+    // syncHighlightBoxes shows the expanded region; the CPU re-paint
+    // restores original color outside the current box where the old heat
+    // map used to be).
     var _elevBoxTransformCache = '';
+    var _elevRepaintPending = false;
+    var _elevRepaintLastFire = 0;
+    var ELEV_REPAINT_MIN_MS = 100; // throttle: 10 Hz CPU re-paint during drag
+    function _scheduleElevRepaint() {
+      if (_elevRepaintPending) return;
+      var now = performance.now();
+      var wait = Math.max(0, ELEV_REPAINT_MIN_MS - (now - _elevRepaintLastFire));
+      _elevRepaintPending = true;
+      setTimeout(function() {
+        _elevRepaintPending = false;
+        _elevRepaintLastFire = performance.now();
+        if (elevationActive && elevationPositions && elevationNodeMap) {
+          applyElevationColors(elevationPositions, elevationNodeMap);
+        }
+      }, wait);
+    }
     viewer.addEventListener('update', function() {
       if (cutoutBoxes.length > 0) {
         syncExclusionBoxes();
       }
       if (elevationCropVolumes.length > 0) {
-        // Always sync highlights (handles dragging in real-time)
+        // Always sync highlights (handles dragging in real-time, including
+        // the new "active box transform != computedBoxMatrix" case).
         syncHighlightBoxes();
-
-        // Detect if any elevation box was moved/resized after compute
-        if (_elevationComputed) {
-          var hash = '';
+        // If any active box has moved/resized since its compute, schedule a
+        // re-paint so the heat-map area follows the current bounds. The
+        // green shader tint already shows the current OBB instantly; this
+        // CPU pass cleans up the heat-map fringes outside it.
+        if (elevationActive) {
+          var anyModified = false;
           for (var i = 0; i < elevationCropVolumes.length; i++) {
             var v = elevationCropVolumes[i];
+            if (v._disabled) continue;
+            var cfg = getBoxConfig(v);
+            if (!cfg.active || !cfg.computedBoxMatrix) continue;
             v.updateMatrixWorld(true);
-            hash += v.matrixWorld.elements.join(',') + '|';
+            if (_matricesDiffer(v.matrixWorld, cfg.computedBoxMatrix)) {
+              anyModified = true;
+              break;
+            }
           }
-          if (_elevBoxTransformCache === '') {
-            _elevBoxTransformCache = hash;
-          } else if (hash !== _elevBoxTransformCache) {
-            // A box was moved/resized — revert to green preview
-            _elevationComputed = false;
-            _elevBoxTransformCache = '';
-          }
+          if (anyModified) _scheduleElevRepaint();
         }
       } else {
         _elevBoxTransformCache = '';
