@@ -618,13 +618,14 @@
     // call inputHandler.toggleSelection on the volume.
     (function() {
       var domEl = viewer.renderer.domElement;
-      var pendingClick = null;
+      var pendingClick = null; // { vol, x, y }
       var unitBox = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5),
                                    new THREE.Vector3( 0.5,  0.5,  0.5));
 
       domEl.addEventListener('mousedown', function(e) {
         if (e.button !== 0) return;
         if (typeof elevationCropVolumes === 'undefined' || elevationCropVolumes.length === 0) return;
+        // Skip if the user is in any pick mode that consumes left clicks
         if (typeof MARK_MODE !== 'undefined' && MARK_MODE) return;
         if (typeof constraintPickMode !== 'undefined' && constraintPickMode) return;
         if (typeof memberPickMode !== 'undefined' && memberPickMode) return;
@@ -661,13 +662,32 @@
         var moved = Math.sqrt(dx * dx + dy * dy);
         var vol = pendingClick.vol;
         pendingClick = null;
-        if (moved > 5) return;
+        if (moved > 5) return; // it was a drag — camera already orbited
+        var ih = viewer.inputHandler;
+        // Volume insertion (placing a new box) and gizmo-handle grabs both run
+        // through inputHandler.startDragging, which sets ih.drag.object. Don't
+        // intervene in those cases — Potree's bubble-phase onMouseUp must run
+        // to fire the 'drop' event that commits placement / ends drag.
+        if (ih && ih.drag && ih.drag.object) return;
+        // If Potree already has the volume in hoveredElements (i.e. the click
+        // landed on the wireframe edge), let Potree's own onMouseUp run — it
+        // does the right thing for selection. We only take over for clicks
+        // INSIDE the box where Potree can't see the volume (fill raycast off)
+        // and would otherwise call deselectAll(), undoing our selection.
+        var hoveredHasVol = ih && ih.hoveredElements && ih.hoveredElements.some(function(h) {
+          var o = h && h.object;
+          while (o) { if (o === vol) return true; o = o.parent; }
+          return false;
+        });
+        if (hoveredHasVol) return;
         try {
-          var ih = viewer.inputHandler;
           var alreadySelected = ih.selection && ih.selection.indexOf(vol) >= 0;
           ih.deselectAll();
           if (!alreadySelected) ih.toggleSelection(vol);
         } catch (err) { /* ignore */ }
+        // Block Potree's bubble-phase onMouseUp; otherwise it sees no
+        // selectable in hoveredElements and runs deselectAll(), wiping us out.
+        e.stopImmediatePropagation();
       }, true);
     })();
 
@@ -941,6 +961,7 @@
           markerScene.remove(m.visual);
           markedPoints.splice(i, 1);
           // Clean up any elevation boxes referencing this mark as Z=0 base.
+          // Recompute each affected box so the heat map reflects the missing reference.
           var affected = getElevBoxesReferencingMark(id);
           for (var ai = 0; ai < affected.length; ai++) {
             var c = getBoxConfig(affected[ai]);
@@ -1044,6 +1065,24 @@
     let constraintDragActive = false;
     let constraintDragInfo = null; // { constraint, pointIndex }
     let constraintPickMarkers = []; // temporary markers shown while picking
+    // After a plane is fit, we hold it here while the user picks the 2 X-axis
+    // points; only then is the basis populated and the constraint pushed to
+    // `constraints[]`. Cancelling the X-axis pick discards the pending plane.
+    let _pendingPlaneConstraint = null;
+    // Drag state for the 2 X-axis pick markers (refine after placement).
+    let _xAxisPickDragActive = false;
+    let _xAxisPickDragIndex = -1;
+    // Ortho-measure mode: when on AND a plane with a basis is active, every
+    // measurement pick after the first is snapped to one of the active plane's
+    // basis axes from the previous point. In plane-locked mode (default) only
+    // X and Y are candidates; in parallel mode Z (the plane normal) is also a
+    // valid axis, letting the user step to a different elevation and continue
+    // sketching in a parallel plane.
+    let _orthoMeasureMode = false;
+    // Parallel mode: when on, plane-projection follows the previous
+    // measurement point's elevation (drawing plane = active plane offset by
+    // the prior pick's signed distance) instead of the active plane itself.
+    let _orthoParallelMode = false;
 
     // ===== MEMBER SKETCHING TOOL =====
     const members = [];
@@ -1125,10 +1164,10 @@
           sideSet: false,
           zBaseMarkId: null,      // Z-mode only: id of mark used as Z=0 reference
           // Thickness-mode parameters
-          thicknessExpectedMin: 0.10,
-          thicknessExpectedMax: 0.60,
-          thicknessGapTol: 0.025,
-          thicknessGrid: null,
+          thicknessExpectedMin: 0.10, // m — flag voids/openings below this
+          thicknessExpectedMax: 0.60, // m — reject columns/capitals above this
+          thicknessGapTol: 0.025,     // m — air-gap break for fixture rejection
+          thicknessGrid: null,        // built per-compute, persistent until clear
           zMin: null,   // null = auto-detect
           zMax: null,
           contourStep: 0.05,
@@ -1157,7 +1196,8 @@
       return 0;
     }
 
-    // Like findNearestMarker but ignores the locked filter (pick ANY mark).
+    // Like findNearestMarker but ignores the locked filter (we want the user
+    // to be able to pick ANY existing mark as a Z=0 base, even locked ones).
     function findAnyMarkerNear(mousePixel) {
       var camera = viewer.scene.getActiveCamera();
       var rect = renderArea.getBoundingClientRect();
@@ -1180,6 +1220,7 @@
       return bestMark;
     }
 
+    // Return the elevation box volumes that reference `markId` as their Z=0 base.
     function getElevBoxesReferencingMark(markId) {
       var refs = [];
       if (markId == null) return refs;
@@ -1196,12 +1237,13 @@
     var zBasePickTargetVol = null;
 
     function startZBasePick(vol) {
+      // Cancel other pick modes
       if (constraintPickMode) cancelConstraintPick();
       if (memberPickMode) cancelMemberPick();
       if (MARK_MODE) toggleMarkMode(true);
       zBasePickMode = true;
       zBasePickTargetVol = vol;
-      document.body.classList.add('mark-mode');
+      document.body.classList.add('mark-mode'); // crosshair cursor
       var hint = markedPoints.length > 0
         ? 'Click an existing mark to use as Z=0, or click any point to place a new one'
         : 'Click any point in the cloud to place a Z=0 reference mark';
@@ -1214,9 +1256,12 @@
       document.body.classList.remove('mark-mode');
     }
 
+    // Recompute a single box's elevation (forces re-detect of zMin/zMax in the
+    // new offset space and re-applies colors / contours).
     function forceRecomputeBox(vol) {
       if (!vol) return;
       var cfg = getBoxConfig(vol);
+      // Reset auto-detect range so it picks up the new offset
       cfg.zMin = null;
       cfg.zMax = null;
       if (cfg.active) {
@@ -1263,10 +1308,9 @@
           if (cfg.mode === 'plane' && cfg.refPlane) {
             var n = cfg.refPlane.normal;
             var c = cfg.refPlane.centroid;
-            var s = cfg.refSide || 1;
-            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
+            return (px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z;
           }
-          return pz - getZBaseZ(cfg);
+          return pz;
         }
       }
       return pz;
@@ -1284,10 +1328,9 @@
           if (cfg.mode === 'plane' && cfg.refPlane) {
             var n = cfg.refPlane.normal;
             var c = cfg.refPlane.centroid;
-            var s = cfg.refSide || 1;
-            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
+            return (px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z;
           }
-          return pz - getZBaseZ(cfg);
+          return pz;
         }
       }
       return pz;
@@ -1423,8 +1466,9 @@
     // arrays throughout, all temp buffers freed before return; persistent
     // output is ~520 KB at gridRes=200 (5 Float32/Uint8 grids).
     //
-    // Algorithm passes:
-    //   A: Top-surface band detection per cell
+    // Algorithm passes (per docs):
+    //   A: Top-surface band detection per cell (densest contiguous bins
+    //      starting from highest depth bin)
     //   B: Downward region-grow to find slab bottom, stopping at first gap
     //      larger than gapTolerance — ignores air-gapped fixtures
     //   C: Sanity filter — reject cells outside [expectedMin, expectedMax]
@@ -1441,6 +1485,9 @@
       var minCellPoints  = opts.minCellPoints  || 3;
       var minComponentM2 = opts.minComponentArea || 0.1;
 
+      // Build U, V, N basis. With a refPlane the slab is measured along that
+      // plane's normal; without one we fall back to world Z (good for level
+      // slabs in surveyed clouds).
       var U, V, N, C;
       if (refPlane) {
         N = refPlane.normal.clone();
@@ -1458,10 +1505,14 @@
       }
 
       var v3 = new THREE.Vector3();
+
+      // Pass 1 — scan in-box points; find UV / depth ranges and per-cell
+      // counts in a single iteration.
       var uMin = Infinity, uMax = -Infinity;
       var vMin = Infinity, vMax = -Infinity;
       var dMin = Infinity, dMax = -Infinity;
       var inBoxTotal = 0;
+      // First a pre-scan to find UV ranges (we need them before bucketing)
       for (var i = 0; i < count; i++) {
         var px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
         v3.set(px, py, pz).applyMatrix4(boxInv);
@@ -1480,6 +1531,7 @@
       var uRange = uMax - uMin, vRange = vMax - vMin;
       var cellU = uRange / gridRes, cellV = vRange / gridRes;
 
+      // Pass 2 — count per cell
       var cellCount = new Uint32Array(gridRes * gridRes);
       for (var i = 0; i < count; i++) {
         var px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
@@ -1495,12 +1547,14 @@
         cellCount[iv * gridRes + iu]++;
       }
 
+      // Prefix-sum offsets
       var nCells = gridRes * gridRes;
       var cellOffset = new Uint32Array(nCells + 1);
       var s = 0;
       for (var i = 0; i < nCells; i++) { cellOffset[i] = s; s += cellCount[i]; }
       cellOffset[nCells] = s;
 
+      // Pass 3 — fill per-cell depth slices into one packed Float32Array
       var depths = new Float32Array(s);
       var cursor = new Uint32Array(nCells);
       for (var i = 0; i < count; i++) {
@@ -1522,12 +1576,17 @@
       // Phase 1 — simple per-cell top/bottom from min/max with constraint.
       // The top surface is "the topmost point in the cell". The bottom is
       // "the deepest point in [topD - expectedMax, topD - expectedMin]".
+      // This mirrors how Z mode's surfaceGrid works.
       var topAll      = new Float32Array(nCells);
       var hasTop      = new Uint8Array(nCells);
       var bottomAll   = new Float32Array(nCells);
       var hasBottom   = new Uint8Array(nCells);
 
-      // Global bottom fallback for cells with no local underside scan.
+      // Also compute a GLOBAL bottom — the deepest depth across the whole
+      // box that's at least expectedMin below dMax and within expectedMax.
+      // We use this as a fallback for hasTop cells that have no local
+      // bottom-scan data, so a single underside-scan-coverage gap doesn't
+      // wipe out the entire heat map.
       var globalBottomD = Infinity;
       var globalLowerB = dMax - expectedMax;
       var globalUpperB = dMax - expectedMin;
@@ -1537,6 +1596,7 @@
         if (cnt < minCellPoints) continue;
 
         var off = cellOffset[ci];
+        // Pass A: topD = max depth in cell
         var localMax = -Infinity;
         for (var k = 0; k < cnt; k++) {
           var d = depths[off + k];
@@ -1545,6 +1605,7 @@
         topAll[ci] = localMax;
         hasTop[ci] = 1;
 
+        // Pass B: bottomD = min depth in [topD - expectedMax, topD - expectedMin]
         var bottomThresh = localMax - expectedMin;
         var farthestThresh = localMax - expectedMax;
         var localMinBot = Infinity;
@@ -1553,6 +1614,7 @@
           if (d > bottomThresh) continue;
           if (d < farthestThresh) continue;
           if (d < localMinBot) localMinBot = d;
+          // Track the global slab-bottom too.
           if (d >= globalLowerB && d <= globalUpperB && d < globalBottomD) {
             globalBottomD = d;
           }
@@ -1562,6 +1624,10 @@
         hasBottom[ci] = 1;
       }
 
+      // Fallback seeding: any hasTop cell still without a local bottom gets
+      // the global bottom value. Ensures cells in regions with no underside
+      // scan still get a thickness reading (assuming any underside was
+      // scanned anywhere in the box). Per-cell measurements take priority.
       if (globalBottomD < Infinity) {
         for (var ci = 0; ci < nCells; ci++) {
           if (hasTop[ci] && !hasBottom[ci]) {
@@ -1584,14 +1650,14 @@
       var hasBottomF = new Uint8Array(hasBottom);
       var pending = new Float32Array(nCells);
       var pendingMask = new Uint8Array(nCells);
-      var maxIters = Math.max(gridRes, 50);
+      var maxIters = Math.max(gridRes, 50); // enough to cross the box
       for (var iter = 0; iter < maxIters; iter++) {
         var changed = false;
         for (var iy = 0; iy < gridRes; iy++) {
           for (var ix = 0; ix < gridRes; ix++) {
             var ci = iy * gridRes + ix;
             if (hasBottomF[ci]) continue;
-            if (!hasTop[ci]) continue;
+            if (!hasTop[ci]) continue; // only fill cells that have a top
             var sum = 0, n = 0;
             if (ix > 0)            { var nci = ci - 1;       if (hasBottomF[nci]) { sum += bottomFilled[nci]; n++; } }
             if (ix < gridRes - 1)  { var nci = ci + 1;       if (hasBottomF[nci]) { sum += bottomFilled[nci]; n++; } }
@@ -1616,6 +1682,7 @@
       pending = null; pendingMask = null;
 
       // Phase 3 — Pass C sanity filter on (top, infilled-bottom) pairs.
+      // Free originals once we've used them for infill seeding.
       var thickness = new Float32Array(nCells);
       var topD      = new Float32Array(nCells);
       var bottomD   = new Float32Array(nCells);
@@ -1633,6 +1700,7 @@
       bottomAll = null; hasBottom = null;
       bottomFilled = null; hasBottomF = null;
 
+      // Pass D — 3×3 median filter; reject cells differing > 30% from median
       var thicknessF = new Float32Array(nCells);
       var validF     = new Uint8Array(nCells);
       var topF       = new Float32Array(nCells);
@@ -1652,11 +1720,13 @@
             }
           }
           if (nN < 3) {
+            // Too few neighbours to validate — keep as-is
             thicknessF[ci] = thickness[ci];
             validF[ci] = 1;
             topF[ci] = topD[ci]; botF[ci] = bottomD[ci];
             continue;
           }
+          // Insertion sort on small array
           for (var ii = 1; ii < nN; ii++) {
             var x = nbrBuf[ii], jj = ii - 1;
             while (jj >= 0 && nbrBuf[jj] > x) { nbrBuf[jj + 1] = nbrBuf[jj]; jj--; }
@@ -1672,6 +1742,9 @@
       }
       thickness = null; valid = null; topD = null; bottomD = null; nbrBuf = null;
 
+      // Pass E — connected-component footprint rejection.
+      // Find global median of valid cells; mark "fat" cells (> median*1.3),
+      // flood-fill components, drop components below minComponentM2.
       var sortBuf = [];
       for (var i = 0; i < nCells; i++) if (validF[i]) sortBuf.push(thicknessF[i]);
       if (sortBuf.length > 0) {
@@ -1681,15 +1754,16 @@
         var cellArea = cellU * cellV;
         var minCellsKeep = Math.max(2, Math.ceil(minComponentM2 / cellArea));
 
-        var component = new Int32Array(nCells);
+        var component = new Int32Array(nCells); // 0 = not visited
         var stack = [];
         var compId = 1;
-        var compSize = [0];
+        var compSize = [0]; // index 0 unused
         for (var iy = 0; iy < gridRes; iy++) {
           for (var ix = 0; ix < gridRes; ix++) {
             var ci = iy * gridRes + ix;
             if (component[ci] !== 0) continue;
             if (!validF[ci] || thicknessF[ci] <= fatLimit) continue;
+            // Flood fill
             stack.length = 0;
             stack.push(ci);
             component[ci] = compId;
@@ -1699,6 +1773,7 @@
               sz++;
               var cy = (cci / gridRes) | 0;
               var cx = cci - cy * gridRes;
+              // 4-connected neighbours
               if (cx > 0) {
                 var nci = cci - 1;
                 if (component[nci] === 0 && validF[nci] && thicknessF[nci] > fatLimit) {
@@ -1750,6 +1825,11 @@
       };
     }
 
+    // Look up thickness for a world point. Returns the cell's thickness if
+    // valid AND the point is inside the cell's slab band [bottomD, topD]
+    // (with a small tolerance). Returns null otherwise so coloring restores
+    // the original RGB — keeps off-slab points uncolored even when their
+    // (u,v) cell is valid (e.g. a hanger sticking below a real cell).
     // Look up cell's thickness for a world point. The top-surface filter
     // (cfg.surfaceGrid) already does the spatial gating in the apply loop,
     // so we don't need a depth-band check here — we just need the cell's
@@ -1899,6 +1979,8 @@
           // required minimum, remove the entire measurement (no orphan
           // 1-point distance/height or <3-point area/angle measurements).
           if (meas.points.length - 1 < minReq) {
+            // If this measurement is in-progress, also cancel the Potree tool
+            // so we don't leave a dangling cursor-follow sphere + drag.
             if (pendingMeasurement === meas) cancelPotreeInsertion();
             viewer.scene.removeMeasurement(meas);
             showToast('Undid measurement');
@@ -1918,7 +2000,76 @@
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
       const result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
       if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive) {
-        result.location = projectPoint(result.location);
+        var _ac0 = constraints.find(function(con) { return con.id === activeConstraintId; });
+        var _hasPrior0 = !!(pendingMeasurement && pendingMeasurement.points.length >= 2);
+        if (!_ac0) {
+          // no-op
+        } else if (_ac0.type !== 'plane') {
+          // Axis: project onto axis as before.
+          result.location = projectPoint(result.location);
+        } else if (_orthoParallelMode && _orthoMeasureMode && _hasPrior0 && _ac0.basis) {
+          // Parallel + ortho with a prior: do NOT project here; the ortho block
+          // below will snap to whichever of X / Y / Z is dominant. Projecting
+          // first would zero out the Z (normal) component and prevent Z snap.
+        } else if (_orthoParallelMode && _hasPrior0) {
+          // Parallel without ortho (or ortho without basis): lock the pick to a
+          // plane parallel to the active plane through the prior committed
+          // point so elevation tracks the chain.
+          var _n0 = _ac0.normal;
+          var _priorPt0 = pendingMeasurement.points[pendingMeasurement.points.length - 2];
+          var _p0 = _priorPt0.position || _priorPt0;
+          var _d0 = (result.location.x - _p0.x) * _n0.x +
+                    (result.location.y - _p0.y) * _n0.y +
+                    (result.location.z - _p0.z) * _n0.z;
+          result.location = result.location.clone().addScaledVector(_n0, -_d0);
+        } else {
+          // Plane-locked, or parallel mode without a prior: project onto the
+          // active plane (offset 0).
+          result.location = projectPoint(result.location);
+        }
+      }
+      // Ortho-measure: lock the pick to whichever of the active plane's basis
+      // axes is most aligned with the cursor's *screen-space* motion from the
+      // previous committed measurement point. We can't compare world-space
+      // components of the raw cloud pick because the cloud is a surface, not
+      // a free 3D space — moving the cursor "up" on a side view still lands
+      // on the floor, killing dz. Screen-space alignment + projection on the
+      // chosen axis line gives the natural ortho behaviour.
+      if (result && result.location && _orthoMeasureMode && pendingMeasurement &&
+          pendingMeasurement.points.length >= 2 && !constraintPickMode &&
+          !memberPickMode && !constraintDragActive && !memberDragActive) {
+        var ac = constraints.find(function(con) { return con.id === activeConstraintId; });
+        if (ac && ac.type === 'plane' && ac.basis) {
+          var _priorPt = pendingMeasurement.points[pendingMeasurement.points.length - 2];
+          var prior = _priorPt.position || _priorPt;
+          var bx = ac.basis.X, by = ac.basis.Y, bz = ac.basis.Z;
+          var _cam = viewer.scene.getActiveCamera();
+          var _rect = renderArea.getBoundingClientRect();
+          var _pNDC = prior.clone().project(_cam);
+          var _pPxX = (_pNDC.x + 1) * 0.5 * _rect.width;
+          var _pPxY = (1 - _pNDC.y) * 0.5 * _rect.height;
+          var _cdx = mouse.x - _pPxX;
+          var _cdy = mouse.y - _pPxY;
+          // For each axis, compute its screen-space pixel direction (per 1
+          // world unit) and the signed projection of the cursor delta onto it.
+          function _axisInfo(axis) {
+            var tip = prior.clone().add(axis);
+            var tNDC = tip.project(_cam);
+            var sx = ((tNDC.x + 1) * 0.5 * _rect.width) - _pPxX;
+            var sy = ((1 - tNDC.y) * 0.5 * _rect.height) - _pPxY;
+            var slen = Math.sqrt(sx * sx + sy * sy);
+            if (slen < 1e-3) return { score: 0, t: 0 };
+            var proj = (_cdx * sx + _cdy * sy) / slen; // pixels along axis
+            return { score: Math.abs(proj), t: proj / slen }; // t in world units (1 unit ≈ slen px)
+          }
+          var rx = _axisInfo(bx);
+          var ry = _axisInfo(by);
+          var rz = _orthoParallelMode ? _axisInfo(bz) : { score: -1, t: 0 };
+          var bestAxis = bx, bestT = rx.t, bestScore = rx.score;
+          if (ry.score > bestScore) { bestAxis = by; bestT = ry.t; bestScore = ry.score; }
+          if (rz.score > bestScore) { bestAxis = bz; bestT = rz.t; bestScore = rz.score; }
+          result.location = prior.clone().addScaledVector(bestAxis, bestT);
+        }
       }
       // Snap for Potree measurement tool (not during our custom picks or drags)
       if (result && result.location && !constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
@@ -1951,6 +2102,8 @@
     function startConstraintPick(type) {
       if (MARK_MODE) toggleMarkMode(true);
       if (memberPickMode) cancelMemberPick();
+      // Discard any plane awaiting an X-axis pick from a previous interaction.
+      if (_pendingPlaneConstraint) _pendingPlaneConstraint = null;
       constraintPickMode = true;
       constraintPickPoints = [];
       constraintPickType = type;
@@ -2002,6 +2155,14 @@
 
     // -- Handle a picked point during constraint definition --
     function handleConstraintPick(position) {
+      // After 2 X-axis picks, additional clicks are ignored — the user drags
+      // the existing markers to refine.
+      if (constraintPickType === 'plane-x-axis' && constraintPickPoints.length >= 2) {
+        showToast('+X already set — drag a marker to refine, Enter to accept', 4000);
+        return;
+      }
+      // X-axis picks are stored at the actual scan-geometry location. Projection
+      // onto the plane happens only inside computePlaneBasis when deriving X/Y.
       constraintPickPoints.push(position.clone());
       placePickMarker(position);
       undoStack.push({ type: 'constraint-point' });
@@ -2011,6 +2172,12 @@
         if (count < 3) status += ' (need at least 3)';
         else status += ' \u2014 Enter to finalize';
         showToast(status, 5000);
+      } else if (constraintPickType === 'plane-x-axis') {
+        if (count < 2) {
+          showToast('Pick +X end point (2/2) \u2014 left \u2192 right on screen', 5000);
+        } else {
+          showToast('+X line set \u2014 drag a marker to refine, Enter to accept, Esc to cancel', 6000);
+        }
       } else if (count < constraintPickTarget) {
         showToast('Pick point (' + (count + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
       } else {
@@ -2020,6 +2187,9 @@
 
     // -- Cancel constraint pick mode --
     function cancelConstraintPick() {
+      var wasXAxis = (constraintPickType === 'plane-x-axis');
+      var wasEdit = wasXAxis && _pendingPlaneConstraint && constraints.indexOf(_pendingPlaneConstraint) !== -1;
+      _pendingPlaneConstraint = null;
       constraintPickMode = false;
       constraintPickPoints = [];
       constraintPickType = null;
@@ -2027,7 +2197,9 @@
       clearPickMarkers();
       document.body.classList.remove('constraint-pick-mode');
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
-      showToast('Constraint picking cancelled');
+      showToast(wasXAxis
+        ? (wasEdit ? 'X axis edit cancelled' : 'Plane discarded — X axis required')
+        : 'Constraint picking cancelled');
     }
 
     // -- Finalize constraint from picked points --
@@ -2125,7 +2297,17 @@
           visible: true,
           locked: true
         };
-        showToast('Best-fit plane from ' + pts.length + ' points (RMS: ' + rms.toFixed(1) + ' mm)', 4000);
+        // Hold the plane while the user picks 2 points to define the +X axis.
+        // The constraint isn't pushed to `constraints[]` until X is set, so
+        // cancelling the X-axis pick discards the plane.
+        _pendingPlaneConstraint = constraint;
+        clearPickMarkers();
+        constraintPickPoints = [];
+        constraintPickType = 'plane-x-axis';
+        constraintPickTarget = 2;
+        constraintPickMode = true;
+        showToast('Plane fit (RMS: ' + rms.toFixed(1) + ' mm). Now pick 2 points for +X axis (left → right)', 6000);
+        return;
       } else if (type === 'axis') {
         var dir = new THREE.Vector3().subVectors(pts[1], pts[0]);
         if (dir.length() < 0.001) {
@@ -2169,7 +2351,119 @@
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
     }
 
+    // -- Re-enter X-axis pick mode for an existing plane (sidebar button) --
+    function startPlaneXAxisEdit(c) {
+      if (!c || c.type !== 'plane') return;
+      if (memberPickMode) cancelMemberPick();
+      if (constraintPickMode) cancelConstraintPick();
+      _pendingPlaneConstraint = c;
+      constraintPickMode = true;
+      constraintPickPoints = [];
+      constraintPickType = 'plane-x-axis';
+      constraintPickTarget = 2;
+      document.body.classList.add('constraint-pick-mode');
+      showToast('Re-pick 2 points for ' + c.name + ' +X axis (Enter to accept, Esc to cancel)', 6000);
+    }
+
+    // -- Finalize the X-axis pick step that follows fit-plane creation --
+    function finalizePlaneXAxis() {
+      var c = _pendingPlaneConstraint;
+      if (!c || constraintPickPoints.length < 2) return;
+      // Validate that the projected X line has non-zero length on the plane.
+      var n = c.normal;
+      var a = constraintPickPoints[0].clone();
+      var b = constraintPickPoints[1].clone();
+      var aOff = (a.x - c.centroid.x) * n.x + (a.y - c.centroid.y) * n.y + (a.z - c.centroid.z) * n.z;
+      var bOff = (b.x - c.centroid.x) * n.x + (b.y - c.centroid.y) * n.y + (b.z - c.centroid.z) * n.z;
+      a.addScaledVector(n, -aOff);
+      b.addScaledVector(n, -bOff);
+      if (a.distanceTo(b) < 1e-4) {
+        // Both picks projected to nearly the same point; ask the user to redo.
+        clearPickMarkers();
+        constraintPickPoints = [];
+        showToast('X-axis points are too close after projection — pick 2 points farther apart', 5000);
+        return;
+      }
+      // Capture the camera's screen-up vector at click time. Column 1 of the
+      // camera's world matrix is its local Y axis = up direction on screen.
+      var cam = viewer.scene.getActiveCamera();
+      var camUp = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+      c.xAxisAnchorA = constraintPickPoints[0].clone();
+      c.xAxisAnchorB = constraintPickPoints[1].clone();
+      c.xAxisCamUp = camUp;
+      c.basis = computePlaneBasis(c);
+
+      clearPickMarkers();
+      var alreadyInList = constraints.indexOf(c) !== -1;
+      if (alreadyInList) {
+        rebuildConstraintVisual(c);
+        showToast(c.name + ' X axis updated');
+      } else {
+        buildConstraintVisual(c);
+        constraints.push(c);
+        rebuildConstraintList();
+        while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'constraint-point') {
+          undoStack.pop();
+        }
+        undoStack.push({ type: 'constraint', id: c.id });
+        showToast(c.name + ' created with custom X axis');
+      }
+
+      _pendingPlaneConstraint = null;
+      constraintPickMode = false;
+      constraintPickPoints = [];
+      constraintPickType = null;
+      constraintPickTarget = 0;
+      document.body.classList.remove('constraint-pick-mode');
+      document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
+    }
+
     // -- Build 3D visual for a constraint --
+    // Compute a plane constraint's local XYZ basis. If the user has set an X
+    // axis (two anchors picked after the plane was fit), X = projection of
+    // (anchorB - anchorA) onto the plane, Y = camera-up at click time
+    // projected onto the plane and made perpendicular to X, Z = X × Y
+    // (right-hand rule). Anchors are stored in world coordinates so a
+    // re-fit (drag of plane definition points) automatically updates the
+    // basis through reprojection. Falls back to the legacy auto-basis
+    // (world-Z projected onto plane) if anchors are missing.
+    function computePlaneBasis(c) {
+      if (c.type !== 'plane') return null;
+      var n = c.normal.clone().normalize();
+      var X, Y, Z;
+      if (c.xAxisAnchorA && c.xAxisAnchorB && c.xAxisCamUp) {
+        // Project both anchors onto the plane to kill any Z drift.
+        var a = c.xAxisAnchorA.clone();
+        var b = c.xAxisAnchorB.clone();
+        var aOff = (a.x - c.centroid.x) * n.x + (a.y - c.centroid.y) * n.y + (a.z - c.centroid.z) * n.z;
+        var bOff = (b.x - c.centroid.x) * n.x + (b.y - c.centroid.y) * n.y + (b.z - c.centroid.z) * n.z;
+        a.addScaledVector(n, -aOff);
+        b.addScaledVector(n, -bOff);
+        var dx = new THREE.Vector3().subVectors(b, a);
+        if (dx.length() < 1e-6) return null;
+        X = dx.normalize();
+        // Camera-up at click time, projected onto plane and made ⊥ to X.
+        var up = c.xAxisCamUp.clone();
+        up.addScaledVector(n, -up.dot(n));
+        up.addScaledVector(X, -up.dot(X));
+        if (up.length() < 1e-6) {
+          // Camera-up is parallel to X — pick an arbitrary perpendicular.
+          up.copy(n).cross(X);
+        }
+        Y = up.normalize();
+        Z = new THREE.Vector3().crossVectors(X, Y).normalize();
+      } else {
+        // Legacy auto-basis (world-Z projected, falling back to world-X).
+        var worldRef = (Math.abs(n.z) < 0.9)
+          ? new THREE.Vector3(0, 0, 1)
+          : new THREE.Vector3(1, 0, 0);
+        X = new THREE.Vector3().crossVectors(worldRef, n).normalize();
+        Y = new THREE.Vector3().crossVectors(n, X).normalize();
+        Z = n;
+      }
+      return { X: X, Y: Y, Z: Z, origin: c.centroid.clone() };
+    }
+
     function buildConstraintVisual(constraint) {
       var group = new THREE.Group();
       group.name = 'constraint-' + constraint.id;
@@ -2217,6 +2511,32 @@
         edgeLine.position.copy(constraint.centroid);
         edgeLine.quaternion.copy(quat);
         group.add(edgeLine);
+
+        // +X (red) and +Y (green) basis arrows from centroid. Anchored from
+        // the user-defined basis if present, falling back to auto-basis.
+        var basis = constraint.basis || computePlaneBasis(constraint);
+        if (basis) {
+          var arrowLen = Math.max(quadSize * 0.28, 0.3);
+          var headLen = arrowLen * 0.22;
+          var headW = headLen * 0.55;
+          var xArrow = new THREE.ArrowHelper(basis.X, constraint.centroid, arrowLen, 0xff3030, headLen, headW);
+          var yArrow = new THREE.ArrowHelper(basis.Y, constraint.centroid, arrowLen, 0x30ff30, headLen, headW);
+          [xArrow, yArrow].forEach(function(arr) {
+            arr.userData.isBasisArrow = true;
+            arr.line.material.transparent = true;
+            arr.line.material.opacity = 0.95;
+            arr.line.material.depthTest = false;
+            arr.line.material.depthWrite = false;
+            arr.cone.material.transparent = true;
+            arr.cone.material.opacity = 0.95;
+            arr.cone.material.depthTest = false;
+            arr.cone.material.depthWrite = false;
+            arr.line.userData.isBasisArrow = true;
+            arr.cone.userData.isBasisArrow = true;
+          });
+          group.add(xArrow);
+          group.add(yArrow);
+        }
       } else if (constraint.type === 'axis') {
         var axDir = constraint.direction;
         var axOrigin = constraint.origin;
@@ -2272,6 +2592,8 @@
           if (obj.material) {
             if (obj.userData && obj.userData.isDefPointRing) {
               obj.material.opacity = 0.9;
+            } else if (obj.userData && obj.userData.isBasisArrow) {
+              // Basis arrows manage their own opacity (always visible).
             } else if (obj.isMesh) {
               obj.material.opacity = isActive ? 0.2 : 0.08;
             } else if (obj.isLine || obj.isLineSegments) {
@@ -2330,6 +2652,15 @@
               viewPlaneOrtho(c);
             });
             row.appendChild(orthoBtn);
+
+            var setXBtn = document.createElement('button');
+            setXBtn.className = 'btn-set-x';
+            setXBtn.textContent = 'X';
+            setXBtn.title = 'Re-pick +X axis for this plane';
+            setXBtn.addEventListener('click', function() {
+              startPlaneXAxisEdit(c);
+            });
+            row.appendChild(setXBtn);
           }
 
           var activateBtn = document.createElement('button');
@@ -2384,12 +2715,27 @@
     function updateConstraintStatus() {
       var el = document.getElementById('enable-constraint-status');
       if (!el) return;
-      if (!activeConstraintId) { el.textContent = ''; return; }
+      if (!activeConstraintId) {
+        var orphanBits = [];
+        if (_orthoMeasureMode) orphanBits.push('Ortho ON');
+        if (_orthoParallelMode) orphanBits.push('Parallel ON');
+        el.textContent = orphanBits.length
+          ? orphanBits.join(', ') + ' (no plane active — inactive)'
+          : '';
+        return;
+      }
       var c = null;
       for (var i = 0; i < constraints.length; i++) {
         if (constraints[i].id === activeConstraintId) { c = constraints[i]; break; }
       }
-      if (c) el.textContent = c.name + ' constraint active';
+      if (c) {
+        var txt = c.name + ' constraint active';
+        if (c.type === 'plane' && c.basis) {
+          if (_orthoMeasureMode) txt += ' | Ortho ON (' + (_orthoParallelMode ? 'X/Y/Z' : 'X/Y') + ')';
+          if (_orthoParallelMode) txt += ' | Parallel';
+        }
+        el.textContent = txt;
+      }
     }
 
     // -- Find nearest definition point to mouse (screen-space hit test) --
@@ -2415,6 +2761,25 @@
         }
       }
       return bestResult;
+    }
+
+    // -- Find nearest X-axis pick marker to mouse (during plane-x-axis pick) --
+    function findNearestXAxisPickMarker(mousePixel) {
+      if (constraintPickType !== 'plane-x-axis') return -1;
+      if (!constraintPickMarkers.length) return -1;
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 25;
+      var bestIdx = -1;
+      for (var i = 0; i < constraintPickMarkers.length; i++) {
+        var pt = constraintPickMarkers[i].position.clone().project(camera);
+        var sx = (pt.x * 0.5 + 0.5) * rect.width;
+        var sy = (1 - (pt.y * 0.5 + 0.5)) * rect.height;
+        var dx = sx - mousePixel.x, dy = sy - mousePixel.y;
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      return bestIdx;
     }
 
     // -- Recompute constraint geometry after a point is moved --
@@ -2475,6 +2840,8 @@
         c.direction = dir;
         c.origin = c.points[0].clone();
       }
+      // Refresh plane basis (anchors are world-space; reproject onto new plane).
+      if (c.type === 'plane') c.basis = computePlaneBasis(c);
       return true;
     }
 
@@ -3152,10 +3519,12 @@
               }
             }
             if (contributors === 0) {
+              // Single isolated point or all neighbors at same screen pos — default upward
               outY = -1;
             } else {
               var olen = Math.sqrt(outX * outX + outY * outY);
               if (olen < 0.001) {
+                // Endpoints cancel (e.g., centerpoint of a straight 3-pt line) — go upward
                 outX = 0; outY = -1;
               } else {
                 outX /= olen; outY /= olen;
@@ -3165,6 +3534,7 @@
             var screenX = thisScr.x + outX * OFFSET_PX;
             var screenY = thisScr.y + outY * OFFSET_PX;
 
+            // Unproject back to world — works for both perspective and ortho
             var ndcX = (screenX / cw) * 2 - 1;
             var ndcY = -(screenY / ch) * 2 + 1;
             var nearPoint = new THREE.Vector3(ndcX, ndcY, thisScr.z).unproject(camera);
@@ -3319,8 +3689,8 @@
     // and the InputHandler still mid-drag. So we track which measurement is
     // currently being inserted and provide a hard "cancel + cleanup" routine.
     var pendingMeasurement = null;
-    var lastMeasurementToolArgs = null;
-    var lastVolumeToolArgs = null;
+    var lastMeasurementToolArgs = null;   // last viewer.measuringTool.startInsertion args
+    var lastVolumeToolArgs = null;        // last viewer.volumeTool.startInsertion args
 
     function _measureMinPoints(m) {
       if (!m) return 2;
@@ -3346,10 +3716,13 @@
     }
 
     function setupMeasurementLabelEvents() {
+      // Track in-progress measurement & remember last tool args so Enter can
+      // restart the same tool. Wrap startInsertion on both tools.
       try {
         if (viewer.measuringTool && !viewer.measuringTool._enableWrapped) {
           var origMS = viewer.measuringTool.startInsertion.bind(viewer.measuringTool);
           viewer.measuringTool.startInsertion = function(args) {
+            // Cancel any previous insertion first to avoid orphan cursor spheres
             cancelPotreeInsertion();
             lastMeasurementToolArgs = args || {};
             var m = origMS(args);
@@ -3361,6 +3734,7 @@
         if (viewer.volumeTool && !viewer.volumeTool._enableWrapped) {
           var origVS = viewer.volumeTool.startInsertion.bind(viewer.volumeTool);
           viewer.volumeTool.startInsertion = function(args) {
+            // Don't cancel prior measurement when starting volume — different tool family
             lastVolumeToolArgs = args || {};
             return origVS(args);
           };
@@ -3376,6 +3750,8 @@
           syncMeasurePointLabels(m);
           debouncedRebuildMeasList();
           undoStack.push({ type: 'measurement-point', measure: m });
+          // If the in-progress measurement reaches its maxMarkers, the Potree
+          // tool ends insertion automatically; clear our pending tracker.
           if (pendingMeasurement === m && m.maxMarkers && m.points.length >= m.maxMarkers) {
             pendingMeasurement = null;
           }
@@ -3394,6 +3770,8 @@
         if (pendingMeasurement === e.measurement) pendingMeasurement = null;
         rebuildAllMeasurementLists();
       });
+      // Volume add/remove (Potree's volume tool) — refresh the volume list,
+      // and keep it live during drag/scale of user-created measurement volumes
       viewer.scene.addEventListener('volume_added', function(e) {
         debouncedRebuildMeasList();
         var vol = e.volume;
@@ -3407,6 +3785,7 @@
       });
     }
 
+    // Restart the most-recently-used measurement (or volume) tool. Used by Enter.
     function restartLastMeasurementTool() {
       if (lastMeasurementToolArgs && viewer.measuringTool) {
         viewer.measuringTool.startInsertion(lastMeasurementToolArgs);
@@ -3419,6 +3798,8 @@
       return false;
     }
 
+    // Delete a single point from a measurement; if the measurement would drop
+    // below its required minimum, remove the whole measurement.
     function deleteMeasurementPoint(measure, idx) {
       if (!measure || !measure.points || idx < 0 || idx >= measure.points.length) return;
       var minReq = _measureMinPoints(measure);
@@ -3596,6 +3977,7 @@
         var firstName = nums && nums.length > 0 ? 'D' + nums[0] : 'D?';
         var lastName  = nums && nums.length > 0 ? 'D' + nums[nums.length - 1] : 'D?';
         var area3D = compute3DPolygonArea(pts);
+        // XY plan area for reference (Potree's native shoelace)
         var areaXY = (typeof measure.getArea === 'function') ? measure.getArea() : 0;
         var perim = 0;
         for (var pi = 0; pi < pts.length; pi++) {
@@ -3687,6 +4069,7 @@
         }
         gChips += '</div>';
         html += gChips;
+        // For each interior corner, compute the angle
         var lastIdx = pts.length - 1;
         var loop = !!measure.closed;
         for (var ai = 0; ai < pts.length; ai++) {
@@ -3939,11 +4322,17 @@
         version: 1,
         pointCloudID: pointCloudID,
         constraints: constraints.map(function(c) {
-          return {
+          var out = {
             id: c.id, type: c.type, name: c.name,
             points: c.points.map(v3toObj),
             visible: c.visible, locked: !!c.locked
           };
+          if (c.type === 'plane' && c.xAxisAnchorA && c.xAxisAnchorB) {
+            out.xAxisAnchorA = v3toObj(c.xAxisAnchorA);
+            out.xAxisAnchorB = v3toObj(c.xAxisAnchorB);
+            if (c.xAxisCamUp) out.xAxisCamUp = v3toObj(c.xAxisCamUp);
+          }
+          return out;
         }),
         activeConstraintId: activeConstraintId,
         nextConstraintId: nextConstraintId,
@@ -4075,6 +4464,16 @@
             visible: sc.visible !== false,
             locked: !!sc.locked
           };
+          if (sc.xAxisAnchorA && sc.xAxisAnchorB) {
+            c.xAxisAnchorA = new THREE.Vector3(sc.xAxisAnchorA.x, sc.xAxisAnchorA.y, sc.xAxisAnchorA.z);
+            c.xAxisAnchorB = new THREE.Vector3(sc.xAxisAnchorB.x, sc.xAxisAnchorB.y, sc.xAxisAnchorB.z);
+            if (sc.xAxisCamUp) {
+              c.xAxisCamUp = new THREE.Vector3(sc.xAxisCamUp.x, sc.xAxisCamUp.y, sc.xAxisCamUp.z);
+            } else {
+              // Old session without camUp — synthesize from world Z so basis is consistent.
+              c.xAxisCamUp = new THREE.Vector3(0, 0, 1);
+            }
+          }
           recomputeConstraint(c);
           buildConstraintVisual(c);
           constraints.push(c);
@@ -4577,11 +4976,27 @@
         var tol = (cfg.mode === 'thickness')
           ? 0.10  // 100mm — generous for slab top-surface variation
           : (cfg.zMax - cfg.zMin) * 0.10;
-        list.push({
+        // Hoist per-box mode constants once so the per-point loops in
+        // applyElevationColors / colorNodeByElevation don't re-resolve
+        // them N times.
+        var entry = {
           invMat: new THREE.Matrix4().copy(vol.matrixWorld).invert(),
           cfg: cfg,
-          tolerance: tol
-        });
+          tolerance: tol,
+          mode: cfg.mode || 'z'
+        };
+        if (entry.mode === 'plane' && cfg.refPlane) {
+          entry.pNx = cfg.refPlane.normal.x;
+          entry.pNy = cfg.refPlane.normal.y;
+          entry.pNz = cfg.refPlane.normal.z;
+          entry.pCx = cfg.refPlane.centroid.x;
+          entry.pCy = cfg.refPlane.centroid.y;
+          entry.pCz = cfg.refPlane.centroid.z;
+          entry.pSide = cfg.refSide || 1;
+        } else if (entry.mode !== 'thickness') {
+          entry.zBaseZ = getZBaseZ(cfg);
+        }
+        list.push(entry);
       }
       return list;
     }
@@ -4644,17 +5059,16 @@
             }
           } else {
             var cfg2 = hitBox.cfg;
-            var elev = null;
-            if (cfg2.mode === 'plane' && cfg2.refPlane) {
-              var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
-              var s1 = cfg2.refSide || 1;
-              elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
-            } else if (cfg2.mode === 'thickness') {
+            var elev;
+            if (hitBox.mode === 'plane') {
+              elev = ((px - hitBox.pCx) * hitBox.pNx + (py - hitBox.pCy) * hitBox.pNy + (pz - hitBox.pCz) * hitBox.pNz) * hitBox.pSide;
+            } else if (hitBox.mode === 'thickness') {
               elev = getThicknessForPoint(px, py, pz, cfg2.thicknessGrid);
             } else {
-              elev = pz - getZBaseZ(cfg2);
+              elev = pz - hitBox.zBaseZ;
             }
             if (elev === null) {
+              // Thickness lookup said this point isn't on the slab — restore original
               if (origArr) {
                 arr[off]     = origArr[off];
                 arr[off + 1] = origArr[off + 1];
@@ -4674,7 +5088,10 @@
       }
     }
 
-    // Color a single geometry node by elevation (for newly loaded nodes during zoom)
+    // Color a single geometry node by elevation (for newly loaded nodes during zoom).
+    // Optional `cachedBoxes` and `cachedExcl` skip the rebuilds — pass them when
+    // coloring multiple nodes in one frame so we don't re-walk the volume lists
+    // for every node.
     function colorNodeByElevation(node, pc, cachedBoxes, cachedExcl) {
       if (!node.geometry || !node.geometry.attributes.rgba || !node.geometry.attributes.position) return;
       // Mark this geometry as colored (per-geometry, so re-streamed nodes will
@@ -4731,15 +5148,13 @@
 
         if (keep) {
           var cfg2 = hitBox.cfg;
-          var elev = null;
-          if (cfg2.mode === 'plane' && cfg2.refPlane) {
-            var n1 = cfg2.refPlane.normal, c1 = cfg2.refPlane.centroid;
-            var s1 = cfg2.refSide || 1;
-            elev = ((px - c1.x) * n1.x + (py - c1.y) * n1.y + (pz - c1.z) * n1.z) * s1;
-          } else if (cfg2.mode === 'thickness') {
+          var elev;
+          if (hitBox.mode === 'plane') {
+            elev = ((px - hitBox.pCx) * hitBox.pNx + (py - hitBox.pCy) * hitBox.pNy + (pz - hitBox.pCz) * hitBox.pNz) * hitBox.pSide;
+          } else if (hitBox.mode === 'thickness') {
             elev = getThicknessForPoint(px, py, pz, cfg2.thicknessGrid);
           } else {
-            elev = pz - getZBaseZ(cfg2);
+            elev = pz - hitBox.zBaseZ;
           }
           if (elev === null) {
             keep = false;
@@ -4757,13 +5172,14 @@
       rgba.needsUpdate = true;
     }
 
+    // Per-frame check: color any newly loaded nodes
     // Throttle: only run a full octree walk when Potree has loaded a new node
     // since our last pass. Without this we walk the whole tree every frame
     // (60 FPS × hundreds of nodes), which dominates the per-frame budget on
     // large clouds and inflates memory through repeated allocations.
     var _elevWasLoading = false;
+    var _elevPrevLoadingCount = 0;
 
-    // Per-frame check: color any newly loaded nodes
     function elevationFrameUpdate() {
       if (!elevationActive) return;
       var pc = viewer.scene.pointclouds[0];
@@ -4774,8 +5190,12 @@
       // entirely otherwise drops elevation per-frame cost to ~zero.
       var nl = (typeof Potree !== 'undefined' && Potree.numNodesLoading) || 0;
       var streamFinishedThisFrame = (_elevWasLoading && nl === 0);
-      if (nl === 0 && !streamFinishedThisFrame) return;
+      if (nl === 0 && !streamFinishedThisFrame) {
+        _elevPrevLoadingCount = nl;
+        return;
+      }
       _elevWasLoading = (nl > 0);
+      _elevPrevLoadingCount = nl;
 
       // Collect uncolored loaded nodes first; compute per-frame caches once
       // and pass them in so we don't rebuild the active-box / exclusion lists
@@ -5259,18 +5679,23 @@
         transparent: false
       });
 
-      // Greedy label placement with min world-space spacing across all
-      // levels — prevents perimeter clusters and keeps labels readable.
-      var placedLabelXY = [];
-      var minLabelSpacing = scanDiag * 0.10;
+      // ===== Label placement: greedy spacing across all levels =====
+      // Track every label we place (across levels) and require a minimum
+      // world-space distance between any two labels. This naturally thins
+      // out clutter at perimeters where contours bunch up, while keeping
+      // good coverage along long open contours.
+      var placedLabelXY = [];                       // [x,y,z, x,y,z, ...]
+      var minLabelSpacing = scanDiag * 0.10;        // ~10% of map diagonal
       var minLabelSpacingSq = minLabelSpacing * minLabelSpacing;
-      var edgeMarginU = uRange * 0.05;
+      var edgeMarginU = uRange * 0.05;              // skip labels within 5% of box edge
       var edgeMarginV = vRange * 0.05;
       var uLo = uMin + edgeMarginU, uHi = uMax - edgeMarginU;
       var vLo = vMin + edgeMarginV, vHi = vMax - edgeMarginV;
 
       function tryPlaceLabel(wx, wy, wz, uVal, vVal, labelText, target) {
+        // Skip near box edges — perimeter contour intersections cluster here
         if (uVal < uLo || uVal > uHi || vVal < vLo || vVal > vHi) return false;
+        // Reject if any already-placed label is too close
         for (var pi = 0; pi < placedLabelXY.length; pi += 3) {
           var dx = wx - placedLabelXY[pi];
           var dy = wy - placedLabelXY[pi + 1];
@@ -5290,8 +5715,9 @@
         var segs = marchingSquares(gridAvg, gridRes, gridRes, level);
         if (segs.length === 0) continue;
 
+        // Per-segment data: world position of midpoint + (u,v) for edge test
         var linePositions = [];
-        var midData = [];
+        var midData = []; // [{wx,wy,wz,u,v}] per segment
         for (var si = 0; si < segs.length; si++) {
           var seg = segs[si];
           var mu = 0, mv = 0;
@@ -5308,6 +5734,8 @@
             var wz = cz + uVal * U.z + vVal * V.z + nOffset * N.z + offZ;
             linePositions.push(wx, wy, wz);
           }
+          // Midpoint of this segment in world space (without offX/Y/Z, since
+          // labels apply their own offset)
           var aIdx = (si * 2) * 3, bIdx = (si * 2 + 1) * 3;
           midData.push({
             wx: (linePositions[aIdx] + linePositions[bIdx]) / 2 - offX,
@@ -5320,6 +5748,7 @@
 
         if (linePositions.length === 0) continue;
 
+        // Render multiple offset copies to create a thicker visible line
         var thickness = scanDiag * 0.0008;
         if (thickness < 0.001) thickness = 0.001;
         var offsets = [[0, 0], [thickness, 0], [-thickness, 0], [0, thickness], [0, -thickness]];
@@ -5342,15 +5771,20 @@
           target.add(line);
         }
 
+        // Place labels with greedy spacing. Walk segments in order and try
+        // to place at each midpoint; spacing rules will reject candidates
+        // too close to already-placed labels (any level).
         var labelText = level.toFixed(decimals) + ' m';
         var placedAny = false;
-        var stride = Math.max(1, Math.floor(midData.length / 24));
+        var stride = Math.max(1, Math.floor(midData.length / 24)); // sample
         for (var li = 0; li < midData.length; li += stride) {
           var m = midData[li];
           if (tryPlaceLabel(m.wx, m.wy, m.wz, m.u, m.v, labelText, target)) {
             placedAny = true;
           }
         }
+        // If spacing rejected every candidate (very dense map), force one in
+        // the interior so the level is identifiable.
         if (!placedAny) {
           for (var li = 0; li < midData.length; li++) {
             var m = midData[li];
@@ -5820,6 +6254,7 @@
           if (cfg.mode === 'thickness') {
             var inputStyleTh = 'width:100%;padding:2px 4px;border:1px solid var(--border,#333);border-radius:3px;background:var(--panel-bg,#6b6b6b);color:var(--sidebar-text,#fbfbfb);font:11px sans-serif';
 
+            // Reference plane (optional). If unset, world-Z is used.
             var trefRow = document.createElement('div');
             trefRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0';
             trefRow.innerHTML = '<span style="min-width:40px">Plane:</span>';
@@ -5849,6 +6284,7 @@
             trefRow.appendChild(tplaneSel);
             panel.appendChild(trefRow);
 
+            // Expected min / max thickness (m)
             var thRow = document.createElement('div');
             thRow.style.cssText = 'display:flex;gap:4px;margin:4px 0';
             var thMinCol = document.createElement('div'); thMinCol.style.cssText = 'flex:1';
@@ -6120,6 +6556,9 @@
       var ov = document.getElementById('enable-compute-overlay');
       if (ov) ov.classList.remove('show');
     }
+    // Yield to the browser between phases so paint flushes (status text
+    // updates and the animated bar stay smooth even though the heavy work
+    // is synchronous JS).
     function _yieldToPaint() {
       return new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 0); }); });
     }
@@ -6146,8 +6585,9 @@
       var boxInv = new THREE.Matrix4().copy(targetVol.matrixWorld).invert();
 
       // Build the union AABB of every active box plus the one we're about to
-      // compute, padded by ~5%. forceLoadAllNodes/extractPositions use this
-      // filter so we don't load the entire cloud just to color a small region.
+      // compute, padded by ~5% so we still see surfaces just outside an edge.
+      // forceLoadAllNodes/extractPositions use this filter so we don't load
+      // the entire 26M-point cloud just to color a small region.
       var loadAABB = (function() {
         var u = getElevationCropBounds();
         var b = boxBounds;
@@ -6188,16 +6628,30 @@
         setComputeProgress('Building surface grid (' + data.count.toLocaleString() + ' pts)...');
         return _yieldToPaint().then(function() { return data; });
       }).then(function (data) {
-        // Build this box's surface grid using only points INSIDE this box (OBB)
+        // Build this box's surface grid using only points INSIDE this box (OBB).
+        // For Z mode the surface grid is fused into Pass A below — we walk the
+        // points only twice total (range/count/grid in Pass A, top-surface
+        // refine in Pass B) instead of the previous four times.
         var v = new THREE.Vector3();
         var count = data.count;
-        // Thickness mode has its own per-cell filtering (validity from the
-        // thickness grid), so we skip the top-surface grids in that mode.
-        // Thickness mode: build BOTH the regular top-surface grid (so the
-        // apply loop's existing top-surface filter colors only top-surface
-        // points, exactly like Z mode does) AND the thickness grid (for the
-        // per-cell thickness VALUE).
-        if (selCfg.mode === 'thickness') {
+
+        // Hoist mode-specific elev constants once. Avoids per-point function
+        // calls (getZBaseZ linearly searched markedPoints) and per-point
+        // property lookups (refPlane.normal.x, etc.) inside the inner loops.
+        var modeIsThickness = (selCfg.mode === 'thickness');
+        var modeIsPlane = (selCfg.mode === 'plane' && !!selCfg.refPlane);
+        var zBaseZ = 0;
+        var pNx, pNy, pNz, pCx, pCy, pCz, pSide;
+        if (modeIsPlane) {
+          pNx = selCfg.refPlane.normal.x; pNy = selCfg.refPlane.normal.y; pNz = selCfg.refPlane.normal.z;
+          pCx = selCfg.refPlane.centroid.x; pCy = selCfg.refPlane.centroid.y; pCz = selCfg.refPlane.centroid.z;
+          pSide = selCfg.refSide || 1;
+        } else if (!modeIsThickness) {
+          zBaseZ = getZBaseZ(selCfg);
+        }
+
+        // Allocate auxiliary grids. Z-mode surfaceGrid is filled inline in Pass A.
+        if (modeIsThickness) {
           setComputeProgress('Computing slab thickness grid...');
           selCfg.surfaceGrid = buildSurfaceGrid(elevationPositions, boxBounds, 200);
           selCfg.planeSurfGrid = null;
@@ -6213,32 +6667,41 @@
               minComponentArea: 0.1
             }
           );
-        } else if (selCfg.mode === 'plane' && selCfg.refPlane) {
+        } else if (modeIsPlane) {
           selCfg.surfaceGrid = null;
           selCfg.planeSurfGrid = buildPlaneSurfaceGrid(
             elevationPositions, boxBounds, 200, selCfg.refPlane, selCfg.refSide);
           selCfg.thicknessGrid = null;
         } else {
-          selCfg.surfaceGrid = buildSurfaceGrid(elevationPositions, boxBounds, 200);
+          // Pre-allocate the Z surface grid; Pass A populates it inline.
+          var _gxMin = boxBounds.min[0], _gxMax = boxBounds.max[0];
+          var _gyMin = boxBounds.min[1], _gyMax = boxBounds.max[1];
+          var _gxRange = _gxMax - _gxMin, _gyRange = _gyMax - _gyMin;
+          if (_gxRange < 1e-6 || _gyRange < 1e-6) {
+            selCfg.surfaceGrid = null;
+          } else {
+            var _gridRes = 200;
+            var _maxZ = new Float32Array(_gridRes * _gridRes);
+            for (var _ii = 0; _ii < _maxZ.length; _ii++) _maxZ[_ii] = -Infinity;
+            selCfg.surfaceGrid = {
+              maxZ: _maxZ, gridRes: _gridRes,
+              xMin: _gxMin, yMin: _gyMin,
+              cellX: _gxRange / _gridRes, cellY: _gyRange / _gridRes
+            };
+          }
           selCfg.planeSurfGrid = null;
           selCfg.thicknessGrid = null;
         }
 
-        // Compute this box's min/max from top-surface points inside its OBB
+        // Pass A — fused: range scan (OBB), count points inside (OBB), and
+        // for Z mode also build the surface grid (AABB filter) in the same
+        // walk over the points.
         var rawZMin = Infinity, rawZMax = -Infinity;
         var zMin = Infinity, zMax = -Infinity;
-        function elevFor(px, py, pz) {
-          if (selCfg.mode === 'plane' && selCfg.refPlane) {
-            var n = selCfg.refPlane.normal, c = selCfg.refPlane.centroid;
-            var s = selCfg.refSide || 1;
-            return ((px - c.x) * n.x + (py - c.y) * n.y + (pz - c.z) * n.z) * s;
-          }
-          if (selCfg.mode === 'thickness') {
-            return getThicknessForPoint(px, py, pz, selCfg.thicknessGrid);
-          }
-          return pz - getZBaseZ(selCfg);
-        }
-        if (selCfg.mode === 'thickness') {
+        var countInside = 0;
+
+        if (modeIsThickness) {
+          // Range comes directly from the thickness grid's valid cells.
           var tg = selCfg.thicknessGrid;
           if (tg) {
             var nC = tg.gridRes * tg.gridRes;
@@ -6249,37 +6712,84 @@
               if (t > zMax) zMax = t;
             }
           }
-        } else {
+          // Still need countInside for the status string.
           for (var i = 0; i < count; i++) {
             var px = elevationPositions[i * 3];
             var py = elevationPositions[i * 3 + 1];
             var pz = elevationPositions[i * 3 + 2];
             v.set(px, py, pz).applyMatrix4(boxInv);
+            if (v.x >= -0.5 && v.x <= 0.5 && v.y >= -0.5 && v.y <= 0.5 && v.z >= -0.5 && v.z <= 0.5) countInside++;
+          }
+        } else {
+          var sg = selCfg.surfaceGrid;
+          var sgMaxZ = sg ? sg.maxZ : null;
+          var sgRes = sg ? sg.gridRes : 0;
+          var sgXMin = sg ? sg.xMin : 0, sgYMin = sg ? sg.yMin : 0;
+          var sgCellX = sg ? sg.cellX : 1, sgCellY = sg ? sg.cellY : 1;
+          var bbMinX = boxBounds.min[0], bbMinY = boxBounds.min[1], bbMinZ = boxBounds.min[2];
+          var bbMaxX = boxBounds.max[0], bbMaxY = boxBounds.max[1], bbMaxZ = boxBounds.max[2];
+
+          for (var i = 0; i < count; i++) {
+            var px = elevationPositions[i * 3];
+            var py = elevationPositions[i * 3 + 1];
+            var pz = elevationPositions[i * 3 + 2];
+
+            // Z-mode surface grid: AABB filter, populate maxZ inline.
+            if (sgMaxZ &&
+                px >= bbMinX && px <= bbMaxX &&
+                py >= bbMinY && py <= bbMaxY &&
+                pz >= bbMinZ && pz <= bbMaxZ) {
+              var ix = Math.floor((px - sgXMin) / sgCellX);
+              var iy = Math.floor((py - sgYMin) / sgCellY);
+              if (ix >= sgRes) ix = sgRes - 1; else if (ix < 0) ix = 0;
+              if (iy >= sgRes) iy = sgRes - 1; else if (iy < 0) iy = 0;
+              var idx = iy * sgRes + ix;
+              if (pz > sgMaxZ[idx]) sgMaxZ[idx] = pz;
+            }
+
+            // OBB filter for range scan + count.
+            v.set(px, py, pz).applyMatrix4(boxInv);
             if (v.x < -0.5 || v.x > 0.5 || v.y < -0.5 || v.y > 0.5 || v.z < -0.5 || v.z > 0.5) continue;
+
+            countInside++;
             if (pz < rawZMin) rawZMin = pz;
             if (pz > rawZMax) rawZMax = pz;
-            var e = elevFor(px, py, pz);
+
+            var e = modeIsPlane
+              ? ((px - pCx) * pNx + (py - pCy) * pNy + (pz - pCz) * pNz) * pSide
+              : (pz - zBaseZ);
             if (e < zMin) zMin = e;
             if (e > zMax) zMax = e;
           }
         }
-        // Refine to top-surface points only
+
+        // Pass B — refine range to top-surface points only.
         if (selCfg.surfaceGrid || selCfg.planeSurfGrid) {
           var range = zMax - zMin;
           var tol = range > 0 ? range * 0.10 : (rawZMax - rawZMin) * 0.10;
           var tsMin = Infinity, tsMax = -Infinity;
+          var planeGrid = selCfg.planeSurfGrid, zGrid = selCfg.surfaceGrid;
+          var thickGrid = selCfg.thicknessGrid;
           for (var i = 0; i < count; i++) {
             var px = elevationPositions[i * 3];
             var py = elevationPositions[i * 3 + 1];
             var pz = elevationPositions[i * 3 + 2];
             v.set(px, py, pz).applyMatrix4(boxInv);
             if (v.x < -0.5 || v.x > 0.5 || v.y < -0.5 || v.y > 0.5 || v.z < -0.5 || v.z > 0.5) continue;
-            if (selCfg.planeSurfGrid) {
-              if (!isPlaneTopSurface(px, py, pz, selCfg.planeSurfGrid, tol)) continue;
-            } else if (selCfg.surfaceGrid) {
-              if (!isTopSurface(px, py, pz, selCfg.surfaceGrid, tol)) continue;
+            if (planeGrid) {
+              if (!isPlaneTopSurface(px, py, pz, planeGrid, tol)) continue;
+            } else if (zGrid) {
+              if (!isTopSurface(px, py, pz, zGrid, tol)) continue;
             }
-            var e = elevFor(px, py, pz);
+            var e;
+            if (modeIsPlane) {
+              e = ((px - pCx) * pNx + (py - pCy) * pNy + (pz - pCz) * pNz) * pSide;
+            } else if (modeIsThickness) {
+              e = getThicknessForPoint(px, py, pz, thickGrid);
+              if (e === null) continue;
+            } else {
+              e = pz - zBaseZ;
+            }
             if (e < tsMin) tsMin = e;
             if (e > tsMax) tsMax = e;
           }
@@ -6343,16 +6853,6 @@
           walk(pc.pcoGeometry.root);
         })();
 
-        // Count points inside this box
-        var countInside = 0;
-        for (var i = 0; i < count; i++) {
-          var px = elevationPositions[i * 3];
-          var py = elevationPositions[i * 3 + 1];
-          var pz = elevationPositions[i * 3 + 2];
-          v.set(px, py, pz).applyMatrix4(boxInv);
-          if (v.x >= -0.5 && v.x <= 0.5 && v.y >= -0.5 && v.y <= 0.5 && v.z >= -0.5 && v.z <= 0.5) countInside++;
-        }
-
         var rangeLabel = selCfg.mode === 'plane' ? 'Deviation' :
                          (selCfg.mode === 'thickness' ? 'Thickness' : 'Z');
         $('#enable-elevation-status').text(
@@ -6372,9 +6872,9 @@
         syncHighlightBoxes();
 
         // Restore the original point budget. The 20M bump was only needed
-        // during compute to keep in-region nodes loaded; colored buffers
-        // persist after compute, and elevationFrameUpdate re-colors any
-        // nodes that get re-loaded as the user navigates.
+        // to make sure all in-region nodes stayed loaded during compute;
+        // colored buffers persist after compute, and elevationFrameUpdate
+        // re-colors any nodes that get re-loaded as the user navigates.
         if (elevationOrigBudget !== null) {
           viewer.setPointBudget(elevationOrigBudget);
           elevationOrigBudget = null;
@@ -7042,6 +7542,20 @@
           return;
         }
       }
+      // X-axis pick marker dragging (only during plane-x-axis pick mode)
+      if (e.button === 0 && constraintPickMode && constraintPickType === 'plane-x-axis' && constraintPickMarkers.length > 0) {
+        var rectXA = renderArea.getBoundingClientRect();
+        var mousePixelXA = { x: e.clientX - rectXA.left, y: e.clientY - rectXA.top };
+        var idxXA = findNearestXAxisPickMarker(mousePixelXA);
+        if (idxXA >= 0) {
+          _xAxisPickDragActive = true;
+          _xAxisPickDragIndex = idxXA;
+          document.body.classList.add('constraint-drag');
+          e.stopPropagation();
+          mouseDownPos = null;
+          return;
+        }
+      }
       if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) return;
       if (e.button !== 0) return; // left-click only for placing points
       mouseDownPos = { x: e.clientX, y: e.clientY };
@@ -7090,6 +7604,20 @@
         }
         return;
       }
+      // X-axis pick marker dragging (during plane-x-axis pick mode).
+      // Marker follows the actual scan geometry; projection onto the plane
+      // happens only when the basis is computed.
+      if (_xAxisPickDragActive && _xAxisPickDragIndex >= 0 && _pendingPlaneConstraint) {
+        var rectXAm = renderArea.getBoundingClientRect();
+        var mouseXAm = { x: e.clientX - rectXAm.left, y: e.clientY - rectXAm.top };
+        var cameraXAm = viewer.scene.getActiveCamera();
+        var prXAm = _origPick(mouseXAm, cameraXAm, viewer, viewer.scene.pointclouds, { pickClipped: true });
+        if (prXAm && prXAm.location) {
+          constraintPickPoints[_xAxisPickDragIndex].copy(prXAm.location);
+          constraintPickMarkers[_xAxisPickDragIndex].position.copy(prXAm.location);
+        }
+        return;
+      }
 
     // -- Hover highlight: scale up glow when cursor is near a custom point --
     var rect2 = renderArea.getBoundingClientRect();
@@ -7135,6 +7663,12 @@
         if (child2.userData && child2.userData.isMemberEndpoint) {
           checkHover(child2.getWorldPosition(new THREE.Vector3()), child2);
         }
+      }
+    }
+    // Check X-axis pick markers during plane-x-axis pick mode
+    if (constraintPickType === 'plane-x-axis') {
+      for (var hi4 = 0; hi4 < constraintPickMarkers.length; hi4++) {
+        checkHover(constraintPickMarkers[hi4].position, constraintPickMarkers[hi4]);
       }
     }
 
@@ -7204,6 +7738,14 @@
         return;
       }
 
+      // Finalize X-axis pick marker drag
+      if (_xAxisPickDragActive) {
+        _xAxisPickDragActive = false;
+        _xAxisPickDragIndex = -1;
+        document.body.classList.remove('constraint-drag');
+        return;
+      }
+
       if ((!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) || !mouseDownPos) return;
 
       // Drag guard: only place marker if mouse moved < 5px
@@ -7230,6 +7772,7 @@
           assignZBaseMark(targetVol, existing.id);
           return;
         }
+        // Otherwise place a new mark at the picked location
         var zbPick = Potree.Utils.getMousePointCloudIntersection(
           mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
         );
@@ -7399,6 +7942,50 @@
       if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
       // Member shortcut
       if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+      // Ortho-measure toggle (requires an active plane with a basis)
+      if (ev.key === 'o' || ev.key === 'O') {
+        var _t = ev.target;
+        var _typing = _t && (_t.tagName === 'INPUT' || _t.tagName === 'TEXTAREA' || _t.isContentEditable);
+        if (!_typing && !constraintPickMode && !memberPickMode && !MARK_MODE) {
+          if (!_orthoMeasureMode) {
+            var ac = constraints.find(function(con) { return con.id === activeConstraintId; });
+            if (!ac || ac.type !== 'plane' || !ac.basis) {
+              showToast('Activate a plane first to enable ortho measure', 3000);
+            } else {
+              _orthoMeasureMode = true;
+              var axesLbl = _orthoParallelMode ? 'X/Y/Z' : 'X/Y';
+              showToast('Ortho measure ON — picks snap to ' + ac.name + ' ' + axesLbl + ' axes', 3000);
+              updateConstraintStatus();
+            }
+          } else {
+            _orthoMeasureMode = false;
+            showToast('Ortho measure OFF', 2000);
+            updateConstraintStatus();
+          }
+        }
+      }
+      // Parallel mode toggle: switch between drawing on the active plane
+      // (default) and drawing in a parallel plane that follows the prior pick.
+      if (ev.key === 'p' || ev.key === 'P') {
+        var _tp = ev.target;
+        var _typingP = _tp && (_tp.tagName === 'INPUT' || _tp.tagName === 'TEXTAREA' || _tp.isContentEditable);
+        if (!_typingP && !constraintPickMode && !memberPickMode && !MARK_MODE) {
+          if (!_orthoParallelMode) {
+            var acP = constraints.find(function(con) { return con.id === activeConstraintId; });
+            if (!acP || acP.type !== 'plane' || !acP.basis) {
+              showToast('Activate a plane first to enable parallel mode', 3000);
+            } else {
+              _orthoParallelMode = true;
+              showToast('Parallel mode ON — drawing tracks last pick’s elevation; ortho includes Z', 3500);
+              updateConstraintStatus();
+            }
+          } else {
+            _orthoParallelMode = false;
+            showToast('Parallel mode OFF — drawing locked to the active plane', 2500);
+            updateConstraintStatus();
+          }
+        }
+      }
       // Undo
       if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
 
@@ -7408,6 +7995,9 @@
         if (constraintPickMode && constraintPickType === 'fit-plane') {
           ev.preventDefault();
           finalizeConstraint();
+        } else if (constraintPickMode && constraintPickType === 'plane-x-axis' && constraintPickPoints.length >= 2) {
+          ev.preventDefault();
+          finalizePlaneXAxis();
         } else {
           var t = ev.target;
           var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
