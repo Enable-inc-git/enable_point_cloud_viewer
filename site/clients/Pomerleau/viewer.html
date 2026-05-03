@@ -4672,7 +4672,23 @@
     // Force-load octree nodes. If filterAABB is provided, ONLY load nodes
     // whose bounding box intersects that AABB — critical for large clouds
     // (otherwise we load 26M+ points to compute a heat map on a small region).
-    function forceLoadAllNodes(pointCloud, filterAABB) {
+    // Force-load octree nodes intersecting filterAABB. opts:
+    //   maxDepth     — stop recursing past this octree depth (root = 0). The
+    //                  major lever for web performance: each leaf node is one
+    //                  HTTP request, and recursing to leaves over a CDN at
+    //                  ~50ms RTT can mean thousands of requests for a "large
+    //                  area". Capping at depth ~6 typically gives several
+    //                  hundred thousand points — plenty for elevation/contour
+    //                  analysis (200×200 grid) — at 5–10× fewer requests.
+    //   maxPoints    — soft cap; once already-loaded in-AABB points exceed
+    //                  this, deeper levels are skipped between polls. Acts as
+    //                  a points-based ceiling on top of maxDepth. Default Inf.
+    //   onProgress   — optional callback({loaded, target}) for status updates.
+    function forceLoadAllNodes(pointCloud, filterAABB, opts) {
+      opts = opts || {};
+      var maxDepth = opts.maxDepth != null ? opts.maxDepth : Infinity;
+      var maxPoints = opts.maxPoints != null ? opts.maxPoints : Infinity;
+      var onProgress = opts.onProgress;
       return new Promise(function (resolve) {
         var geo = pointCloud.pcoGeometry;
         if (!geo || !geo.root) { resolve(); return; }
@@ -4688,27 +4704,59 @@
                    wymax < filterAABB.min[1] || wymin > filterAABB.max[1] ||
                    wzmax < filterAABB.min[2] || wzmin > filterAABB.max[2]);
         }
-        function triggerLoads(node) {
-          if (!node || !nodeIntersects(node)) return;
-          if (!node.loaded) node.load();
-          if (node.children) {
-            for (var i = 0; i < 8; i++) {
-              if (node.children[i]) triggerLoads(node.children[i]);
+        function countLoadedPoints() {
+          var n = 0;
+          function visit(node) {
+            if (!node || !nodeIntersects(node)) return;
+            if (node.loaded && node.geometry && node.geometry.attributes.position) {
+              n += node.geometry.attributes.position.count;
             }
+            if (node.children) {
+              for (var i = 0; i < 8; i++) if (node.children[i]) visit(node.children[i]);
+            }
+          }
+          visit(geo.root);
+          return n;
+        }
+        // BFS by level so depth and point-budget caps are easy to enforce.
+        // Trigger loads on each in-AABB node up to maxDepth; stop early if
+        // already-loaded points exceed maxPoints between levels.
+        function triggerLoadsBFS() {
+          var current = [geo.root];
+          var depth = 0;
+          while (current.length > 0 && depth <= maxDepth) {
+            var next = [];
+            for (var i = 0; i < current.length; i++) {
+              var node = current[i];
+              if (!node || !nodeIntersects(node)) continue;
+              if (!node.loaded) node.load();
+              if (node.children) {
+                for (var j = 0; j < 8; j++) {
+                  if (node.children[j]) next.push(node.children[j]);
+                }
+              }
+            }
+            current = next;
+            depth++;
+            if (countLoadedPoints() >= maxPoints) break;
           }
         }
         var origMax = Potree.maxNodesLoading || 4;
-        Potree.maxNodesLoading = 20;
-        triggerLoads(geo.root);
+        // CDNs over HTTP/2 multiplex many streams over one connection; the
+        // default cap of 4 (and previous bump to 20) leaves throughput on the
+        // table during a force-load burst.
+        Potree.maxNodesLoading = 60;
+        triggerLoadsBFS();
         var poll = setInterval(function () {
+          if (onProgress) {
+            try { onProgress({ loaded: countLoadedPoints(), inFlight: Potree.numNodesLoading }); } catch (_) {}
+          }
           if (Potree.numNodesLoading === 0) {
             clearInterval(poll);
             Potree.maxNodesLoading = origMax;
             resolve();
-          } else {
-            triggerLoads(geo.root);
           }
-        }, 100);
+        }, 200);
       });
     }
 
@@ -6614,7 +6662,18 @@
       if (elevationOrigBudget === null) elevationOrigBudget = viewer.getPointBudget();
       viewer.setPointBudget(20000000);
 
-      forceLoadAllNodes(pc, loadAABB).then(function () {
+      forceLoadAllNodes(pc, loadAABB, {
+        // Depth 6 + 1.5M point soft cap keeps web load times bounded without
+        // visibly degrading the elevation grid (200×200 = 40K cells; ~10–40
+        // points per cell is plenty for stable top-surface detection). Bump
+        // these if a particular cloud needs finer resolution.
+        maxDepth: 6,
+        maxPoints: 1500000,
+        onProgress: function(p) {
+          setComputeProgress('Loading octree nodes... ' + p.loaded.toLocaleString() + ' pts loaded'
+            + (p.inFlight > 0 ? ' (' + p.inFlight + ' in flight)' : ''));
+        }
+      }).then(function () {
         setComputeProgress('Extracting positions...');
         return _yieldToPaint();
       }).then(function () {
