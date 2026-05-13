@@ -356,6 +356,47 @@
       pointer-events: none;
     }
 
+    /* Panorama modal */
+    #station-panorama-modal {
+      position: fixed; inset: 0; z-index: 100001;
+      background: rgba(0, 0, 0, 0.92);
+      display: none;
+    }
+    #station-panorama-modal.show { display: block; }
+    #station-panorama-modal #spm-canvas {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      cursor: grab; display: block;
+    }
+    #station-panorama-modal #spm-canvas.grabbing { cursor: grabbing; }
+    #station-panorama-modal .spm-header {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.6), rgba(0,0,0,0));
+      pointer-events: none;
+    }
+    #station-panorama-modal .spm-title {
+      color: #fff; font: 600 14px sans-serif; flex: 1;
+    }
+    #station-panorama-modal .spm-close {
+      pointer-events: auto;
+      background: rgba(0,0,0,0.5); color: #fff;
+      border: 1px solid rgba(255,255,255,0.3); border-radius: 4px;
+      width: 32px; height: 32px; cursor: pointer;
+      font: 18px/1 sans-serif; padding: 0;
+    }
+    #station-panorama-modal .spm-close:hover {
+      background: rgba(255,255,255,0.15); border-color: #fff;
+    }
+    #station-panorama-modal .spm-hint {
+      position: absolute; bottom: 16px; left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.6); font: 11px sans-serif;
+      background: rgba(0,0,0,0.5); padding: 4px 12px; border-radius: 12px;
+      pointer-events: none;
+    }
+
+
     /* ===== Measurement panel overrides ===== */
     /* Hide native raw XYZ + native distance table in measurement panel */
     .measurement_content .coordinates_table_container,
@@ -527,6 +568,17 @@
 
   <!-- Elevation legend -->
   <div id="heatmap-legend"><canvas id="heatmap-legend-canvas" width="180" height="520"></canvas></div>
+
+  <!-- Scan station panorama modal -->
+  <div id="station-panorama-modal">
+    <canvas id="spm-canvas"></canvas>
+    <div class="spm-header">
+      <span class="spm-title" id="spm-title"></span>
+      <button class="spm-close" id="spm-close" title="Close (Esc)">&times;</button>
+    </div>
+    <div class="spm-hint">Drag to look around &middot; Scroll to zoom &middot; Esc to close</div>
+  </div>
+
 
   <!-- ===================== VENDOR + POTREE JS (order matters) ===================== -->
   <script src="../libs/jquery/jquery-3.1.1.min.js"></script>
@@ -773,6 +825,15 @@
     let nextMarkId = 1;
     const markerScene = new THREE.Scene();  // separate scene, rendered manually AFTER EDL
     markerScene.name = "EnableMarkerScene";
+
+    // -- Scan station pins state --
+    const stationScene = new THREE.Scene();
+    stationScene.name = "EnableStationScene";
+    const stations = [];           // each: { id, name, position, rotationQuat, panoramaURL, hasPanorama, visible, visual }
+    let stationPinHeight = 0.4;    // auto-scaled after cloud loads
+    let stationPinRadius = 0.1;
+    let _stationManifest = null;   // raw manifest object once fetched
+
     let ringOuterRadius = 0.12;   // large ring visible when zoomed out
     let ringMiddleRadius = 0.025; // medium ring
     let ringInnerRadius = 0.006;  // tightest ring, ~point-sized
@@ -895,6 +956,490 @@
 
       viewer.renderer.render(markerScene, camera);
     });
+
+    // -- Render scan station pins in the same overlay pass --
+    // Sprites auto-billboard via THREE.js's sprite shader, so we don't touch
+    // them. The cone is a Mesh anchored to world up — also left untouched.
+    viewer.addEventListener("render.pass.perspective_overlay", function(e) {
+      if (stationScene.children.length === 0) return;
+      const camera = viewer.scene.getActiveCamera();
+      viewer.renderer.render(stationScene, camera);
+    });
+
+    // -- Camera-icon glyph sprite (white camera icon on filled disk) --
+    var _stationIconTextureCache = null;
+    function getStationIconTexture() {
+      if (_stationIconTextureCache) return _stationIconTextureCache;
+      var size = 128;
+      var canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      var ctx = canvas.getContext('2d');
+      // Filled cyan disk background
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, size / 2 - 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#4db6ff';
+      ctx.fill();
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+      // Simple white camera glyph
+      ctx.fillStyle = '#ffffff';
+      // camera body
+      var bw = 56, bh = 38, bx = (size - bw) / 2, by = (size - bh) / 2 + 6;
+      ctx.fillRect(bx, by, bw, bh);
+      // viewfinder hump
+      ctx.fillRect(bx + 16, by - 10, 24, 12);
+      // lens (dark inner circle)
+      ctx.beginPath();
+      ctx.arc(size / 2, by + bh / 2, 12, 0, Math.PI * 2);
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(size / 2, by + bh / 2, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#4db6ff';
+      ctx.fill();
+      var tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter;
+      _stationIconTextureCache = tex;
+      return tex;
+    }
+
+    // -- Build a station pin: cone (tip at station.position) + camera icon sprite + glow --
+    // Potree's scene is Z-up, so the cone axis must be along world +Z to stand
+    // vertically. Default ConeGeometry has its axis along +Y.
+    function buildStationPinVisual(station) {
+      var group = new THREE.Group();
+      group.position.copy(station.position);
+
+      var coneColor = 0x4db6ff;
+      var pinOpacity = 1.0;
+
+      // Build cone with apex at local (0,0,0) (the station) and base at (0,0,+h).
+      //   Default: apex at +Y/2, base at -Y/2 (axis along Y).
+      //   rotateX(-π/2): swing Y onto Z. After: apex at (0,0,-h/2), base at (0,0,+h/2).
+      //     (And normals are inverted, hence DoubleSide.)
+      //   translate(0,0,+h/2): apex at (0,0,0), base at (0,0,+h).
+      var coneGeo = new THREE.ConeGeometry(stationPinRadius, stationPinHeight, 16);
+      coneGeo.rotateX(-Math.PI / 2);
+      coneGeo.translate(0, 0, stationPinHeight / 2);
+      var coneMat = new THREE.MeshBasicMaterial({
+        color: coneColor, depthTest: false, depthWrite: false,
+        transparent: true, opacity: pinOpacity,
+        side: THREE.DoubleSide
+      });
+      var cone = new THREE.Mesh(coneGeo, coneMat);
+      cone.userData.isStationCone = true;
+      cone.renderOrder = 1;
+      group.add(cone);
+
+      // Icon head sits above the cone base, along world +Z (up).
+      var iconOffsetZ = stationPinHeight + stationPinRadius * 1.4;
+      var iconScale = stationPinRadius * 4.5;
+
+      // Glow halo behind the icon head
+      var glow = createGlowSprite(coneColor, stationPinRadius * 2.5);
+      glow.position.set(0, 0, iconOffsetZ);
+      glow.material.opacity = 0.7;
+      glow.renderOrder = 2;
+      group.add(glow);
+
+      // Camera icon sprite (sprites auto-billboard — do NOT override quaternion)
+      var spriteMat = new THREE.SpriteMaterial({
+        map: getStationIconTexture(),
+        depthTest: false, depthWrite: false,
+        transparent: true, opacity: 1.0
+      });
+      var sprite = new THREE.Sprite(spriteMat);
+      sprite.scale.set(iconScale, iconScale, 1);
+      sprite.position.set(0, 0, iconOffsetZ);
+      sprite.renderOrder = 3;
+      sprite.userData.isStationIcon = true;
+      group.add(sprite);
+
+      group.userData.station = station;
+      group.userData.iconOffsetZ = iconOffsetZ;
+      group.userData.iconScale = iconScale;
+
+      return group;
+    }
+
+    // ============================================================
+    // Panorama modal viewer
+    // ============================================================
+    // Lazy-initialized inverted-sphere THREE.js scene. On close, we keep the
+    // renderer/scene/material alive for fast reopen and dispose only the
+    // texture (which holds the per-station JPEG).
+    var _spm = {
+      renderer: null,
+      scene: null,
+      camera: null,
+      sphere: null,
+      material: null,
+      texture: null,
+      raf: null,
+      yaw: 0,
+      pitch: 0,
+      dragging: false,
+      lastX: 0, lastY: 0,
+      escHandler: null,
+      resizeHandler: null,
+      open: false
+    };
+
+    function _spmInit() {
+      if (_spm.renderer) return;
+      var canvas = document.getElementById('spm-canvas');
+      _spm.renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+      _spm.renderer.setPixelRatio(window.devicePixelRatio || 1);
+      _spm.scene = new THREE.Scene();
+      _spm.camera = new THREE.PerspectiveCamera(75, 1, 0.1, 100);
+      // Sphere centered at origin, normals flipped inward so we view the
+      // panorama from the inside.
+      var geo = new THREE.SphereGeometry(50, 64, 32);
+      geo.scale(-1, 1, 1);
+      _spm.material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      _spm.sphere = new THREE.Mesh(geo, _spm.material);
+      _spm.scene.add(_spm.sphere);
+
+      canvas.addEventListener('pointerdown', function(ev) {
+        _spm.dragging = true;
+        _spm.lastX = ev.clientX;
+        _spm.lastY = ev.clientY;
+        canvas.classList.add('grabbing');
+        canvas.setPointerCapture(ev.pointerId);
+      });
+      canvas.addEventListener('pointermove', function(ev) {
+        if (!_spm.dragging) return;
+        var dx = ev.clientX - _spm.lastX;
+        var dy = ev.clientY - _spm.lastY;
+        _spm.lastX = ev.clientX;
+        _spm.lastY = ev.clientY;
+        // "Grab and drag" feel: dragging right moves the image right (camera
+        // looks left); dragging down moves the image down (camera looks up).
+        _spm.yaw += dx * 0.005;
+        _spm.pitch += dy * 0.005;
+        _spm.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, _spm.pitch));
+      });
+      function endDrag(ev) {
+        _spm.dragging = false;
+        canvas.classList.remove('grabbing');
+        try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+      }
+      canvas.addEventListener('pointerup', endDrag);
+      canvas.addEventListener('pointercancel', endDrag);
+      canvas.addEventListener('pointerleave', endDrag);
+
+      canvas.addEventListener('wheel', function(ev) {
+        ev.preventDefault();
+        _spm.camera.fov = Math.max(25, Math.min(90, _spm.camera.fov + ev.deltaY * 0.05));
+        _spm.camera.updateProjectionMatrix();
+      }, { passive: false });
+
+      document.getElementById('spm-close').addEventListener('click', closeStationPanorama);
+    }
+
+    function _spmResize() {
+      var canvas = document.getElementById('spm-canvas');
+      var w = canvas.clientWidth;
+      var h = canvas.clientHeight;
+      if (w === 0 || h === 0) return;
+      _spm.renderer.setSize(w, h, false);
+      _spm.camera.aspect = w / h;
+      _spm.camera.updateProjectionMatrix();
+    }
+
+    function _spmRenderLoop() {
+      if (!_spm.open) return;
+      _spm.raf = requestAnimationFrame(_spmRenderLoop);
+      // Apply yaw/pitch directly via euler angles (YXZ order = yaw, then pitch,
+      // then roll). This avoids the camera-roll surprises that lookAt+spherical
+      // produces when the up vector lines up with the look direction.
+      _spm.camera.rotation.order = 'YXZ';
+      _spm.camera.rotation.y = _spm.yaw;
+      _spm.camera.rotation.x = _spm.pitch;
+      _spm.camera.rotation.z = 0;
+      _spm.renderer.render(_spm.scene, _spm.camera);
+    }
+
+    function openStationPanorama(station) {
+      if (!station || !station.hasPanorama || !station.panoramaURL) {
+        showToast('No panorama available for this station');
+        return;
+      }
+      _spmInit();
+
+      // Title
+      var titleEl = document.getElementById('spm-title');
+      if (titleEl) titleEl.textContent = station.name;
+
+      // Reset camera orientation
+      _spm.yaw = 0;
+      _spm.pitch = 0;
+      _spm.camera.fov = 75;
+      _spm.camera.updateProjectionMatrix();
+
+      // Default sphere orientation (sky at +Y pole). Don't apply the station's
+      // rotation_quat here — it's from Trimble's Z-up rotation columns and
+      // applying it to a Y-up sphere produces tilted "up". User can drag to
+      // look around in the modal anyway.
+      _spm.sphere.quaternion.identity();
+
+      // Swap texture
+      if (_spm.texture) {
+        _spm.material.map = null;
+        _spm.texture.dispose();
+        _spm.texture = null;
+      }
+      var loader = new THREE.TextureLoader();
+      _spm.texture = loader.load(station.panoramaURL, function() {
+        // re-render once texture finishes loading
+      }, undefined, function(err) {
+        showToast('Failed to load panorama: ' + station.panoramaURL);
+        console.error(err);
+      });
+      _spm.texture.minFilter = THREE.LinearFilter;
+      _spm.material.map = _spm.texture;
+      _spm.material.needsUpdate = true;
+
+      // Show modal
+      var modal = document.getElementById('station-panorama-modal');
+      modal.classList.add('show');
+      _spm.open = true;
+
+      // Block all pointer events on the Potree canvas so drags in the modal
+      // don't also orbit the cloud underneath.
+      if (viewer.renderer && viewer.renderer.domElement) {
+        _spm._prevPotreePointerEvents = viewer.renderer.domElement.style.pointerEvents;
+        viewer.renderer.domElement.style.pointerEvents = 'none';
+      }
+      // Belt-and-suspenders: also block events at the document level (capture
+      // phase) so anything Potree listens to outside the canvas can't react.
+      _spm._eventBlocker = function(ev) {
+        // Don't block events targeted at the modal itself
+        var t = ev.target;
+        while (t) {
+          if (t.id === 'station-panorama-modal') return;
+          t = t.parentNode;
+        }
+        ev.stopImmediatePropagation();
+      };
+      var blockedTypes = ['mousedown', 'mouseup', 'mousemove', 'wheel', 'contextmenu', 'pointerdown', 'pointerup', 'pointermove'];
+      blockedTypes.forEach(function(t) {
+        document.addEventListener(t, _spm._eventBlocker, true);
+      });
+      _spm._blockedTypes = blockedTypes;
+
+      // Esc handler (form-field-aware per feedback_keyboard_guards.md)
+      _spm.escHandler = function(ev) {
+        if (ev.key !== 'Escape') return;
+        var t = ev.target, tag = t && t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+        closeStationPanorama();
+      };
+      document.addEventListener('keydown', _spm.escHandler, true);
+
+      _spm.resizeHandler = function() { _spmResize(); };
+      window.addEventListener('resize', _spm.resizeHandler);
+
+      // Wait one frame so the canvas has its layout size before sizing renderer
+      requestAnimationFrame(function() {
+        _spmResize();
+        _spmRenderLoop();
+      });
+    }
+
+    function closeStationPanorama() {
+      if (!_spm.open) return;
+      _spm.open = false;
+      if (_spm.raf) cancelAnimationFrame(_spm.raf);
+      _spm.raf = null;
+      var modal = document.getElementById('station-panorama-modal');
+      modal.classList.remove('show');
+      if (_spm.escHandler) {
+        document.removeEventListener('keydown', _spm.escHandler, true);
+        _spm.escHandler = null;
+      }
+      if (_spm.resizeHandler) {
+        window.removeEventListener('resize', _spm.resizeHandler);
+        _spm.resizeHandler = null;
+      }
+      // Restore Potree canvas pointer events
+      if (viewer.renderer && viewer.renderer.domElement) {
+        viewer.renderer.domElement.style.pointerEvents = _spm._prevPotreePointerEvents || '';
+        _spm._prevPotreePointerEvents = null;
+      }
+      // Remove document-level event blockers
+      if (_spm._eventBlocker && _spm._blockedTypes) {
+        _spm._blockedTypes.forEach(function(t) {
+          document.removeEventListener(t, _spm._eventBlocker, true);
+        });
+        _spm._eventBlocker = null;
+        _spm._blockedTypes = null;
+      }
+      // Free texture memory; keep renderer for fast reopen
+      if (_spm.texture) {
+        _spm.material.map = null;
+        _spm.texture.dispose();
+        _spm.texture = null;
+        _spm.material.needsUpdate = true;
+      }
+    }
+
+    // -- Toggle visibility of all scan station pins --
+    var _stationsVisible = true;
+    function toggleStationsVisibility() {
+      _stationsVisible = !_stationsVisible;
+      stations.forEach(function(st) {
+        st.visible = _stationsVisible;
+        if (st.visual) st.visual.visible = _stationsVisible;
+      });
+      var btn = document.getElementById('btn-toggle-stations');
+      if (btn) btn.textContent = _stationsVisible ? 'Hide Scan Stations' : 'Show Scan Stations';
+    }
+
+    // -- Apply a fetched station manifest: build pins, populate sidebar, check alignment --
+    function onStationManifestLoaded(manifest, worldBB) {
+      _stationManifest = manifest;
+      if (!manifest || !manifest.stations || manifest.stations.length === 0) return;
+
+      // Resolve base path for panorama URLs (relative to the project's folder).
+      // meta.folder = "<project>/pointclouds/<scan_id>"; drop those two segments.
+      var _mbParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
+      var manifestBase = _mbParts.slice(0, -2).join('/') + '/stations/';
+
+      // Auto-scale pin size from cloud diagonal.
+      try {
+        var size = worldBB.getSize(new THREE.Vector3());
+        var diagonal = Math.sqrt(size.x * size.x + size.y * size.y + size.z * size.z);
+        stationPinHeight = Math.max(0.15, diagonal * 0.00625);
+        stationPinRadius = stationPinHeight * 0.30;
+      } catch (err) { /* fall back to defaults */ }
+
+      // Only build pins for stations that have a panorama. The DB lists every
+      // station, but pins without a clickable target just add clutter.
+      manifest.stations.forEach(function(s) {
+        var hasPano = !!s.has_panorama && !!s.panorama;
+        if (!hasPano) return;
+        var pos = new THREE.Vector3(s.position[0], s.position[1], s.position[2]);
+        var quat = (s.rotation_quat && s.rotation_quat.length === 4)
+          ? s.rotation_quat.slice() : [0, 0, 0, 1];
+        var st = {
+          id: s.id,
+          name: s.name || s.id,
+          position: pos,
+          rotationQuat: quat,
+          panoramaURL: manifestBase + s.panorama,
+          hasPanorama: true,
+          visible: true,
+          visual: null
+        };
+        st.visual = buildStationPinVisual(st);
+        stationScene.add(st.visual);
+        stations.push(st);
+      });
+      console.log('[stations] built ' + stations.length + ' pins (out of ' + manifest.stations.length + ' DB stations)');
+      if (stations.length === 0) {
+        // No panoramas yet — leave the sidebar group hidden so it isn't an empty box
+        return;
+      }
+
+      // Reveal the Show/Hide Scan Stations toggle in the Session group.
+      // injectMarkButtons may not have run yet (it polls for Potree's #tools),
+      // so retry until the row exists in the DOM.
+      (function tryRevealToggle() {
+        var row = document.getElementById('enable-stations-toggle-row');
+        var btn = document.getElementById('btn-toggle-stations');
+        if (!row || !btn) {
+          setTimeout(tryRevealToggle, 150);
+          return;
+        }
+        row.style.display = '';
+        btn.textContent = _stationsVisible ? 'Hide Scan Stations' : 'Show Scan Stations';
+        btn.addEventListener('click', toggleStationsVisibility);
+        console.log('[stations] toggle button wired (' + stations.length + ' pins)');
+      })();
+
+      // Alignment sanity check (XY centroid vs cloud bbox center)
+      try {
+        var cx = 0, cy = 0, n = stations.length;
+        for (var i = 0; i < n; i++) { cx += stations[i].position.x; cy += stations[i].position.y; }
+        cx /= n; cy /= n;
+        var wbCenter = worldBB.getCenter(new THREE.Vector3());
+        var wbSize = worldBB.getSize(new THREE.Vector3());
+        var diag = Math.sqrt(wbSize.x * wbSize.x + wbSize.y * wbSize.y + wbSize.z * wbSize.z);
+        var dx = cx - wbCenter.x, dy = cy - wbCenter.y;
+        var centroidDist = Math.sqrt(dx * dx + dy * dy);
+
+        // Check if any single station lies far outside the bbox (allow 2x diagonal margin)
+        var expandedBB = worldBB.clone();
+        var pad = diag * 1.0;  // 1x diag padding on each side = 2x diag total expansion
+        expandedBB.min.x -= pad; expandedBB.min.y -= pad; expandedBB.min.z -= pad;
+        expandedBB.max.x += pad; expandedBB.max.y += pad; expandedBB.max.z += pad;
+        var anyOutside = false;
+        for (var j = 0; j < n; j++) {
+          if (!expandedBB.containsPoint(stations[j].position)) { anyOutside = true; break; }
+        }
+
+        if (centroidDist > diag * 0.5 || anyOutside) {
+          showToast('Station positions may be misaligned with point cloud — check --offset', 5000);
+          console.warn('[stations] alignment check failed:',
+            'centroidXY=', cx.toFixed(2), cy.toFixed(2),
+            'cloudCenterXY=', wbCenter.x.toFixed(2), wbCenter.y.toFixed(2),
+            'centroidDist=', centroidDist.toFixed(2),
+            'cloudDiagonal=', diag.toFixed(2),
+            'appliedOffset=', manifest.applied_offset,
+            'anyOutsideExpanded=', anyOutside);
+        } else {
+          console.log('[stations] alignment OK (centroid offset ' + centroidDist.toFixed(2) + 'm vs cloud diag ' + diag.toFixed(2) + 'm)');
+        }
+      } catch (err) {
+        console.warn('[stations] alignment check failed to run:', err);
+      }
+    }
+
+    // -- Find nearest station pin under cursor (screen-space hit-test) --
+    // Threshold is the larger of MIN_HIT_PX and half the icon's on-screen
+    // diameter, so the user can click anywhere within the visible icon.
+    function findNearestStationPin(mousePixel) {
+      if (stations.length === 0) return null;
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var MIN_HIT_PX = 18;
+      var bestDist = Infinity;
+      var bestResult = null;
+      for (var i = 0; i < stations.length; i++) {
+        var st = stations[i];
+        if (!st.visible || !st.hasPanorama) continue;
+        // Project the icon's WORLD position (above the station along world +Z)
+        var iconWorld = st.visual.position.clone();
+        var offZ = (st.visual.userData && st.visual.userData.iconOffsetZ) || (stationPinHeight + stationPinRadius * 1.4);
+        iconWorld.z += offZ;
+        // Project icon center
+        var ptC = iconWorld.clone().project(camera);
+        var cx = (ptC.x * 0.5 + 0.5) * rect.width;
+        var cy = (1 - (ptC.y * 0.5 + 0.5)) * rect.height;
+        // Project icon edge (icon center + iconScale*0.5 along camera-right)
+        var iconScale = (st.visual.userData && st.visual.userData.iconScale) || (stationPinRadius * 4.0);
+        var cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        var edgeWorld = iconWorld.clone().add(cameraRight.multiplyScalar(iconScale * 0.5));
+        var ptE = edgeWorld.project(camera);
+        var ex = (ptE.x * 0.5 + 0.5) * rect.width;
+        var ey = (1 - (ptE.y * 0.5 + 0.5)) * rect.height;
+        var radiusPx = Math.sqrt((ex - cx) * (ex - cx) + (ey - cy) * (ey - cy));
+        var threshold = Math.max(MIN_HIT_PX, radiusPx);
+
+        var dx = cx - mousePixel.x;
+        var dy = cy - mousePixel.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < threshold && dist < bestDist) {
+          bestDist = dist;
+          bestResult = { station: st, index: i };
+        }
+      }
+      return bestResult;
+    }
 
     // -- Toast notification --
     let toastTimer = null;
@@ -7393,6 +7938,9 @@
             '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
           '</div>' +
           '<input type="file" id="session-file-input" accept=".json" style="display:none">' +
+          '<div id="enable-stations-toggle-row" style="display:none; margin-top:8px">' +
+            '<button id="btn-toggle-stations" title="Show/hide scan station pins">Hide Scan Stations</button>' +
+          '</div>' +
         closeGroup() +
 
         // === 2. NAVIGATION (expanded) ===
@@ -7656,8 +8204,22 @@
 
     // -- Click handler with drag guard + constraint point dragging --
     let mouseDownPos = null;
+    let _stationCandidate = null;  // { station, downX, downY } set in mousedown if a pin is under cursor
 
     renderArea.addEventListener('mousedown', function(e) {
+      // Station pin click candidate (left-click only, no other tool/drag mode active).
+      // We don't stopPropagation here — Potree's orbit still works if the user drags.
+      // mouseup decides click vs drag with a 5px threshold.
+      _stationCandidate = null;
+      if (e.button === 0 && stations.length > 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode) {
+        var rectS = renderArea.getBoundingClientRect();
+        var mousePixelS = { x: e.clientX - rectS.left, y: e.clientY - rectS.top };
+        var stationHit = findNearestStationPin(mousePixelS);
+        if (stationHit) {
+          _stationCandidate = { station: stationHit.station, downX: e.clientX, downY: e.clientY };
+        }
+      }
+
       // Check if clicking near an unlocked marker (for dragging)
       if (e.button === 0 && markedPoints.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
         var rect = renderArea.getBoundingClientRect();
@@ -7721,6 +8283,7 @@
 
     // -- Hover highlight state (persists across mousemove calls) --
     var _hoveredGroup = null;
+    var _hoveredStation = null;  // currently hovered station object (or null)
     var HOVER_THRESHOLD = 12; // pixels
 
     renderArea.addEventListener('mousemove', function(e) {
@@ -7860,9 +8423,61 @@
       _hoveredGroup = bestHoverGroup;
     }
 
+    // Station pin hover — independent of the other hover logic; just sets the cursor
+    // so the user knows pins are clickable. Also brightens the cone fractionally.
+    if (stations.length > 0 && !MARK_MODE && !memberPickMode && !constraintPickMode) {
+      var stationHit2 = findNearestStationPin(mousePixel2);
+      if (_hoveredStation !== (stationHit2 ? stationHit2.station : null)) {
+        // Restore previous
+        if (_hoveredStation && _hoveredStation.visual) {
+          _hoveredStation.visual.traverse(function(o) {
+            if (o.isMesh && o.userData && o.userData.isStationCone && o.userData._origColor !== undefined) {
+              o.material.color.setHex(o.userData._origColor);
+              delete o.userData._origColor;
+            }
+          });
+        }
+        // Apply new
+        if (stationHit2) {
+          var s2 = stationHit2.station;
+          s2.visual.traverse(function(o) {
+            if (o.isMesh && o.userData && o.userData.isStationCone) {
+              if (o.userData._origColor === undefined) o.userData._origColor = o.material.color.getHex();
+              o.material.color.setHex(0xffffff);
+            }
+          });
+          renderArea.style.cursor = 'pointer';
+          _hoveredStation = s2;
+        } else {
+          _hoveredStation = null;
+          // Don't clear cursor here — the marker hover logic above already did
+        }
+      } else if (stationHit2) {
+        // Keep cursor pointer while continuously hovering
+        renderArea.style.cursor = 'pointer';
+      }
+    }
+
     }, true);
 
     renderArea.addEventListener('mouseup', function(e) {
+      // Station pin click — open panorama if the mouse barely moved since mousedown
+      // and no other drag was active. Always clear the candidate.
+      if (_stationCandidate) {
+        var sc = _stationCandidate;
+        _stationCandidate = null;
+        var noDragActive = !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive;
+        if (noDragActive && e.button === 0) {
+          var sdx = e.clientX - sc.downX;
+          var sdy = e.clientY - sc.downY;
+          if (Math.sqrt(sdx * sdx + sdy * sdy) < 5) {
+            openStationPanorama(sc.station);
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+
       // Finalize marker drag
       if (markerDragActive) {
         var draggedMark = markerDragInfo ? markerDragInfo.mark : null;
@@ -8007,6 +8622,36 @@
         if (ringInnerRadius < 0.001) ringInnerRadius = 0.001;
       } catch (err) {
         console.warn('Marker size auto-scale failed, using default:', err);
+      }
+
+      // ===== Scan-station manifest fetch (v1: only for the 7 St Dennis project) =====
+      if (pointCloudID === '7_st_dennis_scan') {
+        try {
+          pc.updateMatrixWorld(true);
+          var stWorldBB;
+          if (pc.pcoGeometry && pc.pcoGeometry.tightBoundingBox) {
+            stWorldBB = pc.pcoGeometry.tightBoundingBox.clone().applyMatrix4(pc.matrixWorld);
+          } else if (typeof pc.getBoundingBoxWorld === "function") {
+            stWorldBB = pc.getBoundingBoxWorld(new THREE.Box3());
+          } else {
+            stWorldBB = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
+          }
+          // Manifest sits at <projectRoot>/stations/stations.json; meta.folder is
+          // "<projectRoot>/pointclouds/<scan_id>", so we drop the last two path
+          // segments rather than relying on browser '../' normalization.
+          var _folderParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
+          var _projectRoot = _folderParts.slice(0, -2).join('/');
+          var manifestURL = _projectRoot + '/stations/stations.json';
+          console.log('[stations] fetching manifest:', manifestURL);
+          fetch(manifestURL)
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(manifest) {
+              if (manifest) onStationManifestLoaded(manifest, stWorldBB);
+            })
+            .catch(function() { /* silent — feature disables cleanly when no manifest */ });
+        } catch (err) {
+          console.warn('Station manifest fetch setup failed:', err);
+        }
       }
 
       // ===== INITIAL, LOCKED CLIP BOX (robust across forks) =====

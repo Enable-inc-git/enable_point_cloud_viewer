@@ -1,0 +1,162 @@
+ENABLE POINT CLOUD VIEWER — OVERVIEW
+=====================================
+
+WHAT IT IS
+----------
+A custom web-based 3D point cloud viewer built on top of Potree (the open-source
+WebGL point cloud renderer). Designed for structural engineering workflows on
+laser-scanned LAS data converted via PotreeConverter.
+
+It runs entirely in the browser. No install, no desktop license. Each client
+deployment is a single HTML file under site/clients/<ClientName>/ plus a
+projects.js registry that maps URL parameters (?p=<id>) to point cloud folders.
+The app loads and serves directly from a static host (Netlify/CDN) so a viewer
+URL can be shared with a contractor, owner, or QA inspector without giving
+them any software to install.
+
+
+CORE FEATURES
+-------------
+1. Mark Tool — click to place a labeled red point ("P1", "P2", ...) on any
+   surface in the cloud. Each mark is locked by default, draggable when
+   unlocked, with eye/lock/delete in a sidebar list. Used for control points,
+   layout points, or annotations.
+
+2. Constraint Tool — define local geometric references the rest of the tool
+   snaps to:
+     - Best-Fit Plane: pick N points (>= 3), plane fit by covariance
+       eigenvector (smallest variance direction = normal). Shows RMS error.
+     - Set Axis: pick 2 points to define a line.
+   Activating a constraint snaps every subsequent pick onto it.
+
+3. Plane Basis (X/Y/Z) — every fit-plane is required to have an explicit
+   user-defined +X axis (pick 2 points), with Y derived from the camera's
+   screen-up at click time and Z = X x Y by right-hand rule. Red and green
+   arrows visualize +X and +Y from the centroid. Editable any time via an "X"
+   button on the plane row. Picks for the X axis are placed on the actual
+   scan geometry and projected onto the plane only for the math.
+
+4. Member Sketching Tool — pick 2 endpoints to draw an orange structural
+   member (beam, column, brace). Inline name editing, drag to refine,
+   visibility/lock toggles, batch DXF export with each member on its own
+   named layer.
+
+5. Distance Measurement (with Ortho/Parallel snap) — Potree's native distance
+   tool, augmented:
+     - Snap to endpoints (marks, constraint definition points, member
+       endpoints, prior measurement points).
+     - Press O to toggle Ortho mode: each pick after the first locks to the
+       active plane's +X or +Y axis from the prior point. Decision is made by
+       which axis the cursor is moving along on screen, so it works
+       intuitively from any view angle including pure side views.
+     - Press P to toggle Parallel mode: ortho also includes the plane normal
+       (Z), letting you "step up" to a new elevation; subsequent picks track
+       that new parallel-plane elevation.
+
+6. Plane Orthographic View — one click on a plane row aligns the camera to
+   look down the plane normal in orthographic projection, with an adjustable
+   depth-slab clip box (mm-precision) so you see only the points within
+   tolerance of the plane. Useful for floor flatness, wall plumb checks,
+   shop-drawing extraction.
+
+7. Elevation Map (per-box, multi-mode) — the most distinctive analysis
+   feature. Drop one or more boxes anywhere in the cloud; each box owns its
+   own mode and result. Three modes:
+     - Z mode: elevation = pz - (optional Z-base mark), colored as a heat
+       map; useful for slab flatness vs a reference elevation.
+     - Plane-deviation mode: signed distance from a chosen reference plane,
+       multiplied by the user-picked positive side (refSide). Colors show
+       deviation from a fit plane, e.g. wall-flatness or curved-surface
+       deviation.
+     - Slab Thickness mode: measures top-to-bottom thickness per cell using
+       a top-surface band detection plus a bottom-surface region grow with
+       configurable expectedMin/Max and air-gap tolerance. Designed
+       specifically for slab thickness QC; rejects fixtures and air gaps.
+   Each box draws its own contour lines at user-defined intervals and shows
+   a legend.
+
+8. Cut-out / Exclusion Volumes — boxes that subtract from the visible cloud
+   (cut-out) or from the elevation analysis (exclusion zones).
+
+9. Save / Load Session — full state (constraints, plane bases, members,
+   measurements, marks, elevation boxes with per-box config, cut-outs,
+   exclusion zones) serialized to a single JSON file. Reopens to the exact
+   state on any device.
+
+10. Snap System — universal. Picks for any tool snap to nearby endpoints of
+    any tool. Pixel-space thresholds tuned for two contexts: aggressive (18
+    px) for member/constraint creation, gentler (10 px) for measurements.
+
+11. Hover Highlight — cursor near any unlocked draggable point lightens it
+    toward white, cursor changes to pointer. Locked points stay solid.
+
+12. Glow halo on every placed point (red/green/orange depending on type) so
+    they remain visible against any cloud color.
+
+
+PERFORMANCE / ENGINEERING DETAILS
+---------------------------------
+- The compute pipeline is hand-tuned for in-browser CPU performance. A typical
+  large-area heat-map compute walks each in-region point twice (Pass A +
+  Pass B) total — bounds, count, surface-grid populate, and range fold into
+  a single pass; the second pass is the top-surface refinement. Plane and
+  thickness modes share the bounds-finding pass with their dedicated grid
+  builders, eliminating redundant point walks.
+- Octree node loading for "force-load this region" is depth- and
+  point-budget-capped (default depth 6, soft cap 1.5M points), with parallel
+  HTTP/2 fetch concurrency tuned to ~60 inflight requests. Bounded load time
+  on a CDN even for very large project files.
+- Box adjustments after compute are GPU-only: green-tint shader follows the
+  current box matrix every frame at 60 fps, and the heat-map is cleared once
+  on first divergence so the user sees the new region unambiguously.
+  No per-frame CPU walk during drag.
+
+
+WHAT WE DO BETTER THAN CONVENTIONAL VIEWERS (Trimble, Faro, Autodesk, etc.)
+---------------------------------------------------------------------------
+1. Zero install, instant share. Trimble RealWorks, Faro Scene, Autodesk
+   Recap, Leica Cyclone all require a heavyweight desktop install plus a
+   per-seat license. We send a URL. A site superintendent can open it on
+   their phone.
+
+2. Engineering-grade local coordinate frames. Most viewers give you world
+   XYZ. Ours has a user-defined plane basis (X/Y/Z) attached to any fitted
+   plane, with the X axis picked interactively in 3D and visualized with
+   arrows. This is the foundation for ortho measurement.
+
+3. CAD-like ortho measurement on point clouds. The O/P toggles constrain
+   measurement picks to the active plane's axes — the kind of feature you
+   get in AutoCAD/Revit, but operating on a 3D scan with a custom local
+   frame. Conventional viewers don't have this; you measure freely in 3D
+   and have to eyeball "is this perpendicular?".
+
+4. Multi-mode elevation analysis built in. Z heat map, plane deviation, and
+   slab thickness are first-class tools in the same browser session, with
+   per-box independent results, contours, exclusion zones, and live preview.
+   In the conventional toolchain you'd export the cloud, load it into Faro
+   Scene or Cyclone or a specialized tool like Trimble RealWorks, run the
+   analysis, then bring it back. Each step is friction.
+
+5. Box editing has live visual feedback after compute. In most viewers,
+   resizing an analysis volume after running it requires an explicit
+   "clear / re-run" cycle. Ours shows the new region as green highlight in
+   real time and only re-paints the heat map when you click Recompute. The
+   user sees what's about to change, not just the stale result.
+
+6. Sketching + DXF export in one tool. Most cloud viewers are read-only:
+   you measure, you don't sketch. Members tool lets the engineer draw
+   structural framing directly on the scan and export to DXF (each member
+   = LINE on a named layer) — ready for Tekla, Revit, AutoCAD.
+
+7. Performance focus. The compute pipeline and node loader are tuned for a
+   browser on a contractor's laptop, not a workstation. Compute on a
+   large area finishes in seconds, not the minutes that a Cyclone
+   meshing-or-flatness pass would take.
+
+8. Single-file deployment per client. Everything for a given client is one
+   HTML file plus a few asset references. Easy to fork for a new project,
+   easy to brand (logo, accent color), easy to deliver.
+
+9. State portability. The session file is JSON: human-readable, diffable,
+   and trivial to script against. Send a session.json to a colleague and
+   they're looking at the exact same constraints/measurements/heat maps.

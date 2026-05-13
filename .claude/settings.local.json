@@ -27,6 +27,9 @@
       "Bash(cp \"site/clients/Solar Restoration/custom.css\" \"site/clients/WJ Properties/custom.css\")",
       "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/WJ Properties/viewer.html\")",
       "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/Pomerleau/viewer.html\")"
+    ],
+    "additionalDirectories": [
+      "C:\\enable_point_cloud_viewer_scans"
     ]
   }
 }
