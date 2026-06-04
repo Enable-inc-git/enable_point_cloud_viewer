@@ -953,34 +953,17 @@
       mark.visual.add(sprite);
     }
 
-    // -- Helper: scale a sphere mesh to a fixed screen-pixel size each frame.
-    // Used across markers / constraint definition points / member endpoints
-    // so every marker visually behaves like Potree's measurement spheres.
-    function _scaleMarkerSphere(sphereObj, camera, _rsz) {
-      var wp = sphereObj.getWorldPosition(new THREE.Vector3());
-      var dist = camera.position.distanceTo(wp);
-      var pr = Potree.Utils.projectedRadius(1, camera, dist, _rsz.width, _rsz.height);
-      if (!pr || !isFinite(pr) || pr < 0.001) pr = 1;
-      var s = 15 / pr;
-      sphereObj.scale.set(s, s, s);
-    }
-
     // -- Render markers in the perspective_overlay pass (AFTER EDL + depth clear) --
+    // Same hook Potree's own measurement/annotation tools use.
     viewer.addEventListener("render.pass.perspective_overlay", function(e) {
       if (markerScene.children.length === 0) return;
+
+      // Billboard: make every ring face the camera
       const camera = viewer.scene.getActiveCamera();
-      const _mkRSize = viewer.renderer.getSize(new THREE.Vector2());
-      // Billboard the mark groups (label sprites auto-billboard anyway, but
-      // historical behaviour also faces the group itself). Then scale every
-      // isMarkerSphere mesh to its fixed screen-pixel size.
       for (let i = 0; i < markerScene.children.length; i++) {
         markerScene.children[i].quaternion.copy(camera.quaternion);
-        markerScene.children[i].traverse(function (obj) {
-          if (obj.userData && obj.userData.isMarkerSphere) {
-            _scaleMarkerSphere(obj, camera, _mkRSize);
-          }
-        });
       }
+
       viewer.renderer.render(markerScene, camera);
     });
 
@@ -1486,16 +1469,16 @@
       const group = new THREE.Group();
       group.position.copy(position);
 
-      // Solid red sphere, fixed screen-pixel size (per-frame scaling in the
-      // markerScene render pass below). Matches the dimension/constraint marker
-      // style — just red.
-      var dotGeo = new THREE.SphereGeometry(0.4, 12, 12);
-      var dotMat = new THREE.MeshBasicMaterial({
-        color: 0xff2020, depthTest: false, depthWrite: false
+      // Filled dot at center (~actual point size)
+      const dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: ringMaterial.color, depthTest: false, depthWrite: false,
+        transparent: true, opacity: ringMaterial.opacity, side: THREE.DoubleSide
       });
-      var dotMesh = new THREE.Mesh(dotGeo, dotMat);
-      dotMesh.userData.isMarkerSphere = true;
-      group.add(dotMesh);
+      group.add(new THREE.Mesh(dotGeo, dotMat));
+
+      // Additive glow (electron cloud effect)
+      group.add(createGlowSprite(0xff2020, ringOuterRadius));
 
       // Text label (e.g. "P1")
       var labelName = 'P' + nextMarkId;
@@ -1621,538 +1604,6 @@
         })(markedPoints[i]);
       }
     }
-
-    // ============================================================
-    // ===== NOTES =================================================
-    // ============================================================
-    // Notes are text annotations attached to a 3D point in the cloud.
-    // Each note renders as a small sticky-note icon sprite at its world
-    // position. Clicking the icon opens a popover overlay where the user
-    // can edit the text; clicking again (or the popover X) collapses it.
-    // Notes share the same visibility toggle as scan stations and persist
-    // through session save/load.
-
-    var notes = [];                       // each: { id, name, text, position, visible, visual }
-    var nextNoteId = 1;
-    var notePickMode = false;
-    var _expandedNoteId = null;            // currently-open popover (or null)
-    var _noteIconTexture = null;
-    var noteScene = new THREE.Scene();
-    noteScene.name = "EnableNoteScene";
-
-    function _createNoteIconTexture() {
-      if (_noteIconTexture) return _noteIconTexture;
-      var size = 256;
-      var canvas = document.createElement('canvas');
-      canvas.width = size; canvas.height = size;
-      var ctx = canvas.getContext('2d');
-      var pad = 24;
-      var w = size - pad * 2, h = size - pad * 2;
-      var x0 = pad, y0 = pad;
-      var foldSize = 44;
-      var radius = 12;
-
-      // Drop shadow for legibility against dark/light clouds.
-      ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.beginPath();
-      ctx.moveTo(x0 + radius, y0 + 6);
-      ctx.lineTo(x0 + w - foldSize, y0 + 6);
-      ctx.lineTo(x0 + w, y0 + foldSize + 6);
-      ctx.lineTo(x0 + w, y0 + h - radius + 6);
-      ctx.quadraticCurveTo(x0 + w, y0 + h + 6, x0 + w - radius, y0 + h + 6);
-      ctx.lineTo(x0 + radius, y0 + h + 6);
-      ctx.quadraticCurveTo(x0, y0 + h + 6, x0, y0 + h - radius + 6);
-      ctx.lineTo(x0, y0 + radius + 6);
-      ctx.quadraticCurveTo(x0, y0 + 6, x0 + radius, y0 + 6);
-      ctx.closePath();
-      ctx.fill();
-
-      // Main note body (warm muted yellow) — rounded rect minus top-right corner
-      var bodyGradient = ctx.createLinearGradient(0, y0, 0, y0 + h);
-      bodyGradient.addColorStop(0, '#f7d54a');
-      bodyGradient.addColorStop(1, '#e3b91e');
-      ctx.fillStyle = bodyGradient;
-      ctx.beginPath();
-      ctx.moveTo(x0 + radius, y0);
-      ctx.lineTo(x0 + w - foldSize, y0);
-      ctx.lineTo(x0 + w, y0 + foldSize);
-      ctx.lineTo(x0 + w, y0 + h - radius);
-      ctx.quadraticCurveTo(x0 + w, y0 + h, x0 + w - radius, y0 + h);
-      ctx.lineTo(x0 + radius, y0 + h);
-      ctx.quadraticCurveTo(x0, y0 + h, x0, y0 + h - radius);
-      ctx.lineTo(x0, y0 + radius);
-      ctx.quadraticCurveTo(x0, y0, x0 + radius, y0);
-      ctx.closePath();
-      ctx.fill();
-
-      // Folded corner — darker triangle showing the underside of the fold
-      ctx.fillStyle = '#a87f12';
-      ctx.beginPath();
-      ctx.moveTo(x0 + w - foldSize, y0);
-      ctx.lineTo(x0 + w, y0 + foldSize);
-      ctx.lineTo(x0 + w - foldSize, y0 + foldSize);
-      ctx.closePath();
-      ctx.fill();
-
-      // Faint ruled lines suggesting text
-      ctx.strokeStyle = 'rgba(0,0,0,0.20)';
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
-      var lineL = x0 + 22, lineR = x0 + w - 22;
-      var lineY1 = y0 + h * 0.45;
-      ctx.beginPath();
-      ctx.moveTo(lineL, lineY1);              ctx.lineTo(lineR, lineY1);
-      ctx.moveTo(lineL, lineY1 + 22);         ctx.lineTo(lineR, lineY1 + 22);
-      ctx.moveTo(lineL, lineY1 + 44);         ctx.lineTo(lineR - 30, lineY1 + 44);
-      ctx.stroke();
-
-      // Thin outline for definition against pale backgrounds
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(x0 + radius, y0);
-      ctx.lineTo(x0 + w - foldSize, y0);
-      ctx.lineTo(x0 + w, y0 + foldSize);
-      ctx.lineTo(x0 + w, y0 + h - radius);
-      ctx.quadraticCurveTo(x0 + w, y0 + h, x0 + w - radius, y0 + h);
-      ctx.lineTo(x0 + radius, y0 + h);
-      ctx.quadraticCurveTo(x0, y0 + h, x0, y0 + h - radius);
-      ctx.lineTo(x0, y0 + radius);
-      ctx.quadraticCurveTo(x0, y0, x0 + radius, y0);
-      ctx.closePath();
-      ctx.stroke();
-
-      var tex = new THREE.CanvasTexture(canvas);
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.needsUpdate = true;
-      _noteIconTexture = tex;
-      return tex;
-    }
-
-    function _buildNoteVisual(note) {
-      // Group at the 3D anchor; icon billboard is offset upward (world +Z) with
-      // a thin connecting line from the anchor to the icon — same idea as the
-      // scan-station cone: the line points at the exact feature the note is
-      // about, while the icon sits clear of it for legibility.
-      var group = new THREE.Group();
-      group.position.copy(note.position);
-      group.userData.isNoteGroup = true;
-      group.userData.noteId = note.id;
-
-      var offsetZ = Math.max(0.45, stationPinHeight * 1.8);
-      group.userData.iconOffsetZ = offsetZ;
-
-      // Connector line from anchor to icon
-      var lineGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, offsetZ)
-      ]);
-      var lineMat = new THREE.LineBasicMaterial({
-        color: 0xe3b91e, depthTest: false, depthWrite: false,
-        transparent: true, opacity: 0.85
-      });
-      var line = new THREE.Line(lineGeo, lineMat);
-      line.renderOrder = 1;
-      group.add(line);
-
-      // Small anchor dot at the actual 3D point — same yellow as the note,
-      // helps locate the exact spot when the icon is offset some distance away.
-      var anchorGeo = new THREE.SphereGeometry(stationPinRadius * 0.35, 10, 10);
-      var anchorMat = new THREE.MeshBasicMaterial({
-        color: 0xe3b91e, depthTest: false, depthWrite: false
-      });
-      var anchor = new THREE.Mesh(anchorGeo, anchorMat);
-      anchor.position.set(0, 0, 0);
-      anchor.renderOrder = 1;
-      group.add(anchor);
-
-      // The sticky-note icon sprite, offset up the connector line
-      var spriteMat = new THREE.SpriteMaterial({
-        map: _createNoteIconTexture(),
-        depthTest: false, depthWrite: false,
-        transparent: true, opacity: 1.0
-      });
-      var sprite = new THREE.Sprite(spriteMat);
-      sprite.userData.isNoteIcon = true;
-      sprite.userData.noteId = note.id;
-      var s = Math.max(0.35, stationPinHeight * 1.5);
-      sprite.scale.set(s, s, 1);
-      sprite.position.set(0, 0, offsetZ);
-      sprite.renderOrder = 2;
-      group.add(sprite);
-
-      group.userData.iconSprite = sprite;
-      return group;
-    }
-
-    function placeNote(position, optText, optName, optId) {
-      var note = {
-        id: optId != null ? optId : nextNoteId++,
-        name: optName || ('N' + (optId != null ? optId : (nextNoteId - 1))),
-        text: optText || '',
-        position: position.clone(),
-        visible: true,
-        visual: null
-      };
-      note.visual = _buildNoteVisual(note);
-      noteScene.add(note.visual);
-      notes.push(note);
-      if (optId != null && optId >= nextNoteId) nextNoteId = optId + 1;
-      undoStack.push({ type: 'note', id: note.id });
-      rebuildNoteList();
-      showToast(note.name + ' placed — click the icon to edit text');
-      // Auto-open the popover so the user can immediately type.
-      _openNotePopover(note.id);
-      return note;
-    }
-
-    function deleteNote(id) {
-      for (var i = 0; i < notes.length; i++) {
-        if (notes[i].id !== id) continue;
-        var n = notes[i];
-        if (n.visual) {
-          noteScene.remove(n.visual);
-          if (n.visual.material) {
-            // Texture is shared & cached — don't dispose; just drop the material
-            n.visual.material.dispose();
-          }
-        }
-        if (_expandedNoteId === id) _closeNotePopover();
-        notes.splice(i, 1);
-        rebuildNoteList();
-        return;
-      }
-    }
-
-    function clearAllNotes() {
-      while (notes.length > 0) deleteNote(notes[notes.length - 1].id);
-      nextNoteId = 1;
-    }
-
-    function setNoteText(id, text) {
-      for (var i = 0; i < notes.length; i++) {
-        if (notes[i].id === id) { notes[i].text = text; rebuildNoteList(); return; }
-      }
-    }
-    function setNoteName(id, name) {
-      for (var i = 0; i < notes.length; i++) {
-        if (notes[i].id === id) { notes[i].name = name; rebuildNoteList(); return; }
-      }
-    }
-    function setNoteVisible(id, vis) {
-      for (var i = 0; i < notes.length; i++) {
-        if (notes[i].id === id) {
-          notes[i].visible = vis;
-          if (notes[i].visual) notes[i].visual.visible = vis && _annotationsVisible;
-          if (!vis && _expandedNoteId === id) _closeNotePopover();
-          rebuildNoteList();
-          return;
-        }
-      }
-    }
-    function findNoteById(id) {
-      for (var i = 0; i < notes.length; i++) if (notes[i].id === id) return notes[i];
-      return null;
-    }
-
-    // -- Generic hover-preview sphere helper --
-    // Used by note placement (yellow) and constraint picks (green) to show
-    // the user exactly which cloud point will be picked. Sphere material is
-    // tagged isMarkerSphere so the existing per-frame screen-pixel scaler
-    // (in render.pass.perspective_overlay) keeps it at a consistent size.
-    function _makePreviewSphere(colorHex) {
-      var geo = new THREE.SphereGeometry(0.4, 14, 14);
-      var mat = new THREE.MeshBasicMaterial({
-        color: colorHex,
-        depthTest: false,
-        depthWrite: false,
-        transparent: true,
-        opacity: 0.85
-      });
-      var mesh = new THREE.Mesh(geo, mat);
-      mesh.userData.isMarkerSphere = true;
-      mesh.userData.isHoverPreview = true;
-      mesh.visible = false;
-      return mesh;
-    }
-    function _disposePreviewSphere(mesh, parentScene) {
-      if (!mesh) return;
-      if (parentScene) parentScene.remove(mesh);
-      if (mesh.geometry) mesh.geometry.dispose();
-      if (mesh.material) mesh.material.dispose();
-    }
-    function _updatePreviewSphereAt(mesh, mousePixel) {
-      if (!mesh) return;
-      var pick = _origPick(mousePixel, viewer.scene.getActiveCamera(), viewer, viewer.scene.pointclouds);
-      if (pick && pick.location) {
-        mesh.position.copy(pick.location);
-        mesh.visible = true;
-      } else {
-        mesh.visible = false;
-      }
-    }
-
-    // -- Note pick mode --
-    var _notePreviewSphere = null;
-    function startNotePick() {
-      if (constraintPickMode) cancelConstraintPick();
-      if (memberPickMode) cancelMemberPick();
-      if (MARK_MODE) toggleMarkMode(true);
-      notePickMode = true;
-      // No crosshair body class — the yellow preview sphere is the cue.
-      if (!_notePreviewSphere) {
-        _notePreviewSphere = _makePreviewSphere(0xf7d54a);
-        noteScene.add(_notePreviewSphere);
-      }
-      showToast('Hover the cloud and click to place a note (Esc to cancel)', 4000);
-    }
-    function cancelNotePick() {
-      notePickMode = false;
-      if (_notePreviewSphere) {
-        _disposePreviewSphere(_notePreviewSphere, noteScene);
-        _notePreviewSphere = null;
-      }
-    }
-
-    // -- Click hit-test against note icons (screen-space, like stations) --
-    function _noteIconWorldPos(n) {
-      if (!n.visual) return null;
-      var spr = n.visual.userData.iconSprite;
-      if (spr) return spr.getWorldPosition(new THREE.Vector3());
-      return n.visual.position.clone();
-    }
-    function findNearestNoteIcon(mousePixel) {
-      if (!_annotationsVisible) return null;
-      var camera = viewer.scene.getActiveCamera();
-      var rect = renderArea.getBoundingClientRect();
-      var bestIdx = -1, bestDist2 = Infinity;
-      var threshold = 28; // pixels
-      for (var i = 0; i < notes.length; i++) {
-        var n = notes[i];
-        if (!n.visible || !n.visual) continue;
-        var wp = _noteIconWorldPos(n);
-        if (!wp) continue;
-        var pos = wp.project(camera);
-        if (pos.z < -1 || pos.z > 1) continue;
-        var sx = (pos.x + 1) * 0.5 * rect.width;
-        var sy = (-pos.y + 1) * 0.5 * rect.height;
-        var dx = sx - mousePixel.x, dy = sy - mousePixel.y;
-        var d2 = dx * dx + dy * dy;
-        if (d2 < bestDist2 && d2 < threshold * threshold) {
-          bestDist2 = d2;
-          bestIdx = i;
-        }
-      }
-      return bestIdx >= 0 ? notes[bestIdx] : null;
-    }
-
-    // -- Expand / collapse popover --
-    var _notePopoverEl = null;
-    function _openNotePopover(id) {
-      var n = findNoteById(id);
-      if (!n) return;
-      _closeNotePopover();
-      _expandedNoteId = id;
-
-      var pop = document.createElement('div');
-      pop.id = 'enable-note-popover';
-      pop.style.cssText =
-        'position:fixed;z-index:1500;width:280px;background:var(--panel-bg,#1f1f1f);' +
-        'color:var(--panel-fg,#e6e6e6);border:1px solid var(--panel-border,#3a3a3a);' +
-        'border-radius:8px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,0.45);' +
-        'font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;';
-
-      var header = document.createElement('div');
-      header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px';
-
-      var nameInput = document.createElement('input');
-      nameInput.type = 'text';
-      nameInput.value = n.name;
-      nameInput.style.cssText =
-        'flex:1;background:transparent;border:0;color:inherit;font:600 13px sans-serif;' +
-        'padding:2px 0;border-bottom:1px dashed transparent;outline:none';
-      nameInput.addEventListener('focus', function () { nameInput.style.borderBottomColor = 'var(--panel-border,#555)'; });
-      nameInput.addEventListener('blur', function () {
-        nameInput.style.borderBottomColor = 'transparent';
-        setNoteName(n.id, nameInput.value || ('N' + n.id));
-      });
-      header.appendChild(nameInput);
-
-      pop.appendChild(header);
-
-      var textarea = document.createElement('textarea');
-      textarea.value = n.text;
-      textarea.placeholder = 'Type your note...';
-      textarea.style.cssText =
-        'width:100%;min-height:90px;background:var(--panel-bg-2,#262626);color:inherit;' +
-        'border:1px solid var(--panel-border,#3a3a3a);border-radius:4px;padding:8px;' +
-        'font:13px/1.5 sans-serif;resize:vertical;box-sizing:border-box;outline:none';
-      textarea.addEventListener('input', function () { setNoteText(n.id, textarea.value); });
-      pop.appendChild(textarea);
-
-      var footer = document.createElement('div');
-      footer.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:8px';
-
-      var delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
-      delBtn.style.cssText =
-        'background:transparent;border:1px solid var(--panel-border,#3a3a3a);color:#d04545;' +
-        'padding:4px 10px;border-radius:4px;cursor:pointer;font:12px sans-serif';
-      delBtn.addEventListener('click', function () { deleteNote(n.id); });
-      footer.appendChild(delBtn);
-
-      var saveBtn = document.createElement('button');
-      saveBtn.textContent = 'Save';
-      saveBtn.title = 'Save and close (text auto-saves as you type)';
-      saveBtn.style.cssText =
-        'background:#3EAD4A;border:1px solid #3EAD4A;color:#fff;' +
-        'padding:4px 14px;border-radius:4px;cursor:pointer;font:600 12px sans-serif';
-      saveBtn.addEventListener('click', function () {
-        // Commit any pending name-input edit, then close.
-        setNoteName(n.id, nameInput.value || ('N' + n.id));
-        _closeNotePopover();
-      });
-      footer.appendChild(saveBtn);
-
-      pop.appendChild(footer);
-
-      document.body.appendChild(pop);
-      _notePopoverEl = pop;
-      _positionNotePopover();
-      // Focus the textarea so the user can type immediately
-      setTimeout(function () { textarea.focus(); }, 0);
-    }
-
-    function _closeNotePopover() {
-      if (_notePopoverEl && _notePopoverEl.parentNode) {
-        _notePopoverEl.parentNode.removeChild(_notePopoverEl);
-      }
-      _notePopoverEl = null;
-      _expandedNoteId = null;
-    }
-
-    function _positionNotePopover() {
-      if (!_notePopoverEl || _expandedNoteId == null) return;
-      var n = findNoteById(_expandedNoteId);
-      if (!n || !n.visual) { _closeNotePopover(); return; }
-      var camera = viewer.scene.getActiveCamera();
-      var rect = renderArea.getBoundingClientRect();
-      var wp = _noteIconWorldPos(n);
-      if (!wp) { _closeNotePopover(); return; }
-      var sp = wp.project(camera);
-      if (sp.z < -1 || sp.z > 1) { _notePopoverEl.style.display = 'none'; return; }
-      _notePopoverEl.style.display = '';
-      var sx = (sp.x + 1) * 0.5 * rect.width + rect.left;
-      var sy = (-sp.y + 1) * 0.5 * rect.height + rect.top;
-      // Anchor popover top-left to the icon's right-bottom so it doesn't cover it
-      var popW = _notePopoverEl.offsetWidth || 280;
-      var popH = _notePopoverEl.offsetHeight || 140;
-      var x = sx + 22;
-      var y = sy + 12;
-      // Clamp to viewport
-      var maxX = window.innerWidth - popW - 8;
-      var maxY = window.innerHeight - popH - 8;
-      if (x > maxX) x = sx - popW - 22;
-      if (y > maxY) y = maxY;
-      if (x < 8) x = 8;
-      if (y < 60) y = 60; // leave room for the topbar
-      _notePopoverEl.style.left = Math.round(x) + 'px';
-      _notePopoverEl.style.top  = Math.round(y) + 'px';
-    }
-
-    // -- Sidebar list --
-    function rebuildNoteList() {
-      var listEl = document.getElementById('enable-note-list');
-      if (!listEl) return;
-      listEl.innerHTML = '';
-      for (var i = 0; i < notes.length; i++) {
-        (function (n) {
-          var row = document.createElement('div');
-          row.className = 'note-row';
-          row.style.cssText =
-            'display:flex;align-items:center;gap:6px;padding:6px 0;' +
-            'border-bottom:1px solid rgba(255,255,255,0.06);font:12px sans-serif;' +
-            'color:var(--sidebar-text,#fbfbfb)';
-
-          var name = document.createElement('span');
-          name.textContent = n.name;
-          name.style.cssText = 'font-weight:600;flex:0 0 auto;min-width:32px';
-          row.appendChild(name);
-
-          var preview = document.createElement('span');
-          var snippet = (n.text || '').replace(/\s+/g, ' ').trim();
-          if (snippet.length > 38) snippet = snippet.slice(0, 36) + '…';
-          preview.textContent = snippet || '(empty)';
-          preview.style.cssText = 'flex:1;color:var(--muted,#9aa3b2);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-          preview.title = 'Click to open / focus';
-          preview.addEventListener('click', function () {
-            // Frame the note in view, then open its popover
-            try {
-              if (viewer && viewer.scene && viewer.scene.view && viewer.scene.view.lookAt) {
-                viewer.scene.view.lookAt(n.position);
-              }
-            } catch (_) {}
-            _openNotePopover(n.id);
-          });
-          row.appendChild(preview);
-
-          var eyeBtn = document.createElement('button');
-          eyeBtn.textContent = n.visible ? '👁' : '👁̸';
-          eyeBtn.title = n.visible ? 'Hide note' : 'Show note';
-          eyeBtn.style.cssText =
-            'background:none;border:none;color:inherit;cursor:pointer;font-size:13px;padding:2px 4px;opacity:' + (n.visible ? '1' : '0.45');
-          eyeBtn.addEventListener('click', function () { setNoteVisible(n.id, !n.visible); });
-          row.appendChild(eyeBtn);
-
-          var delBtn = document.createElement('button');
-          delBtn.textContent = '×';
-          delBtn.title = 'Delete note';
-          delBtn.style.cssText =
-            'background:none;border:none;color:#d04545;cursor:pointer;font-size:14px;padding:2px 4px';
-          delBtn.addEventListener('click', function () { deleteNote(n.id); });
-          row.appendChild(delBtn);
-
-          listEl.appendChild(row);
-        })(notes[i]);
-      }
-    }
-
-    // -- Render notes in the perspective_overlay pass --
-    viewer.addEventListener("render.pass.perspective_overlay", function (e) {
-      if (notes.length === 0 && !_notePreviewSphere) return;
-      // Position-track an open popover even when the camera moves.
-      if (_expandedNoteId != null) _positionNotePopover();
-      var camera = viewer.scene.getActiveCamera();
-      // Scale the hover-preview sphere (if active) to a fixed screen-pixel size.
-      if (_notePreviewSphere && _notePreviewSphere.userData.isMarkerSphere) {
-        var _nps = viewer.renderer.getSize(new THREE.Vector2());
-        _scaleMarkerSphere(_notePreviewSphere, camera, _nps);
-      }
-      viewer.renderer.render(noteScene, camera);
-    });
-
-    // -- Unified annotations visibility (stations + notes) --
-    var _annotationsVisible = true;
-    function setAnnotationsVisible(vis) {
-      _annotationsVisible = vis;
-      // stations
-      for (var i = 0; i < stations.length; i++) {
-        stations[i].visible = vis;
-        if (stations[i].visual) stations[i].visual.visible = vis;
-      }
-      _stationsVisible = vis;
-      // notes (respect each note's own visibility too)
-      for (var j = 0; j < notes.length; j++) {
-        if (notes[j].visual) notes[j].visual.visible = vis && notes[j].visible;
-      }
-      if (!vis) _closeNotePopover();
-      var btn = document.getElementById('btn-toggle-stations');
-      if (btn) btn.textContent = vis ? 'Hide Annotations' : 'Show Annotations';
-    }
-    // Override toggleStationsVisibility so the existing button now toggles
-    // BOTH stations and notes — keeping a single unified "annotations" switch.
-    toggleStationsVisibility = function () { setAnnotationsVisible(!_annotationsVisible); };
 
     // ===== CONSTRAINT MEASUREMENT TOOL =====
 
@@ -3219,18 +2670,6 @@
     }
 
     // -- Start constraint pick mode --
-    var _constraintPreviewSphere = null;
-    function _ensureConstraintPreview() {
-      if (_constraintPreviewSphere) return;
-      _constraintPreviewSphere = _makePreviewSphere(0x39ff14);
-      constraintScene.add(_constraintPreviewSphere);
-    }
-    function _disposeConstraintPreview() {
-      if (!_constraintPreviewSphere) return;
-      _disposePreviewSphere(_constraintPreviewSphere, constraintScene);
-      _constraintPreviewSphere = null;
-    }
-
     function startConstraintPick(type) {
       if (MARK_MODE) toggleMarkMode(true);
       if (memberPickMode) cancelMemberPick();
@@ -3239,76 +2678,37 @@
       constraintPickMode = true;
       constraintPickPoints = [];
       constraintPickType = type;
-      // Green hover-preview sphere — same UX as note placement: shows the user
-      // exactly which cloud point will be picked, no crosshair cursor needed.
-      _ensureConstraintPreview();
       if (type === 'fit-plane') {
         constraintPickTarget = Infinity; // no auto-finalize; Enter/dblclick to finish
+        document.body.classList.add('constraint-pick-mode');
         showToast('Pick points for best-fit plane (Enter to finalize, min 3)', 5000);
         var btn = document.getElementById('btn-fit-plane');
         if (btn) btn.classList.add('active');
       } else {
         constraintPickTarget = 2;
+        document.body.classList.add('constraint-pick-mode');
         showToast('Pick point (1/' + constraintPickTarget + ') for ' + type, 5000);
         var btn = document.getElementById('btn-set-axis');
         if (btn) btn.classList.add('active');
       }
     }
 
-    // -- Place a temporary green sphere marker during picking --
-    // Mirrors Potree's measurement-sphere look (fixed screen-pixel size, no
-    // glow halo), but green instead of red so plane/constraint picks read
-    // distinctly from measurement points. Per-frame scaling lives in the
-    // render.pass.perspective_overlay listener.
+    // -- Place a temporary neon-green concentric ring marker during picking --
     function placePickMarker(position) {
       var ptGroup = new THREE.Group();
       ptGroup.position.copy(position);
       ptGroup.userData.isDefinitionPoint = true;
-      var sphereGeo = new THREE.SphereGeometry(0.4, 12, 12);
-      var sphereMat = new THREE.MeshBasicMaterial({
-        color: 0x39ff14,
-        depthTest: false,
-        depthWrite: false
+      // Filled dot at center
+      var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      var dotMat = new THREE.MeshBasicMaterial({
+        color: 0x39ff14, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, side: THREE.DoubleSide
       });
-      var sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
-      sphereMesh.userData.isMarkerSphere = true;
-      ptGroup.add(sphereMesh);
+      ptGroup.add(new THREE.Mesh(dotGeo, dotMat));
+      // Additive glow
+      ptGroup.add(createGlowSprite(0x39ff14, ringOuterRadius));
       constraintScene.add(ptGroup);
       constraintPickMarkers.push(ptGroup);
-
-      // Rubber-band line preview between the 1st and 2nd pick of any two-point
-      // pick (plane-x-axis OR set-axis). Created when the first marker lands;
-      // updated on mousemove to follow the cursor until the second marker is
-      // placed (or the user commits via Enter / drags an existing marker).
-      if ((constraintPickType === 'plane-x-axis' || constraintPickType === 'axis') &&
-          constraintPickMarkers.length === 1) {
-        if (_xAxisRubberLine) {
-          constraintScene.remove(_xAxisRubberLine);
-          if (_xAxisRubberLine.geometry) _xAxisRubberLine.geometry.dispose();
-          if (_xAxisRubberLine.material) _xAxisRubberLine.material.dispose();
-        }
-        var rbGeo = new THREE.BufferGeometry();
-        rbGeo.setAttribute('position', new THREE.Float32BufferAttribute([
-          position.x, position.y, position.z,
-          position.x, position.y, position.z
-        ], 3));
-        var rbMat = new THREE.LineBasicMaterial({
-          color: 0x39ff14, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95
-        });
-        _xAxisRubberLine = new THREE.Line(rbGeo, rbMat);
-        _xAxisRubberLine.renderOrder = 1;
-        constraintScene.add(_xAxisRubberLine);
-      }
-    }
-
-    // Rubber-band line state for the X-axis pick.
-    var _xAxisRubberLine = null;
-    function clearXAxisRubberLine() {
-      if (!_xAxisRubberLine) return;
-      constraintScene.remove(_xAxisRubberLine);
-      if (_xAxisRubberLine.geometry) _xAxisRubberLine.geometry.dispose();
-      if (_xAxisRubberLine.material) _xAxisRubberLine.material.dispose();
-      _xAxisRubberLine = null;
     }
 
     // -- Remove all temporary pick markers --
@@ -3322,8 +2722,6 @@
         constraintScene.remove(m);
       }
       constraintPickMarkers.length = 0;
-      // Rubber-band line is tied to the X-axis pick session — drop it too.
-      clearXAxisRubberLine();
     }
 
     // -- Handle a picked point during constraint definition --
@@ -3368,7 +2766,6 @@
       constraintPickType = null;
       constraintPickTarget = 0;
       clearPickMarkers();
-      _disposeConstraintPreview();
       document.body.classList.remove('constraint-pick-mode');
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
       showToast(wasXAxis
@@ -3521,7 +2918,6 @@
       constraintPickPoints = [];
       constraintPickType = null;
       constraintPickTarget = 0;
-      _disposeConstraintPreview();
       document.body.classList.remove('constraint-pick-mode');
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
     }
@@ -3536,7 +2932,7 @@
       constraintPickPoints = [];
       constraintPickType = 'plane-x-axis';
       constraintPickTarget = 2;
-      _ensureConstraintPreview();
+      document.body.classList.add('constraint-pick-mode');
       showToast('Re-pick 2 points for ' + c.name + ' +X axis (Enter to accept, Esc to cancel)', 6000);
     }
 
@@ -3589,7 +2985,6 @@
       constraintPickPoints = [];
       constraintPickType = null;
       constraintPickTarget = 0;
-      _disposeConstraintPreview();
       document.body.classList.remove('constraint-pick-mode');
       document.querySelectorAll('#enable-constraint-buttons button').forEach(function(b) { b.classList.remove('active'); });
     }
@@ -3728,10 +3123,7 @@
         group.add(new THREE.Line(lineGeo, lineMat));
       }
 
-      // Definition point markers: solid green sphere, fixed screen-pixel size.
-      // (Per-frame scaling lives in the render.pass.perspective_overlay handler;
-      // isDefPointRing flag keeps updateConstraintVisuals' opacity rule pinned
-      // at 0.9 instead of falling into the dim-mesh branch.)
+      // Definition point markers (dot + glow)
       for (var k = 0; k < constraint.points.length; k++) {
         var pt = constraint.points[k];
         var ptGroup = new THREE.Group();
@@ -3739,18 +3131,18 @@
         ptGroup.userData.isDefinitionPoint = true;
         ptGroup.userData.pointIndex = k;
 
-        var sphGeo = new THREE.SphereGeometry(0.4, 12, 12);
-        var sphMat = new THREE.MeshBasicMaterial({
-          color: 0x39ff14,
-          depthTest: false,
-          depthWrite: false,
-          transparent: true,
-          opacity: 0.9
-        });
-        var sphMesh = new THREE.Mesh(sphGeo, sphMat);
-        sphMesh.userData.isDefPointRing = true;
-        sphMesh.userData.isMarkerSphere = true;
-        ptGroup.add(sphMesh);
+        var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+        var dotMesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({
+          color: 0x39ff14, depthTest: false, depthWrite: false,
+          transparent: true, opacity: 0.9, side: THREE.DoubleSide
+        }));
+        dotMesh.userData.isDefPointRing = true;
+        ptGroup.add(dotMesh);
+
+        // Additive glow
+        var glow = createGlowSprite(0x39ff14, ringOuterRadius);
+        glow.userData.isDefPointRing = true;
+        ptGroup.add(glow);
 
         group.add(ptGroup);
       }
@@ -4233,13 +3625,15 @@
       var ptGroup = new THREE.Group();
       ptGroup.position.copy(position);
       ptGroup.userData.isMemberPickMarker = true;
-      var sphGeo = new THREE.SphereGeometry(0.4, 12, 12);
-      var sphMat = new THREE.MeshBasicMaterial({
-        color: 0xff9900, depthTest: false, depthWrite: false
+      // Filled dot at center
+      var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      var dotMat = new THREE.MeshBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, side: THREE.DoubleSide
       });
-      var sphMesh = new THREE.Mesh(sphGeo, sphMat);
-      sphMesh.userData.isMarkerSphere = true;
-      ptGroup.add(sphMesh);
+      ptGroup.add(new THREE.Mesh(dotGeo, dotMat));
+      // Additive glow
+      ptGroup.add(createGlowSprite(0xff9900, ringOuterRadius));
       memberScene.add(ptGroup);
       memberPickMarkers.push(ptGroup);
     }
@@ -4322,19 +3716,21 @@
       });
       group.add(new THREE.Line(lineGeo, lineMat));
 
-      // Endpoint markers: solid orange sphere, fixed screen-pixel size.
+      // Endpoint markers (dot + glow in orange)
       for (var k = 0; k < 2; k++) {
         var ptGroup = new THREE.Group();
         ptGroup.position.copy(member.points[k]);
         ptGroup.userData.isMemberEndpoint = true;
         ptGroup.userData.pointIndex = k;
-        var epGeo = new THREE.SphereGeometry(0.4, 12, 12);
-        var epMat = new THREE.MeshBasicMaterial({
-          color: 0xff9900, depthTest: false, depthWrite: false
+        // Filled dot at center
+        var epDotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+        var epDotMat = new THREE.MeshBasicMaterial({
+          color: 0xff9900, depthTest: false, depthWrite: false,
+          transparent: true, opacity: 0.9, side: THREE.DoubleSide
         });
-        var epMesh = new THREE.Mesh(epGeo, epMat);
-        epMesh.userData.isMarkerSphere = true;
-        ptGroup.add(epMesh);
+        ptGroup.add(new THREE.Mesh(epDotGeo, epDotMat));
+        // Additive glow
+        ptGroup.add(createGlowSprite(0xff9900, ringOuterRadius));
         group.add(ptGroup);
       }
 
@@ -4509,44 +3905,6 @@
       return bestResult;
     }
 
-    // -- Find nearest Potree measurement sphere within ~18 px of mousePixel.
-    // Mirrors chrome.js findDraggableSphereAt (used by the touch path). The
-    // mouse path used to rely on Potree's hoveredElements raycast, but the
-    // sphere geometry is only ~15 px on screen so a click that's even a few
-    // pixels off misses entirely. Touch dragging worked because it bypassed
-    // the raycast; mouse dragging stopped working after the touch session
-    // because the same forgiving lookup wasn't wired for mouse. This restores
-    // parity by giving mouse-driven sphere drag the same 18 px tolerance.
-    function findNearestMeasurementSphere(mousePixel) {
-      if (!viewer.scene.measurements || viewer.scene.measurements.length === 0) return null;
-      var camera = viewer.scene.getActiveCamera();
-      if (!camera) return null;
-      var rect = renderArea.getBoundingClientRect();
-      var best = null;
-      var bestPxSq = 324; // 18 px
-      var meas = viewer.scene.measurements;
-      for (var mi = 0; mi < meas.length; mi++) {
-        var m = meas[mi];
-        if (m.visible === false) continue;
-        var sph = m.spheres;
-        if (!sph) continue;
-        for (var si = 0; si < sph.length; si++) {
-          var s = sph[si];
-          if (!s.visible || !s._listeners || !s._listeners.drag) continue;
-          var wp = s.getWorldPosition(new THREE.Vector3());
-          var ndc = wp.project(camera);
-          if (ndc.z < -1 || ndc.z > 1) continue;
-          var sx = (ndc.x + 1) * 0.5 * rect.width;
-          var sy = (1 - (ndc.y + 1) * 0.5) * rect.height;
-          var dx = sx - mousePixel.x;
-          var dy = sy - mousePixel.y;
-          var dsq = dx * dx + dy * dy;
-          if (dsq < bestPxSq) { bestPxSq = dsq; best = s; }
-        }
-      }
-      return best;
-    }
-
     var markerDragActive = false;
     var markerDragInfo = null;
 
@@ -4644,7 +4002,6 @@
 
       // Constraint visuals
       if (constraintScene.children.length > 0) {
-        var _defRSize = viewer.renderer.getSize(new THREE.Vector2());
         for (var ci = 0; ci < constraints.length; ci++) {
           var c = constraints[ci];
           if (!c.visual) continue;
@@ -4652,41 +4009,13 @@
             if (obj.userData && obj.userData.isDefinitionPoint) {
               obj.quaternion.copy(camera.quaternion);
             }
-            if (obj.userData && obj.userData.isMarkerSphere) {
-              _scaleMarkerSphere(obj, camera, _defRSize);
-            }
           });
-        }
-        // Temporary pick markers also walk their tree for isMarkerSphere.
-        for (var pmi = 0; pmi < constraintPickMarkers.length; pmi++) {
-          constraintPickMarkers[pmi].traverse(function (obj) {
-            if (obj.userData && obj.userData.isMarkerSphere) {
-              _scaleMarkerSphere(obj, camera, _defRSize);
-            }
-          });
-        }
-        // Hover-preview sphere lives as a direct child of constraintScene.
-        if (_constraintPreviewSphere && _constraintPreviewSphere.userData.isMarkerSphere) {
-          _scaleMarkerSphere(_constraintPreviewSphere, camera, _defRSize);
-        }
-        // Keep the rubber-band line's endpoints synced to any markers that
-        // exist (final positions after second pick is placed, etc.).
-        if (_xAxisRubberLine && constraintPickMarkers.length >= 1) {
-          var _rbPos = _xAxisRubberLine.geometry.attributes.position;
-          var _rbA = constraintPickMarkers[0].position;
-          _rbPos.setXYZ(0, _rbA.x, _rbA.y, _rbA.z);
-          if (constraintPickMarkers.length >= 2) {
-            var _rbB = constraintPickMarkers[1].position;
-            _rbPos.setXYZ(1, _rbB.x, _rbB.y, _rbB.z);
-          }
-          _rbPos.needsUpdate = true;
         }
         viewer.renderer.render(constraintScene, camera);
       }
 
       // Member visuals
       if (memberScene.children.length > 0) {
-        var _mbRSize = viewer.renderer.getSize(new THREE.Vector2());
         for (var mi = 0; mi < members.length; mi++) {
           var m = members[mi];
           if (!m.visual) continue;
@@ -4694,19 +4023,11 @@
             if (obj.userData && obj.userData.isMemberEndpoint) {
               obj.quaternion.copy(camera.quaternion);
             }
-            if (obj.userData && obj.userData.isMarkerSphere) {
-              _scaleMarkerSphere(obj, camera, _mbRSize);
-            }
           });
         }
-        // Pick markers (temporary, during member-pick session)
+        // Billboard pick markers too
         for (var pi = 0; pi < memberPickMarkers.length; pi++) {
           memberPickMarkers[pi].quaternion.copy(camera.quaternion);
-          memberPickMarkers[pi].traverse(function (obj) {
-            if (obj.userData && obj.userData.isMarkerSphere) {
-              _scaleMarkerSphere(obj, camera, _mbRSize);
-            }
-          });
         }
         viewer.renderer.render(memberScene, camera);
       }
@@ -4717,15 +4038,85 @@
       // label is on the OPPOSITE side of the endpoint from the segment midpoint
       // (where Potree's edge/height/area dimension labels sit). Guarantees the
       // D# label never sits on top of the dimension value.
-      // Iterate the measurePointLabels Map directly. Was gated on
-      // measureLabelScene.children.length, but the Dev2 chrome reparents the
-      // labels out of that scene into its own depth-tested scene — so the
-      // legacy check now always fails and per-frame scaling+offset never ran,
-      // leaving labels at their default (huge) sprite scale, centered on the
-      // measurement point.
-      if (measurePointLabels && measurePointLabels.size > 0) {
-        measurePointLabels.forEach(function(_labels, measure) {
-          repositionMeasureLabels(measure, camera);
+      if (measureLabelScene.children.length > 0) {
+        var cw = viewer.renderer.getSize(new THREE.Vector2()).width;
+        var ch = viewer.renderer.getSize(new THREE.Vector2()).height;
+        var isOrtho = camera instanceof THREE.OrthographicCamera;
+        var OFFSET_PX = 26;
+        measurePointLabels.forEach(function(labels, measure) {
+          var pts = measure.points;
+          // Pre-project all this measure's points to screen space
+          var projected = new Array(pts.length);
+          for (var pi = 0; pi < pts.length; pi++) {
+            var pp = pts[pi].position ? pts[pi].position : pts[pi];
+            if (!pp) { projected[pi] = null; continue; }
+            var sp = pp.clone().project(camera);
+            projected[pi] = {
+              x: (sp.x + 1) * cw / 2,
+              y: (-sp.y + 1) * ch / 2,
+              z: sp.z
+            };
+          }
+          for (var li = 0; li < labels.length; li++) {
+            var lbl = labels[li];
+            var pt = pts[li];
+            if (!pt) continue;
+            var worldPos = pt.position ? pt.position : pt;
+            var dist = camera.position.distanceTo(worldPos);
+            var pr = Potree.Utils.projectedRadius(1, camera, dist, cw, ch);
+            if (!pr || !isFinite(pr) || pr < 0.001) pr = 1;
+            var s = (70 / pr);
+            lbl.scale.set(s, s, s);
+
+            var thisScr = projected[li];
+            if (!thisScr) continue;
+
+            // Compute outward direction in screen space — sum of unit vectors
+            // pointing AWAY from each adjacent point.
+            var outX = 0, outY = 0, contributors = 0;
+            var neighborIdxs = [li - 1, li + 1];
+            for (var ni = 0; ni < neighborIdxs.length; ni++) {
+              var nIdx = neighborIdxs[ni];
+              if (nIdx < 0 || nIdx >= pts.length) continue;
+              var nScr = projected[nIdx];
+              if (!nScr) continue;
+              var dxs = thisScr.x - nScr.x;
+              var dys = thisScr.y - nScr.y;
+              var slen = Math.sqrt(dxs * dxs + dys * dys);
+              if (slen > 0.5) {
+                outX += dxs / slen;
+                outY += dys / slen;
+                contributors++;
+              }
+            }
+            if (contributors === 0) {
+              // Single isolated point or all neighbors at same screen pos — default upward
+              outY = -1;
+            } else {
+              var olen = Math.sqrt(outX * outX + outY * outY);
+              if (olen < 0.001) {
+                // Endpoints cancel (e.g., centerpoint of a straight 3-pt line) — go upward
+                outX = 0; outY = -1;
+              } else {
+                outX /= olen; outY /= olen;
+              }
+            }
+
+            var screenX = thisScr.x + outX * OFFSET_PX;
+            var screenY = thisScr.y + outY * OFFSET_PX;
+
+            // Unproject back to world — works for both perspective and ortho
+            var ndcX = (screenX / cw) * 2 - 1;
+            var ndcY = -(screenY / ch) * 2 + 1;
+            var nearPoint = new THREE.Vector3(ndcX, ndcY, thisScr.z).unproject(camera);
+
+            if (isOrtho) {
+              lbl.position.copy(nearPoint);
+            } else {
+              var dir = nearPoint.sub(camera.position).normalize();
+              lbl.position.copy(camera.position.clone().add(dir.multiplyScalar(dist)));
+            }
+          }
         });
         viewer.renderer.render(measureLabelScene, camera);
       }
@@ -4743,7 +4134,6 @@
     viewer.addEventListener('update', elevationFrameUpdate);
 
     // -- Toggle mark mode --
-    var _markPreviewSphere = null;
     function toggleMarkMode(forceOff) {
       if (forceOff) {
         MARK_MODE = false;
@@ -4752,18 +4142,8 @@
       }
       if (MARK_MODE && constraintPickMode) cancelConstraintPick();
       if (MARK_MODE && memberPickMode) cancelMemberPick();
-      // Red hover-preview sphere — same pattern as notes / constraint picks.
-      // No crosshair body class: the floating red sphere IS the visual cue.
-      if (MARK_MODE) {
-        if (!_markPreviewSphere) {
-          _markPreviewSphere = _makePreviewSphere(0xff2020);
-          markerScene.add(_markPreviewSphere);
-        }
-      } else if (_markPreviewSphere) {
-        _disposePreviewSphere(_markPreviewSphere, markerScene);
-        _markPreviewSphere = null;
-      }
-      showToast(MARK_MODE ? "Mark mode ON — hover and click to mark (X or ESC to exit)" : "Mark mode OFF");
+      document.body.classList.toggle('mark-mode', MARK_MODE);
+      showToast(MARK_MODE ? "Mark mode ON  (click to mark, X or ESC to exit)" : "Mark mode OFF");
       // Update button state
       const btn = document.getElementById('btn-mark-mode');
       if (btn) btn.classList.toggle('active', MARK_MODE);
@@ -4795,111 +4175,6 @@
       var nums = measurePointNumbers.get(measure);
       if (nums && idx < nums.length) return 'D' + nums[idx];
       return 'D?';
-    }
-
-    // -- Reposition a single measure's D# labels with screen-space outward offset.
-    // Shared by per-frame render and post-add sync so newly-placed labels land
-    // at their final offset position immediately (no one-frame "jump").
-    function repositionMeasureLabels(measure, camera) {
-      var labels = measurePointLabels.get(measure);
-      if (!labels || labels.length === 0) return;
-      if (!camera) camera = viewer.scene.getActiveCamera();
-      if (!camera) return;
-      var size = viewer.renderer.getSize(new THREE.Vector2());
-      var cw = size.width, ch = size.height;
-      if (!cw || !ch) return;
-      var isOrtho = camera instanceof THREE.OrthographicCamera;
-      var OFFSET_PX = 26;
-      var pts = measure.points;
-      // While an insertion is in progress, Potree keeps the last point as a
-      // trailing cursor-follow. Right after a click, that trailing point sits
-      // exactly on top of the just-placed point — showing its label there is
-      // a confusing duplicate. Hide it until the cursor has moved away.
-      var isPending = (pendingMeasurement === measure);
-      var TRAIL_HIDE_PX_SQ = 100; // 10 px
-      var projected = new Array(pts.length);
-      for (var pi = 0; pi < pts.length; pi++) {
-        var pp = pts[pi].position ? pts[pi].position : pts[pi];
-        if (!pp) { projected[pi] = null; continue; }
-        var sp = pp.clone().project(camera);
-        projected[pi] = {
-          x: (sp.x + 1) * cw / 2,
-          y: (-sp.y + 1) * ch / 2,
-          z: sp.z
-        };
-      }
-      for (var li = 0; li < labels.length; li++) {
-        var lbl = labels[li];
-        var pt = pts[li];
-        if (!pt) continue;
-        var worldPos = pt.position ? pt.position : pt;
-        var dist = camera.position.distanceTo(worldPos);
-        var pr = Potree.Utils.projectedRadius(1, camera, dist, cw, ch);
-        if (!pr || !isFinite(pr) || pr < 0.001) pr = 1;
-        var s = (70 / pr);
-        lbl.scale.set(s, s, s);
-
-        var thisScr = projected[li];
-        if (!thisScr) continue;
-
-        // Outward direction = sum of unit vectors pointing AWAY from each neighbour.
-        var outX = 0, outY = 0, contributors = 0;
-        var neighborIdxs = [li - 1, li + 1];
-        for (var ni = 0; ni < neighborIdxs.length; ni++) {
-          var nIdx = neighborIdxs[ni];
-          if (nIdx < 0 || nIdx >= pts.length) continue;
-          var nScr = projected[nIdx];
-          if (!nScr) continue;
-          var dxs = thisScr.x - nScr.x;
-          var dys = thisScr.y - nScr.y;
-          var slen = Math.sqrt(dxs * dxs + dys * dys);
-          if (slen > 0.5) {
-            outX += dxs / slen;
-            outY += dys / slen;
-            contributors++;
-          }
-        }
-        if (contributors === 0) {
-          outY = -1;
-        } else {
-          var olen = Math.sqrt(outX * outX + outY * outY);
-          if (olen < 0.001) { outX = 0; outY = -1; }
-          else { outX /= olen; outY /= olen; }
-        }
-
-        var screenX = thisScr.x + outX * OFFSET_PX;
-        var screenY = thisScr.y + outY * OFFSET_PX;
-
-        var ndcX = (screenX / cw) * 2 - 1;
-        var ndcY = -(screenY / ch) * 2 + 1;
-        var nearPoint = new THREE.Vector3(ndcX, ndcY, thisScr.z).unproject(camera);
-
-        if (isOrtho) {
-          lbl.position.copy(nearPoint);
-        } else {
-          var dir = nearPoint.sub(camera.position).normalize();
-          lbl.position.copy(camera.position.clone().add(dir.multiplyScalar(dist)));
-        }
-
-        // Trailing-label suppression: during an in-progress insertion, the
-        // last point follows the cursor. Hide its label whenever it sits on
-        // top of the previous (just-placed) point — it'll reveal as soon as
-        // the cursor moves away. measure.visible still acts as the master
-        // toggle from the sidebar.
-        if (isPending && li === labels.length - 1 && li > 0) {
-          var prevScr = projected[li - 1];
-          if (prevScr) {
-            var pdx = thisScr.x - prevScr.x;
-            var pdy = thisScr.y - prevScr.y;
-            var tooClose = (pdx * pdx + pdy * pdy) < TRAIL_HIDE_PX_SQ;
-            lbl.visible = measure.visible && !tooClose;
-          } else {
-            lbl.visible = measure.visible;
-          }
-        } else {
-          lbl.visible = measure.visible;
-        }
-      }
     }
 
     // -- Sync labels for a measurement (create/remove/update) --
@@ -4951,9 +4226,6 @@
         labels[i].position.copy(p);
         labels[i].visible = measure.visible;
       }
-      // Apply final screen-space offset/scale now so labels don't visibly jump
-      // on the next frame when the per-frame reposition pass runs.
-      repositionMeasureLabels(measure);
     }
 
     // -- Remove all labels for a measurement --
@@ -5008,16 +4280,10 @@
     }
 
     function cancelPotreeInsertion() {
-      // Null pendingMeasurement BEFORE dispatching cancel_insertions.
-      // Potree's cancel handler removes the trailing marker (for infinite-
-      // marker tools), which fires marker_removed → syncMeasurePointLabels.
-      // If pendingMeasurement is still set at sync time, the new last label
-      // (which was the second-to-last and IS a committed point) would be
-      // misclassified as a trailing and hidden by repositionMeasureLabels.
-      pendingMeasurement = null;
       try { viewer.dispatchEvent({ type: 'cancel_insertions' }); } catch (_) {}
       try { if (viewer.inputHandler) viewer.inputHandler.drag = null; } catch (_) {}
       cleanupOrphanMeasurements();
+      pendingMeasurement = null;
     }
 
     function setupMeasurementLabelEvents() {
@@ -5041,32 +4307,7 @@
           viewer.volumeTool.startInsertion = function(args) {
             // Don't cancel prior measurement when starting volume — different tool family
             lastVolumeToolArgs = args || {};
-            var v = origVS(args);
-            // After the user finishes dragging out the box, Potree fires 'drop'
-            // on the volume itself. Without explicit cleanup the just-placed
-            // volume stays in InputHandler.selection/hoveredElements and its
-            // wireframe wins subsequent hit-tests — blocking drags on
-            // pre-existing measurement spheres, marker dots, etc.
-            if (v && typeof v.addEventListener === 'function') {
-              v.addEventListener('drop', function() {
-                try {
-                  var ih = viewer.inputHandler;
-                  if (!ih) return;
-                  if (ih.drag) ih.drag = null;
-                  if (ih.selection && ih.selection.indexOf(v) >= 0) {
-                    try { ih.toggleSelection(v); } catch (_) {}
-                  }
-                  if (Array.isArray(ih.hoveredElements)) {
-                    ih.hoveredElements = ih.hoveredElements.filter(function(h) {
-                      var o = h && h.object;
-                      while (o) { if (o === v) return false; o = o.parent; }
-                      return true;
-                    });
-                  }
-                } catch (_) {}
-              });
-            }
-            return v;
+            return origVS(args);
           };
           viewer.volumeTool._enableWrapped = true;
         }
@@ -5081,14 +4322,9 @@
           debouncedRebuildMeasList();
           undoStack.push({ type: 'measurement-point', measure: m });
           // If the in-progress measurement reaches its maxMarkers, the Potree
-          // tool ends insertion automatically; clear our pending tracker and
-          // re-sync so the (now-committed) last label appears immediately.
-          // Without the re-sync, repositionMeasureLabels above ran while
-          // pendingMeasurement was still set and hid the last label as a
-          // trailing — but it isn't anymore once insertion has finished.
+          // tool ends insertion automatically; clear our pending tracker.
           if (pendingMeasurement === m && m.maxMarkers && m.points.length >= m.maxMarkers) {
             pendingMeasurement = null;
-            syncMeasurePointLabels(m);
           }
         });
         m.addEventListener('marker_moved', function() {
@@ -5706,10 +4942,6 @@
         marks: markedPoints.map(function(m) {
           return { id: m.id, name: m.name, locked: m.locked, visible: m.visible, position: v3toObj(m.visual.position) };
         }),
-        notes: notes.map(function(n) {
-          return { id: n.id, name: n.name, text: n.text || '', visible: !!n.visible, position: v3toObj(n.position) };
-        }),
-        nextNoteId: nextNoteId,
         // Elevation map state
         elevationMap: (function() {
           if (elevationCropVolumes.length === 0 && !elevationActive) return null;
@@ -5773,7 +5005,6 @@
 
       // Clear existing state
       clearAllMarkers();
-      clearAllNotes();
       while (constraints.length > 0) {
         deleteConstraint(constraints[constraints.length - 1].id);
       }
@@ -5891,22 +5122,6 @@
       }
       if (data.nextMarkId) nextMarkId = data.nextMarkId;
       rebuildMarkList();
-
-      // Restore notes
-      clearAllNotes();
-      if (data.notes) {
-        for (var nk = 0; nk < data.notes.length; nk++) {
-          var sn = data.notes[nk];
-          var npos = new THREE.Vector3(sn.position.x, sn.position.y, sn.position.z);
-          var placedNote = placeNote(npos, sn.text || '', sn.name || null, sn.id);
-          if (placedNote && sn.visible === false) setNoteVisible(placedNote.id, false);
-        }
-        // The placeNote call auto-opens the popover for each one; close the last
-        // one so loading doesn't leave a popover hanging.
-        _closeNotePopover();
-      }
-      if (data.nextNoteId) nextNoteId = Math.max(nextNoteId, data.nextNoteId);
-      rebuildNoteList();
 
       // Restore initial clip box transform
       if (data.initialClipBox && initialClipBox) {
@@ -7223,10 +6438,6 @@
           vol.box.material.color.setHex(0x000000);
           vol.box.material.opacity = 0.03;
           vol.box.material.needsUpdate = true;
-          // Same fix as cut-out and elevation boxes — disable raycast on the
-          // invisible fill so clicks pass through to anything behind it
-          // (measurement spheres, markers, etc).
-          vol.box.raycast = function() {};
         }
         if (vol.frame) {
           vol.frame.material.color.setHex(0x000000);
@@ -8524,12 +7735,6 @@
         vol.box.material.opacity = 0.0;
         vol.box.material.transparent = true;
         vol.box.material.needsUpdate = true;
-        // Disable raycast on the invisible fill mesh — otherwise the box
-        // intercepts every click and blocks drags on measurement spheres /
-        // markers / member endpoints sitting behind it. Selection of the
-        // cut-out for edit is handled by the pendingClick handler at
-        // viewer.html:720 (same pattern as styleElevationBox at line 7346).
-        vol.box.raycast = function() {};
       }
       // Red frame for cut-out boxes
       if (vol.frame) {
@@ -8782,14 +7987,6 @@
           '<div id="enable-constraint-status"></div>' +
         closeGroup() +
 
-        // === 4b. NOTES (collapsed) ===
-        createGroup('notes', 'Notes', false) +
-          '<div id="enable-note-buttons">' +
-            '<button id="btn-add-note" title="Place a note in the cloud">Add Note</button>' +
-          '</div>' +
-          '<div id="enable-note-list"></div>' +
-        closeGroup() +
-
         // === 5. CLIPPING (collapsed) ===
         createGroup('clipping', 'Clipping', false) +
           '<div class="enable-subsection-label">Initial Clip Box</div>' +
@@ -8961,12 +8158,6 @@
       document.getElementById('btn-hide-exclusion-outlines').addEventListener('click', function() { onToggleExclusionOutlines(); });
       document.getElementById('btn-add-exclusion').addEventListener('click', function() { onAddExclusion(); });
       document.getElementById('btn-clear-exclusions').addEventListener('click', function() { onClearExclusions(); });
-      // Notes
-      var btnAddNote = document.getElementById('btn-add-note');
-      if (btnAddNote) btnAddNote.addEventListener('click', function () { startNotePick(); });
-      // Re-label the stations toggle to reflect that it now controls all annotations
-      var btnTogStations = document.getElementById('btn-toggle-stations');
-      if (btnTogStations) btnTogStations.textContent = _annotationsVisible ? 'Hide Annotations' : 'Show Annotations';
 
     }
     injectMarkButtons();
@@ -9024,26 +8215,18 @@
     // -- Click handler with drag guard + constraint point dragging --
     let mouseDownPos = null;
     let _stationCandidate = null;  // { station, downX, downY } set in mousedown if a pin is under cursor
-    let _noteCandidate    = null;  // { note,    downX, downY } same pattern for note icons
 
     renderArea.addEventListener('mousedown', function(e) {
-      // Station / Note pin click candidates (left-click only, no other tool/drag
-      // mode active). We don't stopPropagation here — Potree's orbit still works
-      // if the user drags. mouseup decides click vs drag with a 5px threshold.
+      // Station pin click candidate (left-click only, no other tool/drag mode active).
+      // We don't stopPropagation here — Potree's orbit still works if the user drags.
+      // mouseup decides click vs drag with a 5px threshold.
       _stationCandidate = null;
-      _noteCandidate = null;
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode) {
+      if (e.button === 0 && stations.length > 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode) {
         var rectS = renderArea.getBoundingClientRect();
         var mousePixelS = { x: e.clientX - rectS.left, y: e.clientY - rectS.top };
-        // Notes first (they sit on top visually).
-        var noteHit = findNearestNoteIcon(mousePixelS);
-        if (noteHit) {
-          _noteCandidate = { note: noteHit, downX: e.clientX, downY: e.clientY };
-        } else if (stations.length > 0) {
-          var stationHit = findNearestStationPin(mousePixelS);
-          if (stationHit) {
-            _stationCandidate = { station: stationHit.station, downX: e.clientX, downY: e.clientY };
-          }
+        var stationHit = findNearestStationPin(mousePixelS);
+        if (stationHit) {
+          _stationCandidate = { station: stationHit.station, downX: e.clientX, downY: e.clientY };
         }
       }
 
@@ -9103,27 +8286,7 @@
           return;
         }
       }
-      // Distance/area/angle measurement sphere drag (Potree-managed) — runs
-      // last so marker/member/constraint custom drags take priority. This
-      // uses Potree's own InputHandler.startDragging so the existing drag /
-      // drop / marker_moved event flow handles position updates and sidebar
-      // refresh. Mirrors the touch sphere-grab in chrome.js so mouse and
-      // touch reach measurement spheres with the same 18 px tolerance.
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode
-          && !zBasePickMode && !notePickMode
-          && viewer.inputHandler) {
-        var rectMS = renderArea.getBoundingClientRect();
-        var mousePixelMS = { x: e.clientX - rectMS.left, y: e.clientY - rectMS.top };
-        var sphHit = findNearestMeasurementSphere(mousePixelMS);
-        if (sphHit) {
-          viewer.inputHandler.mouse.set(mousePixelMS.x, mousePixelMS.y);
-          viewer.inputHandler.startDragging(sphHit);
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
-        }
-      }
-      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) return;
+      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) return;
       if (e.button !== 0) return; // left-click only for placing points
       mouseDownPos = { x: e.clientX, y: e.clientY };
     }, true);
@@ -9134,40 +8297,6 @@
     var HOVER_THRESHOLD = 12; // pixels
 
     renderArea.addEventListener('mousemove', function(e) {
-      // Hover-preview spheres — Mark (red), Note (yellow), Constraint (green).
-      // Shows the exact cloud point that will be picked, replacing the
-      // crosshair cursor as the visual cue across all placement tools.
-      if ((notePickMode && _notePreviewSphere) ||
-          (constraintPickMode && _constraintPreviewSphere) ||
-          (MARK_MODE && _markPreviewSphere)) {
-        var _hpRect = renderArea.getBoundingClientRect();
-        var _hpMouse = { x: e.clientX - _hpRect.left, y: e.clientY - _hpRect.top };
-        if (MARK_MODE && _markPreviewSphere) {
-          _updatePreviewSphereAt(_markPreviewSphere, _hpMouse);
-        }
-        if (notePickMode && _notePreviewSphere) {
-          _updatePreviewSphereAt(_notePreviewSphere, _hpMouse);
-        }
-        if (constraintPickMode && _constraintPreviewSphere) {
-          _updatePreviewSphereAt(_constraintPreviewSphere, _hpMouse);
-        }
-      }
-      // Rubber-band line preview during 2-point picks (X-axis or Set Axis):
-      // while exactly one marker exists, the line's far end follows the cursor.
-      if (constraintPickMode &&
-          (constraintPickType === 'plane-x-axis' || constraintPickType === 'axis') &&
-          _xAxisRubberLine && constraintPickMarkers.length === 1 &&
-          !_xAxisPickDragActive) {
-        var _rbRect = renderArea.getBoundingClientRect();
-        var _rbMouse = { x: e.clientX - _rbRect.left, y: e.clientY - _rbRect.top };
-        var _rbCam = viewer.scene.getActiveCamera();
-        var _rbPick = _origPick(_rbMouse, _rbCam, viewer, viewer.scene.pointclouds);
-        if (_rbPick && _rbPick.location) {
-          var _rbAttr = _xAxisRubberLine.geometry.attributes.position;
-          _rbAttr.setXYZ(1, _rbPick.location.x, _rbPick.location.y, _rbPick.location.z);
-          _rbAttr.needsUpdate = true;
-        }
-      }
       // Marker dragging
       if (markerDragActive && markerDragInfo) {
         var rect = renderArea.getBoundingClientRect();
@@ -9342,22 +8471,6 @@
     }, true);
 
     renderArea.addEventListener('mouseup', function(e) {
-      // Note icon click — toggle the popover if the mouse barely moved.
-      if (_noteCandidate) {
-        var nc = _noteCandidate;
-        _noteCandidate = null;
-        var noDragNote = !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive;
-        if (noDragNote && e.button === 0) {
-          var ndx = e.clientX - nc.downX;
-          var ndy = e.clientY - nc.downY;
-          if (Math.sqrt(ndx * ndx + ndy * ndy) < 5) {
-            if (_expandedNoteId === nc.note.id) _closeNotePopover();
-            else _openNotePopover(nc.note.id);
-            e.stopPropagation();
-            return;
-          }
-        }
-      }
       // Station pin click — open panorama if the mouse barely moved since mousedown
       // and no other drag was active. Always clear the candidate.
       if (_stationCandidate) {
@@ -9416,7 +8529,7 @@
         return;
       }
 
-      if ((!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) || !mouseDownPos) return;
+      if ((!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode) || !mouseDownPos) return;
 
       // Drag guard: only place marker if mouse moved < 5px
       const dx = e.clientX - mouseDownPos.x;
@@ -9476,9 +8589,6 @@
           handleMemberPick(pos);
         } else if (constraintPickMode) {
           handleConstraintPick(pos);
-        } else if (notePickMode) {
-          placeNote(pos);
-          cancelNotePick(); // also disposes the preview sphere
         } else {
           placeMarker(pos);
         }
@@ -9716,8 +8826,6 @@
         if (zBasePickMode) { cancelZBasePick(); rebuildElevationBoxList(); }
         else if (constraintPickMode) cancelConstraintPick();
         else if (memberPickMode) cancelMemberPick();
-        else if (notePickMode) cancelNotePick();
-        else if (_expandedNoteId != null) _closeNotePopover();
         else if (MARK_MODE) toggleMarkMode(true);
         // Hard-cancel any active Potree measurement insertion: dispatches
         // cancel_insertions, stops the InputHandler drag, and removes any
@@ -9736,21 +8844,7 @@
       get stations()            { return stations;            },
       get THREE()               { return THREE;               },
       get measureLabelScene()   { return measureLabelScene;   },
-      get measurePointLabels()  { return measurePointLabels;  },
-      get notes()               { return notes;               },
-      startNotePick:            function () { return startNotePick(); },
-      performUndo:              function () { return performUndo();   },
-      get undoStack()           { return undoStack;           },
-      // Called from chrome.js after a clean 1-finger tap on touch. Exits any
-      // single-action pick mode (Mark, Note, Constraint) so the user can
-      // immediately pan/orbit after a single placement on tablet.
-      _touchExitSingleModes:    function () {
-        if (MARK_MODE) toggleMarkMode(true);
-        // Note pick already auto-exits via cancelNotePick() inside the
-        // placement flow; nothing to do here.
-        // Constraint picks: 2-point picks (axis, plane-x-axis) auto-finalize.
-        // Fit-plane is multi-point, intentionally not auto-exited.
-      }
+      get measurePointLabels()  { return measurePointLabels;  }
     };
   })();
   </script>

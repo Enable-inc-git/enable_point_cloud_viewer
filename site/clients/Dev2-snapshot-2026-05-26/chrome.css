@@ -71,7 +71,7 @@ html, body {
    so we don't render a stripe that nobody can see. */
 .potree_container {
   position: absolute !important;
-  top: var(--topbar-height) !important;
+  top: 48px !important;
   left: 280px !important;
   right: 0 !important;
   bottom: 0 !important;
@@ -110,7 +110,7 @@ html, body {
 #dev2-topbar {
   position: fixed;
   top: 0; left: 0; right: 0;
-  height: var(--topbar-height);
+  height: 48px;
   background: var(--tb-bg);
   color: var(--tb-fg);
   border-bottom: 1px solid var(--tb-border);
@@ -121,57 +121,39 @@ html, body {
   font-size: 13px;
 }
 
-/* Brand area occupies the same horizontal slot as the left sidebar, so the
-   first tool aligns with the sidebar's right edge / canvas's left edge.
-   Internally the logo sits on one line and the project name on a second
-   line beneath it — both confined to sidebar width. */
-.dev2-tb-brand-area {
+.dev2-tb-brand {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  width: var(--sidebar-width);
-  flex: 0 0 auto;
-  padding: 4px 12px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 14px;
   border-right: 1px solid var(--tb-divider);
-  gap: 2px;
-  min-width: 0;
+  min-width: 220px;
+  max-width: 320px;
 }
-.dev2-tb-flex-spacer { flex: 1 1 auto; min-width: 0; }
-
 .dev2-tb-logo {
-  height: 24px;
+  height: 22px;
   width: auto;
   display: block;
   flex: 0 0 auto;
 }
 .dev2-tb-project-name {
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
   color: var(--tb-fg-dim);
-  letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
 }
 
 .dev2-tb-groups {
   display: flex;
   flex: 1 1 auto;
   align-items: stretch;
-  /* No left padding so the first tool button's left edge sits flush with the
-     brand-area / sidebar boundary (x = var(--sidebar-width)). Right padding
-     keeps the last group from butting against the meta cluster. */
-  padding: 0 6px 0 0;
+  padding: 0 6px;
   gap: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
 .dev2-tb-groups::-webkit-scrollbar { display: none; }
-/* Drop the first tool's left margin so its left edge (and hover background)
-   aligns with the sidebar's right border. */
-.dev2-tb-groups > .dev2-tb-btn:first-child { margin-left: 0; }
 
 .dev2-tb-right {
   display: flex;
@@ -191,8 +173,8 @@ html, body {
   align-items: center;
   gap: 6px;
   padding: 0 10px;
-  margin: 7px 2px;
-  height: 34px;
+  margin: 6px 2px;
+  height: 36px;
   border-radius: 6px;
   cursor: pointer;
   font: inherit;
@@ -351,7 +333,7 @@ html, body {
 
 #dev2-sidebar {
   position: fixed;
-  top: var(--topbar-height);
+  top: 48px;
   left: 0;
   bottom: 0;
   width: 280px;
@@ -449,13 +431,11 @@ html, body {
 :root {
   --context-panel-width: 225px;
   --panorama-width: 400px;
-  --topbar-height: 60px;
-  --sidebar-width: 280px;
 }
 
 #dev2-context-panel {
   position: fixed;
-  top: var(--topbar-height);
+  top: 48px;
   right: 0;
   bottom: 0;
   width: var(--context-panel-width);
@@ -524,10 +504,6 @@ html, body {
 
 /* Potree's About / version popup link in the corner */
 .potree_about, #potree_about_link { display: none !important; }
-
-/* Potree's project description banner — duplicates the project info we now
-   show in the topbar's second row. */
-#potree_description { display: none !important; }
 
 /* Cartoonish leaf/folder icons in the scene tree (jstree theme icons).
    We keep the checkbox (visibility toggle) and the expand/collapse arrow —
@@ -837,7 +813,7 @@ html, body {
 
 #station-panorama-modal.dev2-pano-docked {
   position: fixed !important;
-  top: var(--topbar-height) !important;
+  top: 48px !important;
   right: 0 !important;
   bottom: 0 !important;
   left: auto !important;
@@ -892,14 +868,6 @@ html, body {
   background: transparent;
   z-index: 905;
   transition: background 0.12s ease;
-  /* Suppress browser pan/zoom on touch so the pointer events below fire. */
-  touch-action: none;
-}
-/* Same for the panorama canvas — browser default touch-action would
-   intercept finger drags before the panorama's pointermove handler sees
-   them, making the panorama un-pannable on tablet. */
-#station-panorama-modal #spm-canvas {
-  touch-action: none;
 }
 /* Neutral hover/active — green is reserved for true accents (active buttons,
    focused elev row). The drag handle is chrome, not signal. */

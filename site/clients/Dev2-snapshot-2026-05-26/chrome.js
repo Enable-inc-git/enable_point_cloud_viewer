@@ -17,17 +17,16 @@
 (function () {
   'use strict';
 
-  // ---- Apply state synchronously (before first paint) ----
-  // Theme is locked to dark; light mode CSS still ships but is unreachable
-  // from the UI. (Removed the user toggle per request.)
+  // ---- Apply theme + sidebar/panel state synchronously (before first paint) ----
   (function applyEarlyState() {
-    var savedSidebar = null, savedPinned = null;
+    var savedTheme = null, savedSidebar = null, savedPinned = null;
     var savedCtxWidth = null, savedPanoWidth = null;
+    try { savedTheme     = localStorage.getItem('dev2.theme'); } catch (_) {}
     try { savedSidebar   = localStorage.getItem('dev2.sidebar.collapsed'); } catch (_) {}
     try { savedPinned    = localStorage.getItem('dev2.context.pinned'); } catch (_) {}
     try { savedCtxWidth  = localStorage.getItem('dev2.context.width'); } catch (_) {}
     try { savedPanoWidth = localStorage.getItem('dev2.panorama.width'); } catch (_) {}
-    document.documentElement.dataset.theme = 'dark';
+    document.documentElement.dataset.theme = (savedTheme === 'light') ? 'light' : 'dark';
     if (savedSidebar === 'true') document.documentElement.dataset.sidebarCollapsed = 'true';
     // Tool Settings is closed by default. Only "pinned" persists; auto-open
     // on content arrival happens through updateContextPanelVisibility.
@@ -225,25 +224,17 @@
       {
         id: 'view', label: 'View', iconName: 'navigation',
         items: [
-          { kind: 'label', text: 'Camera angle' },
-          { label: 'Top',           iconName: 'compass',     action: function () { callViewer('setTopView'); } },
-          { label: 'Bottom',        iconName: 'compass',     action: function () { callViewer('setBottomView'); } },
-          { label: 'Front',         iconName: 'frame',       action: function () { callViewer('setFrontView'); } },
-          { label: 'Back',          iconName: 'frame',       action: function () { callViewer('setBackView'); } },
-          { label: 'Left',          iconName: 'frame',       action: function () { callViewer('setLeftView'); } },
-          { label: 'Right',         iconName: 'frame',       action: function () { callViewer('setRightView'); } },
+          { kind: 'label', text: 'Camera' },
+          { label: 'Top view',         iconName: 'compass',     action: function () { proxyView('top'); } },
+          { label: 'Front view',       iconName: 'frame',       action: function () { proxyView('front'); } },
+          { label: 'Side view',        iconName: 'frame',       action: function () { proxyView('side'); } },
           { kind: 'sep' },
-          { label: 'Fit to screen', iconName: 'target', kbd: 'F', action: function () { callViewer('fitToScreen'); } },
+          { label: 'Fit to screen',    iconName: 'target',      kbd: 'F', action: function () { proxyView('fit'); } },
           { kind: 'sep' },
-          { kind: 'label', text: 'Projection' },
-          { kind: 'radio', id: 'projection',
-            get: function () { return readProjectionMode(); },
-            options: [
-              { value: 'PERSPECTIVE',  label: 'Perspective' },
-              { value: 'ORTHOGRAPHIC', label: 'Orthographic' }
-            ],
-            onChange: function (v) { setCameraMode(v); }
-          }
+          { kind: 'label', text: 'Controls' },
+          { label: 'Orbit',            iconName: 'rotate-ccw',  action: function () { proxyControl('orbit'); } },
+          { label: 'Fly (FPS)',        iconName: 'move',        action: function () { proxyControl('fps'); } },
+          { label: 'Earth',            iconName: 'compass',     action: function () { proxyControl('earth'); } }
         ]
       },
       {
@@ -265,12 +256,6 @@
         items: [
           { label: 'New mark point',   iconName: 'plus',     kbd: 'X', action: function () { clickLegacy('btn-mark-mode'); } },
           { label: 'Clear all marks',  iconName: 'trash-2',  kbd: 'Z', action: function () { clickLegacy('btn-clear-marks'); } }
-        ]
-      },
-      {
-        id: 'notes', label: 'Notes', iconName: 'sticky-note',
-        items: [
-          { label: 'Add note',         iconName: 'plus',     action: function () { clickLegacy('btn-add-note'); } }
         ]
       },
       {
@@ -310,80 +295,66 @@
     ];
   }
 
-  // -- View + control invocation via the viewer API (exposed by window.__dev2) --
-  // viewer methods: setTopView/setBottomView/setFrontView/setBackView/setLeftView/
-  //                 setRightView/fitToScreen (potree.js:80928-80958 confirms)
-  function callViewer(methodName) {
-    var v = window.__dev2 && window.__dev2.viewer;
-    if (!v || typeof v[methodName] !== 'function') {
-      flashToast('"' + methodName + '" not available');
+  // -- View / control proxies (defensive; warn if the native control isn't found) --
+  function proxyView(which) {
+    var map = {
+      top:   ['#top_view', '#view_top', '[data-view="top"]'],
+      front: ['#front_view', '#view_front'],
+      side:  ['#side_view', '#view_side'],
+      fit:   ['#fit_view', '#fit-screen']
+    };
+    var sels = map[which] || [];
+    for (var i = 0; i < sels.length; i++) {
+      var found = document.querySelector(sels[i]);
+      if (found) { found.click(); return; }
+    }
+    // Fallback: dispatch keyboard event Potree binds for some views (F = fit).
+    if (which === 'fit') {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', bubbles: true }));
       return;
     }
-    try { v[methodName](); }
-    catch (err) { console.warn('[dev2]', methodName, 'threw:', err); flashToast(methodName + ' failed'); }
+    flashToast('View "' + which + '" not available');
   }
 
-  // -- Projection mode (perspective / orthographic) --
-  // viewer.setCameraMode(Potree.CameraMode.PERSPECTIVE | .ORTHOGRAPHIC)
-  function readProjectionMode() {
-    var v = window.__dev2 && window.__dev2.viewer;
-    if (!v) return 'PERSPECTIVE';
-    var cam = v.scene && v.scene.getActiveCamera && v.scene.getActiveCamera();
-    if (cam && cam.isOrthographicCamera) return 'ORTHOGRAPHIC';
-    return 'PERSPECTIVE';
-  }
-
-  function setCameraMode(mode) {
-    var v = window.__dev2 && window.__dev2.viewer;
-    var P = window.Potree;
-    if (!v || typeof v.setCameraMode !== 'function' || !P || !P.CameraMode || P.CameraMode[mode] == null) {
-      flashToast('Camera mode "' + mode + '" not available');
-      return;
+  function proxyControl(which) {
+    var map = {
+      orbit: ['#orbit_controls', '[data-control="orbit"]'],
+      fps:   ['#fps_controls', '[data-control="fps"]'],
+      earth: ['#earth_controls', '[data-control="earth"]']
+    };
+    var sels = map[which] || [];
+    for (var i = 0; i < sels.length; i++) {
+      var found = document.querySelector(sels[i]);
+      if (found) { found.click(); return; }
     }
-    try { v.setCameraMode(P.CameraMode[mode]); }
-    catch (err) { console.warn('[dev2] setCameraMode threw:', err); flashToast(mode + ' failed'); }
+    flashToast('Control "' + which + '" not available');
   }
 
   function proxyMeasure(which) {
-    var v = window.__dev2 && window.__dev2.viewer;
-    if (!v) { flashToast('Viewer not ready'); return; }
-    try {
-      switch (which) {
-        case 'distance':
-          v.measuringTool.startInsertion({
-            showDistances: true, showArea: false, closed: false, name: 'Distance' });
-          return;
-        case 'area':
-          v.measuringTool.startInsertion({
-            showDistances: true, showArea: true, closed: true, name: 'Area' });
-          return;
-        case 'angle':
-          v.measuringTool.startInsertion({
-            showDistances: false, showAngles: true, showArea: false,
-            closed: true, maxMarkers: 3, name: 'Angle' });
-          return;
-        case 'height':
-          v.measuringTool.startInsertion({
-            showDistances: false, showHeight: true, showArea: false,
-            closed: false, maxMarkers: 2, name: 'Height' });
-          return;
-        case 'point':
-          v.measuringTool.startInsertion({
-            showDistances: false, showAngles: false, showCoordinates: true,
-            showArea: false, closed: true, maxMarkers: 1, name: 'Point' });
-          return;
-        case 'volume':
-          var vol = v.volumeTool.startInsertion();
-          if (vol) vol.userData.isDev2VolumeMeasurement = true;
-          return;
-        case 'polygon':
-          v.clippingTool.startInsertion({ type: 'polygon' });
-          return;
+    // Potree's #tools is moved into #enable-meas-tools-slot by injectMarkButtons.
+    // Each child <img> has src like ".../icons/distance.svg".
+    var pattern = {
+      distance: 'distance',
+      area:     'area',
+      angle:    'angle',
+      height:   'height',
+      point:    'point',
+      volume:   'clip_volume',
+      polygon:  'clip-polygon'
+    }[which];
+    if (!pattern) return;
+    var host = document.getElementById('enable-legacy-host') || document.body;
+    var candidates = host.querySelectorAll('img[src*="' + pattern + '"]');
+    for (var i = 0; i < candidates.length; i++) {
+      // skip ones in nested unrelated trees: must live under #tools
+      if (candidates[i].closest('#tools')) {
+        candidates[i].click();
+        return;
       }
-    } catch (err) {
-      console.warn('[dev2] measure "' + which + '" failed:', err);
-      flashToast('Measure "' + which + '" failed');
     }
+    // Final fallback: any img whose src contains the pattern under the legacy host
+    if (candidates.length > 0) { candidates[0].click(); return; }
+    flashToast('Measure "' + which + '" not available');
   }
 
   // -- Dropdown menu logic --
@@ -422,15 +393,14 @@
     var topbar = document.getElementById('dev2-topbar');
     topbar.innerHTML = '';
 
-    // ---- Brand area (logo + project name) — width matches the sidebar so the
-    //      first tool aligns with the canvas's left edge. ----
-    var brandArea = el('div', { className: 'dev2-tb-brand-area' }, [
+    // Brand
+    var brand = el('div', { className: 'dev2-tb-brand' }, [
       el('img', { className: 'dev2-tb-logo', src: '../EnableLogo.png', alt: 'Enable' }),
       el('span', { className: 'dev2-tb-project-name', text: projectName() })
     ]);
-    topbar.appendChild(brandArea);
+    topbar.appendChild(brand);
 
-    // ---- Tool dropdowns ----
+    // Group buttons
     var groupsNav = el('nav', { className: 'dev2-tb-groups' });
     var groups = topbarGroups();
     // Non-elevation groups represent a "switch tool" intent — when the user
@@ -491,23 +461,15 @@
     });
     topbar.appendChild(groupsNav);
 
-    // ---- Meta actions on the right (save / load / export / vis / undo / redo / about) ----
-    topbar.appendChild(el('div', { className: 'dev2-tb-flex-spacer' }));
-    var meta = el('div', { className: 'dev2-tb-right' });
-    meta.appendChild(iconBtn('save',     'Save session',           function () { clickLegacy('btn-save-session'); }));
-    meta.appendChild(iconBtn('upload',   'Load session',           function () { clickLegacy('btn-load-session'); }));
-    meta.appendChild(iconBtn('download', 'Export distances',       function () { clickLegacy('btn-export-measurements'); }));
-    meta.appendChild(iconBtn('eye',      'Toggle annotations (stations + notes)', function () { clickLegacy('btn-toggle-stations'); }));
-    meta.appendChild(iconBtn('undo',     'Undo (Ctrl+Z)',          function () {
-      var d = window.__dev2; if (d && typeof d.performUndo === 'function') d.performUndo();
-    }));
-    meta.appendChild(iconBtn('redo',     'Redo (Ctrl+Y / Ctrl+Shift+Z)', function () {
-      var d = window.__dev2;
-      if (d && typeof d.performRedo === 'function') d.performRedo();
-      else flashToast('Nothing to redo');
-    }));
-    meta.appendChild(iconBtn('info',     'About',                  openAboutModal));
-    topbar.appendChild(meta);
+    // Right cluster
+    var right = el('div', { className: 'dev2-tb-right' });
+    right.appendChild(iconBtn('save',     'Save session', function () { clickLegacy('btn-save-session'); }));
+    right.appendChild(iconBtn('upload',   'Load session', function () { clickLegacy('btn-load-session'); }));
+    right.appendChild(iconBtn('download', 'Export distances', function () { clickLegacy('btn-export-measurements'); }));
+    right.appendChild(iconBtn('eye',      'Toggle scan stations', function () { clickLegacy('btn-toggle-stations'); }));
+    right.appendChild(themeToggleButton());
+    right.appendChild(iconBtn('info', 'About', openAboutModal));
+    topbar.appendChild(right);
   }
 
   function buildSliderMenuItem(item) {
@@ -600,7 +562,6 @@
   // but rarely the primary thing).
   var SIDEBAR_SECTIONS = [
     { id: 'marks',        title: 'Marks',         iconName: 'map-pin',      slotIds: ['enable-mark-list'],          defaultOpen: true  },
-    { id: 'notes',        title: 'Notes',         iconName: 'sticky-note',  slotIds: ['enable-note-list'],          defaultOpen: false },
     { id: 'constraints',  title: 'Constraints',   iconName: 'axis-3d',      slotIds: ['enable-constraint-list'],    defaultOpen: true  },
     { id: 'members',      title: 'Members',       iconName: 'pencil',       slotIds: ['enable-member-list'],        defaultOpen: false },
     { id: 'measurements', title: 'Measurements',  iconName: 'ruler',        slotIds: ['enable-measurement-list', 'enable-area-list', 'enable-angle-list', 'enable-volume-list'], defaultOpen: false },
@@ -1254,113 +1215,6 @@
   }
 
   // ============================================================
-  // Area + Volume interior shading.
-  //
-  // Potree renders area measurements as edge segments + a centroid label
-  // and clip-box / box-volume measurements as wireframes; neither fills
-  // the interior. We add a translucent green fill mesh for area polygons
-  // (fan-triangulated from the centroid each frame so dragging a point
-  // keeps the fill in sync) and a translucent green BoxGeometry mesh for
-  // each Potree BoxVolume that lives in viewer.scene.volumes.
-  // ============================================================
-
-  var AREA_FILL_COLOR   = 0x39ff14;
-  var AREA_FILL_OPACITY = 0.16;
-
-  function ensureAreaFill(measure) {
-    var THREE = (window.__dev2 && window.__dev2.THREE) || window.THREE;
-    if (!THREE || !measure || !measure.showArea) return;
-    if (!measure.points || measure.points.length < 3) {
-      if (measure._dev2AreaFill) {
-        measure.remove(measure._dev2AreaFill);
-        if (measure._dev2AreaFill.geometry) measure._dev2AreaFill.geometry.dispose();
-        if (measure._dev2AreaFill.material) measure._dev2AreaFill.material.dispose();
-        measure._dev2AreaFill = null;
-      }
-      return;
-    }
-    if (!measure._dev2AreaFill) {
-      var geom = new THREE.BufferGeometry();
-      var mat = new THREE.MeshBasicMaterial({
-        color: AREA_FILL_COLOR,
-        transparent: true,
-        opacity: AREA_FILL_OPACITY,
-        side: THREE.DoubleSide,
-        depthTest: true,
-        depthWrite: false
-      });
-      var mesh = new THREE.Mesh(geom, mat);
-      mesh.userData.isAreaFill = true;
-      mesh.renderOrder = -1; // render before edge labels
-      measure.add(mesh);
-      measure._dev2AreaFill = mesh;
-    }
-    // Fan-triangulate from the centroid. Works for convex polygons. Concave
-    // polygons will have minor overlap artefacts, but for typical CAD use
-    // (rectangular slabs, building outlines) this is fine.
-    var pts = measure.points;
-    var n = pts.length;
-    var centroid = new THREE.Vector3();
-    for (var i = 0; i < n; i++) centroid.add(pts[i].position);
-    centroid.multiplyScalar(1 / n);
-    var verts = new Float32Array((n) * 3 * 3);
-    var v = 0;
-    for (var i = 0; i < n; i++) {
-      var a = pts[i].position;
-      var b = pts[(i + 1) % n].position;
-      verts[v++] = centroid.x; verts[v++] = centroid.y; verts[v++] = centroid.z;
-      verts[v++] = a.x;        verts[v++] = a.y;        verts[v++] = a.z;
-      verts[v++] = b.x;        verts[v++] = b.y;        verts[v++] = b.z;
-    }
-    var geo = measure._dev2AreaFill.geometry;
-    geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-    geo.computeBoundingSphere();
-  }
-
-  function ensureVolumeFill(volume) {
-    var THREE = (window.__dev2 && window.__dev2.THREE) || window.THREE;
-    if (!THREE || !volume) return;
-    // Only fill BoxVolumes that we tagged when creating them via the Measure
-    // → Volume tool. Skips the initial clip box, cut-outs, elevation boxes,
-    // exclusion zones, anything restored from a session that wasn't tagged.
-    if (!volume.userData || !volume.userData.isDev2VolumeMeasurement) return;
-    if (volume._dev2VolumeFill) return;
-    var geom = new THREE.BoxGeometry(1, 1, 1);
-    var mat = new THREE.MeshBasicMaterial({
-      color: AREA_FILL_COLOR,
-      transparent: true,
-      opacity: AREA_FILL_OPACITY,
-      depthTest: true,
-      depthWrite: false
-    });
-    var mesh = new THREE.Mesh(geom, mat);
-    mesh.userData.isVolumeFill = true;
-    volume.add(mesh);
-    volume._dev2VolumeFill = mesh;
-  }
-
-  function startAreaVolumeFillObserver() {
-    var seen = new WeakSet();
-    function tick() {
-      var v = window.__dev2 && window.__dev2.viewer;
-      if (v && v.scene) {
-        if (v.scene.measurements) {
-          for (var i = 0; i < v.scene.measurements.length; i++) {
-            ensureAreaFill(v.scene.measurements[i]);
-          }
-        }
-        if (v.scene.volumes) {
-          for (var j = 0; j < v.scene.volumes.length; j++) {
-            ensureVolumeFill(v.scene.volumes[j]);
-          }
-        }
-      }
-      requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
-  }
-
-  // ============================================================
   // Strip the opaque black background from Potree's measurement
   // edge / coordinate labels. The labels still keep their built-in
   // 4px black text stroke (TextSprite.update line ~51929) so white
@@ -1479,32 +1333,35 @@
     return _edgeLabelScene;
   }
 
-  // Set depthTest on every material in obj's subtree based on whether the
-  // subtree is a label (always-on-top) or geometry (occluded by cloud).
-  function setMaterialDepth(obj, isLabel) {
+  function enableDepthTestRecursive(obj) {
     if (!obj) return;
     if (obj.material) {
-      obj.material.depthTest  = !isLabel;
-      obj.material.depthWrite = false; // billboards / transparent overlays never write depth
+      // For Line2 / LineMaterial, depthTest is also on .material
+      obj.material.depthTest = true;
+      // Spheres/markers and labels: depthWrite false is safer (avoid blocking
+      // other overlays), but for solid sphere markers depthWrite=true is fine
+      // and gives better self-occlusion.
+      if (obj.material.transparent !== false && !(obj.isMesh && !obj.material.transparent)) {
+        obj.material.depthWrite = false;
+      }
     }
+    if (obj.sprite && obj.sprite.material) {
+      obj.sprite.material.depthTest  = true;
+      obj.sprite.material.depthWrite = false;
+    }
+    // TextSprite's child Sprite has its own material — handled above
     if (obj.children) {
-      for (var i = 0; i < obj.children.length; i++) setMaterialDepth(obj.children[i], isLabel);
+      for (var i = 0; i < obj.children.length; i++) enableDepthTestRecursive(obj.children[i]);
     }
   }
 
-  function adoptIntoDepthScene(obj, isLabel) {
+  function adoptIntoDepthScene(obj) {
     var scene = getEdgeLabelScene();
-    if (!scene || !obj) return;
-    // Only reparent the first time; once it's in our scene, leave it alone.
-    if (obj.parent !== scene) {
-      if (obj.parent) obj.parent.remove(obj);
-      scene.add(obj);
-      swapLambertToBasic(obj);
-    }
-    // ALWAYS re-apply depth policy (idempotent). Earlier versions of this code
-    // set depthTest=true on labels; objects adopted under that version kept
-    // the stale value because the early-return above prevented reapplication.
-    setMaterialDepth(obj, !!isLabel);
+    if (!scene || !obj || obj.parent === scene) return;
+    if (obj.parent) obj.parent.remove(obj);
+    scene.add(obj);
+    swapLambertToBasic(obj);
+    enableDepthTestRecursive(obj);
   }
 
   // Potree builds measurement sphere markers with MeshLambertMaterial
@@ -1539,62 +1396,55 @@
     var valid = new Set();
 
     // Reparent every visible part of every Measure into our depth-tested scene.
-    // Split by category so we can apply different depth policies:
-    //   GEOM  → depth-tested (occluded by cloud — feels physically correct)
-    //   LABEL → always-on-top (text values must be readable even when behind
-    //           a wall; otherwise the label vanishes the instant you place it
-    //           on a cloud surface, since the surface is right at label depth).
-    var GEOM_GROUPS  = ['spheres', 'edges'];
-    var LABEL_GROUPS = ['edgeLabels', 'coordinateLabels', 'sphereLabels', 'angleLabels'];
-    var GEOM_SINGLE  = ['heightEdge'];
-    var LABEL_SINGLE = ['heightLabel', 'areaLabel'];
+    // Lists Potree maintains on each Measure (see potree.js:53884–53892):
+    //   spheres        — red dot markers (Mesh)
+    //   edges          — red connecting lines (Line2)
+    //   edgeLabels     — 3D/XY/Z value labels (TextSprite)
+    //   coordinateLabels, sphereLabels, angleLabels — other label types
+    //   heightEdge / heightLabel / areaLabel — only for those measure modes
+    // We harvest each per frame; new ones (created during marker insertion)
+    // get caught on the next tick.
+    var groups = ['spheres', 'edges', 'edgeLabels', 'coordinateLabels',
+                  'sphereLabels', 'angleLabels'];
+    var singletons = ['heightEdge', 'heightLabel', 'areaLabel'];
 
     v.scene.measurements.forEach(function (m) {
-      GEOM_GROUPS.forEach(function (key) {
-        var arr = m[key]; if (!arr || !arr.length) return;
+      groups.forEach(function (key) {
+        var arr = m[key];
+        if (!arr || !arr.length) return;
         arr.forEach(function (item) {
           if (!item) return;
           valid.add(item);
-          adoptIntoDepthScene(item, false);
+          adoptIntoDepthScene(item);
         });
       });
-      LABEL_GROUPS.forEach(function (key) {
-        var arr = m[key]; if (!arr || !arr.length) return;
-        arr.forEach(function (item) {
-          if (!item) return;
+      singletons.forEach(function (key) {
+        var item = m[key];
+        if (!item) return;
+        // Only adopt if it's actually visible — e.g. heightLabel exists on
+        // every Measure but is invisible for non-height measurements.
+        if (item.visible) {
           valid.add(item);
-          adoptIntoDepthScene(item, true);
-        });
-      });
-      GEOM_SINGLE.forEach(function (key) {
-        var item = m[key]; if (!item || !item.visible) return;
-        valid.add(item);
-        adoptIntoDepthScene(item, false);
-      });
-      LABEL_SINGLE.forEach(function (key) {
-        var item = m[key]; if (!item || !item.visible) return;
-        valid.add(item);
-        adoptIntoDepthScene(item, true);
+          adoptIntoDepthScene(item);
+        }
       });
     });
 
-    // Enable's custom D# labels — walk the measurePointLabels Map (Measure→
-    // labels[]) rather than scanning measureLabelScene.children. The labels
-    // get reparented out of measureLabelScene on first adoption, so scanning
-    // that scene would miss them on subsequent frames and the prune step
-    // would then delete them. Walking the Map keeps every D# label valid
-    // for as long as its parent Measure exists.
-    var pointLabelsMap = window.__dev2 && window.__dev2.measurePointLabels;
-    if (pointLabelsMap && typeof pointLabelsMap.forEach === 'function') {
-      pointLabelsMap.forEach(function (labels) {
-        if (!labels || !labels.length) return;
-        for (var i = 0; i < labels.length; i++) {
-          var lbl = labels[i];
-          if (!lbl) continue;
+    // Also harvest Enable's custom D# labels from the legacy measureLabelScene.
+    // They render in perspective_overlay (which fires after clearDepth, with no
+    // depth available), so they always appear on top. Moving them into our
+    // depth-aware scene fixes that.
+    var legacyD = window.__dev2 && window.__dev2.measureLabelScene;
+    if (legacyD && legacyD.children) {
+      // Copy array because we mutate parentage during iteration.
+      var kids = legacyD.children.slice();
+      for (var i = 0; i < kids.length; i++) {
+        var lbl = kids[i];
+        if (lbl && lbl.userData && lbl.userData.isMeasureLabel) {
           valid.add(lbl);
-          adoptIntoDepthScene(lbl, true);
+          adoptIntoDepthScene(lbl);
         }
-      });
+      }
     }
 
     // Prune objects that no longer belong to any Measure (e.g. after removeMarker
@@ -1753,25 +1603,27 @@
     });
     element.appendChild(handle);
 
-    // Pointer events unify mouse + touch + pen — no separate touch handlers
-    // needed and the resize handle works identically on a tablet.
     var dragging = false;
     var pendingResize = false;
-    var dragPointerId = null;
-    handle.addEventListener('pointerdown', function (e) {
+    handle.addEventListener('mousedown', function (e) {
       dragging = true;
-      dragPointerId = e.pointerId;
-      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
       document.documentElement.classList.add('dev2-dragging');
       document.body.style.cursor = 'ew-resize';
       document.body.style.userSelect = 'none';
+      // Belt-and-suspenders: disable pointer-events on the cloud canvas
+      // while dragging so subsequent mousemoves can't reach Potree's input
+      // handler. This kills any chance of the model orbiting during a drag.
       setCloudCanvasInteractive(false);
       e.preventDefault();
       e.stopImmediatePropagation();
     });
-    handle.addEventListener('pointermove', function (e) {
-      if (!dragging || (dragPointerId != null && e.pointerId !== dragPointerId)) return;
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
       var newWidth = window.innerWidth - e.clientX;
+      // Layout: Tool Settings sits at right:0 (rightmost). Panorama, when
+      // docked, sits at right:0 by default, or at right:--context-panel-width
+      // when both panels are visible. So when dragging the panorama handle
+      // while context is open, subtract context width from the raw delta.
       if (cfg.cssVar === '--panorama-width') {
         var cp = document.getElementById('dev2-context-panel');
         if (cp && cp.dataset.open === 'true') {
@@ -1791,11 +1643,9 @@
         });
       }
     });
-    function endDrag(e) {
+    document.addEventListener('mouseup', function () {
       if (!dragging) return;
       dragging = false;
-      try { if (e && e.pointerId != null) handle.releasePointerCapture(e.pointerId); } catch (_) {}
-      dragPointerId = null;
       document.documentElement.classList.remove('dev2-dragging');
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -1803,9 +1653,7 @@
       var w = document.documentElement.style.getPropertyValue(cfg.cssVar);
       try { localStorage.setItem(cfg.storageKey, w); } catch (_) {}
       window.dispatchEvent(new Event('resize'));
-    }
-    handle.addEventListener('pointerup', endDrag);
-    handle.addEventListener('pointercancel', endDrag);
+    });
   }
 
   function setCloudCanvasInteractive(interactive) {
@@ -1913,448 +1761,6 @@
     document.body.appendChild(btn);
   }
 
-  // ============================================================
-  // Touch input — unified mouse-event synthesis.
-  //
-  //   1 finger:    synthesize mousedown / mousemove / mouseup on the canvas
-  //                at the touch position. Every downstream listener (Potree
-  //                input handler, EarthControls, MeasuringTool insertion,
-  //                Enable's tool placement + marker / member / constraint
-  //                drag, station-pin / note-icon tap detection) reacts
-  //                exactly as it would for a mouse — touch parity by design.
-  //
-  //   2 fingers:   pan from midpoint motion + pinch from distance ratio,
-  //                both applied simultaneously per move (Google-Maps style).
-  //                Direct writes to view.position / view.radius bypass
-  //                Potree's smoothed orbit-control delta system, so the
-  //                cloud follows fingers 1:1 and pinch scales naturally
-  //                with current zoom ("further out = faster" for free).
-  //
-  // Transitions: a 2nd finger lifts off → start a fresh 1-finger drag at
-  // the remaining finger's position so orbit continues without a re-touch.
-  //
-  // EarthControls (not OrbitControls) is the active controller — it picks
-  // the cloud on mousedown and orbits around that pivot, matching the
-  // "orbit around where the cursor / finger is" behaviour the user asked
-  // for on both desktop and tablet.
-  // ============================================================
-
-  function setupTouchInput() {
-    var v = window.__dev2 && window.__dev2.viewer;
-    if (!v || !v.renderer || !v.renderer.domElement) return;
-    var THREE = (window.__dev2 && window.__dev2.THREE) || window.THREE;
-    if (!THREE) return;
-    var canvas = v.renderer.domElement;
-    canvas.style.touchAction = 'none';
-
-    // OrbitControls (left=orbit, right=pan, wheel=zoom — the conventional
-    // mapping users expect). EarthControls is wrong for our needs because it
-    // swaps left/right.  Orbit-around-picked-point is handled separately by
-    // the mousedown listener below, which view.lookAt()s the picked location
-    // so OrbitControls.getPivot() returns it on the very next frame.
-    if (v.orbitControls && typeof v.setControls === 'function') {
-      try { v.setControls(v.orbitControls); }
-      catch (err) { console.warn('[dev2] could not switch to orbitControls:', err); }
-    }
-
-    // (No pivot manipulation. Potree's OrbitControls already orbit around
-    // view.getPivot() = position + direction × radius — i.e. whatever the
-    // user is currently looking at. That pivot naturally follows panning,
-    // which is what the user experienced as "orbits around where I am" in
-    // the original viewer. Forcing a lookAt() on every click introduced a
-    // visible jump because view.direction is derived from yaw + pitch.)
-
-    var two = null;       // pinch/pan state when 2 fingers active
-    var oneActive = false; // a 1-finger drag is in flight (mousedown synthesized)
-    // Two-finger tap state — used to detect a quick non-moving 2-finger tap
-    // (the tablet equivalent of pressing Esc).
-    var twoTapStart = null; // { midX, midY, time }
-    // 1-finger tap state — used to detect a double-tap (zoom-to-cursor,
-    // mirroring desktop dblclick which Potree binds to zoomToLocation).
-    var oneTapStart = null; // { x, y, time } start of current 1-finger touch
-    var lastTap = null;     // { x, y, time } most recent completed tap
-    // Touch-recent flag — true if any touch has occurred within the last
-    // ~30 seconds. Used to constrain measurement insertions to single
-    // segments (2 points only) on tablet, where chained multi-point
-    // measurements are unwieldy.
-    var lastTouchTime = 0;
-    function isTouchActive() { return (Date.now() - lastTouchTime) < 30000; }
-
-    // Wrap MeasuringTool.startInsertion so touch-initiated measurements
-    // behave well on tablet:
-    //   - Single-segment tools (distance, height) auto-finish at 2 points
-    //   - Multi-point tools (area, angle) stay open for as many points as
-    //     the user wants, and `_multiPointInsertionActive` flips so the
-    //     touchend double-tap detection switches from "zoom" to
-    //     "finalize the measurement via Esc".
-    var _multiPointInsertionActive = false;
-    if (v.measuringTool && !v.measuringTool._dev2TouchLimit) {
-      var origStart = v.measuringTool.startInsertion.bind(v.measuringTool);
-      v.measuringTool.startInsertion = function (args) {
-        args = args || {};
-        if (isTouchActive() && (args.maxMarkers == null || args.maxMarkers === Infinity)) {
-          if (args.showArea || args.showAngles) {
-            _multiPointInsertionActive = true;
-          } else {
-            args.maxMarkers = 2;
-          }
-        }
-        var measure = origStart(args);
-        // Reset the multi-point flag whenever the measurement is finished
-        // or cancelled — restores normal double-tap-to-zoom behaviour.
-        if (measure && _multiPointInsertionActive) {
-          var clear = function () {
-            _multiPointInsertionActive = false;
-            measure.removeEventListener && measure.removeEventListener('measurement_finished', clear);
-          };
-          measure.addEventListener && measure.addEventListener('measurement_finished', clear);
-          v.addEventListener && v.addEventListener('cancel_insertions', clear);
-        }
-        return measure;
-      };
-      v.measuringTool._dev2TouchLimit = true;
-    }
-
-    function pairState(touches) {
-      var t1 = touches[0], t2 = touches[1];
-      var dx = t2.clientX - t1.clientX, dy = t2.clientY - t1.clientY;
-      return {
-        dist: Math.sqrt(dx * dx + dy * dy),
-        midX: (t1.clientX + t2.clientX) / 2,
-        midY: (t1.clientY + t2.clientY) / 2
-      };
-    }
-
-    function panInPixels(dxPx, dyPx) {
-      var cam = v.scene.getActiveCamera();
-      var view = v.scene.view;
-      if (!cam || !view) return;
-      var rect = canvas.getBoundingClientRect();
-      var sx, sy;
-      if (cam.isOrthographicCamera) {
-        sx = (cam.right - cam.left) / rect.width;
-        sy = (cam.top - cam.bottom) / rect.height;
-      } else {
-        var pivot = (view._pivot && view._pivot.isVector3) ? view._pivot : view.position;
-        var d = cam.position.distanceTo(pivot) || view.radius || 50;
-        var vFov = (cam.fov || 60) * Math.PI / 180;
-        sy = (2 * Math.tan(vFov / 2) * d) / rect.height;
-        sx = sy;
-      }
-      var right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
-      var up    = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
-      var delta = new THREE.Vector3()
-        .addScaledVector(right, -dxPx * sx)
-        .addScaledVector(up,     dyPx * sy);
-      if (view.position) view.position.add(delta);
-      if (view._pivot && view._pivot.isVector3) view._pivot.add(delta);
-      if (cam.target && cam.target.isVector3) cam.target.add(delta);
-      v.repaint && v.repaint();
-    }
-
-    function synthMouse(type, x, y, buttons, buttonOverride) {
-      canvas.dispatchEvent(new MouseEvent(type, {
-        bubbles: true, cancelable: true, view: window,
-        button: (buttonOverride != null) ? buttonOverride : 0,
-        buttons: buttons || 0,
-        clientX: x, clientY: y, screenX: x, screenY: y
-      }));
-    }
-
-    // Find a draggable measurement / member / constraint sphere whose
-    // projected screen position is within ~30 px of the given client
-    // coordinates. Returns the closest match, or null. We use this on
-    // touchstart so we can invoke inputHandler.startDragging(sphere)
-    // directly; the regular mousedown → hoveredElements path is unreliable
-    // on touch (no prior mousemove track to settle hovered state).
-    function findDraggableSphereAt(clientX, clientY) {
-      var THREE = (window.__dev2 && window.__dev2.THREE) || window.THREE;
-      if (!THREE || !v.scene || !v.scene.measurements) return null;
-      // During multi-point insertion (Area / Angle) we never want a tap to
-      // grab a measurement sphere — Potree's insertion flow leaves a
-      // duplicate of the previous marker stacked at the tap position, and
-      // letting the user drag that duplicate produces the "tap places a
-      // point + a draggable shadow point" awkwardness the user complained
-      // about. Distance auto-finalizes on the first tap so the flag stays
-      // false there; its "tap places 2 stacked points, drag one out"
-      // behavior is preserved.
-      if (_multiPointInsertionActive) return null;
-      var rect = canvas.getBoundingClientRect();
-      var camera = v.scene.getActiveCamera();
-      if (!camera) return null;
-      var best = null;
-      // 18px threshold — tight enough that casual 2-finger pinch fingers
-      // don't accidentally start a sphere drag, loose enough that direct
-      // taps on the sphere reliably engage it.
-      var bestPxSq = 324;
-      var ms = v.scene.measurements;
-      for (var mi = 0; mi < ms.length; mi++) {
-        var sph = ms[mi].spheres;
-        if (!sph) continue;
-        for (var si = 0; si < sph.length; si++) {
-          var s = sph[si];
-          if (!s.visible || !s._listeners || !s._listeners.drag) continue;
-          var wp = s.getWorldPosition(new THREE.Vector3());
-          var ndc = wp.project(camera);
-          if (ndc.z < -1 || ndc.z > 1) continue;
-          var sx = (ndc.x + 1) * 0.5 * rect.width + rect.left;
-          var sy = (1 - (ndc.y + 1) * 0.5) * rect.height + rect.top;
-          var dx = sx - clientX, dy = sy - clientY;
-          var dsq = dx * dx + dy * dy;
-          if (dsq < bestPxSq) { bestPxSq = dsq; best = s; }
-        }
-      }
-      return best;
-    }
-
-    // When the 1-finger drag locks onto a measurement sphere, save its
-    // ORIGINAL world position so we can restore it if the 2nd finger
-    // arrives quickly (user was trying to pinch, not drag).
-    var _spheredragSphere   = null;
-    var _spheredragOrigPos  = null;
-    var _spheredragStartTime = 0;
-
-    function startOneFingerAt(x, y) {
-      var sphere = findDraggableSphereAt(x, y);
-      if (sphere && v.inputHandler) {
-        var rect = canvas.getBoundingClientRect();
-        var THREE = (window.__dev2 && window.__dev2.THREE) || window.THREE;
-        v.inputHandler.mouse.set(x - rect.left, y - rect.top);
-        _spheredragSphere    = sphere;
-        _spheredragOrigPos   = THREE ? sphere.getWorldPosition(new THREE.Vector3()) : sphere.position.clone();
-        _spheredragStartTime = Date.now();
-        v.inputHandler.startDragging(sphere);
-        oneActive = true;
-        return;
-      }
-      _spheredragSphere = null;
-      _spheredragOrigPos = null;
-      synthMouse('mousemove', x, y, 0);
-      synthMouse('mousedown', x, y, 1);
-      oneActive = true;
-    }
-
-    // If finger 2 lands within ~250 ms of a sphere drag starting (and the
-    // sphere has shifted), the user was really initiating a pinch — restore
-    // the sphere to its original position and update the owning measurement
-    // so the displayed values revert too.
-    function maybeRevertSphereDrag() {
-      if (!_spheredragSphere || !_spheredragOrigPos) return;
-      if (Date.now() - _spheredragStartTime > 250) return;
-      _spheredragSphere.position.copy(_spheredragOrigPos);
-      if (v.scene && v.scene.measurements) {
-        for (var i = 0; i < v.scene.measurements.length; i++) {
-          var m = v.scene.measurements[i];
-          if (!m.spheres) continue;
-          var idx = m.spheres.indexOf(_spheredragSphere);
-          if (idx === -1) continue;
-          if (m.points && m.points[idx]) m.points[idx].position.copy(_spheredragOrigPos);
-          if (typeof m.update === 'function') m.update();
-          break;
-        }
-      }
-    }
-    function endOneFinger(x, y, disqualify) {
-      if (!oneActive) return;
-      if (disqualify) {
-        // Displaced RIGHT-button mouseup:
-        //   - 20 px offset clears viewer.html's 5 px drag-guard so no
-        //     mark / note / measurement-placement fires from the synth
-        //     mouseup. The guard reads (mouseup.clientX - mouseDownPos.x),
-        //     so the mouseup alone is sufficient — NO mousemove. Firing a
-        //     mousemove here would make inputHandler.onMouseMove dispatch
-        //     a 'drag' event to whatever sphere is currently dragged
-        //     (e.g. the sphere2 left armed by a just-completed measurement
-        //     insertion), causing it to jump to the displaced position.
-        //   - RIGHT button so Potree's MeasuringTool.insertionCallback
-        //     treats it as CANCEL instead of "add point".
-        synthMouse('mouseup', x + 20, y, 0, /*button=*/2);
-      } else {
-        synthMouse('mouseup', x, y, 0);
-      }
-      oneActive = false;
-      // Belt-and-suspenders: force-clear inputHandler.drag in case the
-      // synth mouseup didn't reach onMouseUp (e.g. the explicit
-      // startDragging() path skipped the normal mousedown flow). Without
-      // this, a stale drag.object can survive between touches, causing
-      // the previously-dragged sphere to follow each fresh finger press.
-      if (v.inputHandler && v.inputHandler.drag) {
-        try {
-          if (v.inputHandler.drag.object && v.inputHandler.drag.object.dispatchEvent) {
-            v.inputHandler.drag.object.dispatchEvent({
-              type: 'drop', drag: v.inputHandler.drag, viewer: v
-            });
-          }
-        } catch (_) {}
-        v.inputHandler.drag = null;
-      }
-    }
-
-    canvas.addEventListener('touchstart', function (e) {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-      lastTouchTime = Date.now();
-      if (e.touches.length === 1) {
-        var t = e.touches[0];
-        startOneFingerAt(t.clientX, t.clientY);
-        // Tap state for double-tap detection.
-        oneTapStart = { x: t.clientX, y: t.clientY, time: Date.now() };
-      } else if (e.touches.length === 2) {
-        // 2nd finger arrived; cancel any in-flight 1-finger drag and
-        // displace the synthesized mouseup so it doesn't fire as a click
-        // (which would place a marker / note / measurement point at the
-        // first finger's position — a common bug for "two-finger Esc"
-        // gestures where the fingers don't land exactly simultaneously).
-        // If finger 1 had locked onto a measurement sphere, undo the
-        // tiny drag it may have caused before finger 2 arrived.
-        maybeRevertSphereDrag();
-        _spheredragSphere = null;
-        _spheredragOrigPos = null;
-        var lastX = e.touches[0].clientX, lastY = e.touches[0].clientY;
-        endOneFinger(lastX, lastY, /*disqualify=*/true);
-        two = pairState(e.touches);
-        // Seed the two-finger-tap-detector. Cleared if the fingers move
-        // (becomes a pan/pinch) or if the tap exceeds ~300ms.
-        twoTapStart = { midX: two.midX, midY: two.midY, time: Date.now() };
-      }
-    }, { capture: true, passive: false });
-
-    canvas.addEventListener('touchmove', function (e) {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-      if (e.touches.length === 1 && oneActive) {
-        var t = e.touches[0];
-        synthMouse('mousemove', t.clientX, t.clientY, 1);
-        // Significant motion disqualifies this touch as a tap.
-        if (oneTapStart) {
-          var dx = t.clientX - oneTapStart.x;
-          var dy = t.clientY - oneTapStart.y;
-          if (dx * dx + dy * dy > 100) oneTapStart = null;
-        }
-      } else if (e.touches.length === 2 && two) {
-        var cur = pairState(e.touches);
-        var dMidX = cur.midX - two.midX;
-        var dMidY = cur.midY - two.midY;
-        if (dMidX || dMidY) panInPixels(dMidX, dMidY);
-        if (cur.dist > 0 && two.dist > 0) {
-          var view = v.scene.view;
-          if (view) {
-            var rawRatio = two.dist / cur.dist;
-            // Dead zone — fingers wiggle by a couple pixels even when the
-            // user is "holding still". Without this, every touchmove during
-            // a pure pan would micro-zoom.
-            if (Math.abs(rawRatio - 1) > 0.004) {
-              // Square-root dampening on the per-frame ratio. Multiplicative
-              // adaptation with radius is preserved (further out = bigger
-              // absolute change), but the sensitivity per touchmove event
-              // is halved so the user can settle on a target zoom without
-              // overshooting close-up points.
-              var ratio = rawRatio < 1
-                ? Math.sqrt(rawRatio)
-                : 1 / Math.sqrt(1 / rawRatio);
-              var pivot = view.getPivot();
-              view.radius *= ratio;
-              view.position.copy(pivot).addScaledVector(view.direction, -view.radius);
-              v.repaint && v.repaint();
-            }
-          }
-        }
-        // If fingers moved meaningfully (~16px from start midpoint or ~12px
-        // change in inter-finger distance), no longer eligible as a "tap".
-        if (twoTapStart) {
-          var dxs = cur.midX - twoTapStart.midX;
-          var dys = cur.midY - twoTapStart.midY;
-          if (dxs * dxs + dys * dys > 256 ||
-              Math.abs(cur.dist - two.dist) > 12) twoTapStart = null;
-        }
-        two = cur;
-      }
-    }, { capture: true, passive: false });
-
-    canvas.addEventListener('touchend', function (e) {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-      // Two-finger tap → Esc. Fires once BOTH fingers are off, provided
-      // no significant motion happened (touchmove clears twoTapStart on
-      // movement) and the total duration was under ~600ms. Generous
-      // thresholds because hitting both fingers down + lifted in <300ms
-      // proved hard.
-      if (e.touches.length === 0 && twoTapStart) {
-        if (Date.now() - twoTapStart.time < 600) {
-          document.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-          }));
-          window.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-          }));
-        }
-        twoTapStart = null;
-      }
-      if (e.touches.length === 0) {
-        var t = (e.changedTouches && e.changedTouches[0]) || { clientX: 0, clientY: 0 };
-        // 1-finger tap detection — if no motion and short duration, this
-        // is a tap. Double-tap normally zooms-to-cursor, BUT during a
-        // multi-point measurement insertion (area, angle) double-tap
-        // finalizes the measurement instead (synthetic Esc → cancel-
-        // insertions → keeps placed points if there are enough of them).
-        if (oneTapStart && Date.now() - oneTapStart.time < 350) {
-          var now = Date.now();
-          if (lastTap && now - lastTap.time < 500) {
-            var ddx = t.clientX - lastTap.x;
-            var ddy = t.clientY - lastTap.y;
-            if (ddx * ddx + ddy * ddy < 576) {
-              if (_multiPointInsertionActive) {
-                document.dispatchEvent(new KeyboardEvent('keydown', {
-                  key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-                }));
-                window.dispatchEvent(new KeyboardEvent('keydown', {
-                  key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-                }));
-              } else {
-                canvas.dispatchEvent(new MouseEvent('dblclick', {
-                  bubbles: true, cancelable: true, view: window,
-                  button: 0, buttons: 0,
-                  clientX: t.clientX, clientY: t.clientY,
-                  screenX: t.clientX, screenY: t.clientY
-                }));
-              }
-              lastTap = null;
-              oneTapStart = null;
-            }
-          }
-          if (oneTapStart) {
-            lastTap = { x: t.clientX, y: t.clientY, time: now };
-          }
-        }
-        oneTapStart = null;
-        endOneFinger(t.clientX, t.clientY);
-        _spheredragSphere = null;
-        _spheredragOrigPos = null;
-        two = null;
-        // After a clean tap, auto-exit any single-action pick mode on
-        // touch (mark mode in particular — desktop expects the mode to
-        // persist for multi-placement, but tablet UX wants it to revert
-        // to navigation immediately so pan/rotate works without an
-        // explicit cancel step).
-        if (window.__dev2 && window.__dev2._touchExitSingleModes) {
-          window.__dev2._touchExitSingleModes();
-        }
-      } else if (e.touches.length === 1) {
-        // Was 2-finger pan/pinch; one finger lifted. Drop pinch state and
-        // start a fresh 1-finger drag at the remaining finger so orbit
-        // continues seamlessly without re-touching.
-        two = null;
-        var t2 = e.touches[0];
-        startOneFingerAt(t2.clientX, t2.clientY);
-      }
-    }, { capture: true, passive: false });
-
-    canvas.addEventListener('touchcancel', function () {
-      endOneFinger(0, 0);
-      two = null;
-    }, { capture: true, passive: false });
-  }
-
   function init() {
     whenLegacyReady(function () {
       reparentLegacyHost();
@@ -2370,8 +1776,6 @@
       applySavedPointPrefsWhenReady();
       startMeasurementLabelRestyler();
       startEdgeLabelDepthLoop();
-      setupTouchInput();
-      startAreaVolumeFillObserver();
       // Ensure context panel starts closed (auto-opens when content arrives)
       var cp = document.getElementById('dev2-context-panel');
       if (cp) cp.dataset.open = 'false';

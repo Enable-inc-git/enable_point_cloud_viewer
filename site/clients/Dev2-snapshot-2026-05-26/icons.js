@@ -99,13 +99,7 @@
       '<path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/>',
     // Two concentric dots — reads as "point size" at toolbar resolution.
     'point-size':
-      '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/>',
-    'sticky-note':
-      '<path d="M16 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8z"/><path d="M15 4v4a2 2 0 0 0 2 2h4"/>',
-    'undo':
-      '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/>',
-    'redo':
-      '<path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3L21 13"/>'
+      '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/>'
   };
 
   /**

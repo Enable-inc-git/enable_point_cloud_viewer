@@ -26,7 +26,14 @@
       "Bash(cp \"site/clients/Pomerleau/viewer.html\" \"site/clients/WJ Properties/viewer.html\")",
       "Bash(cp \"site/clients/Solar Restoration/custom.css\" \"site/clients/WJ Properties/custom.css\")",
       "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/WJ Properties/viewer.html\")",
-      "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/Pomerleau/viewer.html\")"
+      "Bash(awk '/<script>$/{p=1; next} /<\\\\/script>/{p=0} p' \"site/clients/Pomerleau/viewer.html\")",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\WJ Properties\\\\7 St Dennis - South Garage Slab\\\\\" -Recurse -Force | ForEach-Object { if \\($_.PSIsContainer\\) { \"$\\($_.FullName\\)\\\\\" } else { \"$\\($_.FullName\\) - $\\($_.Length\\) bytes\" } } | Sort-Object)",
+      "PowerShell(Get-ChildItem *)",
+      "Bash(claude *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(sed 's/.*\\\\.//')",
+      "PowerShell(Test-Path *)"
     ],
     "additionalDirectories": [
       "C:\\enable_point_cloud_viewer_scans"
