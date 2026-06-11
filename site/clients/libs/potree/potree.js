@@ -55171,6 +55171,24 @@
 				y: -(mouse.y / height) * 2 + 1
 			};
 
+			// Orthographic cameras need PARALLEL rays. The perspective math below
+			// (rays fanning out from camera.position) is wrong for ortho and breaks
+			// every ray-based interaction: gizmo handle drag/rotate/scale, volume
+			// insertion, and the InputHandler hover/drag-target hit-test. The latter
+			// is why, in ortho, left-drag rotation gets stolen by spurious volume
+			// hits (pan still works only because it bypasses the InputHandler).
+			// Mirror THREE.Raycaster.setFromCamera's orthographic branch.
+			if(camera instanceof OrthographicCamera){
+				let origin = new Vector3(
+					normalizedMouse.x,
+					normalizedMouse.y,
+					(camera.near + camera.far) / (camera.near - camera.far)
+				).unproject(camera);
+				let direction = new Vector3(0, 0, -1).transformDirection(camera.matrixWorld);
+
+				return new Ray(origin, direction);
+			}
+
 			let vector = new Vector3(normalizedMouse.x, normalizedMouse.y, 0.5);
 			let origin = camera.position.clone();
 			vector.unproject(camera);

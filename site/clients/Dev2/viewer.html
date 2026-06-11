@@ -2977,6 +2977,7 @@
 
     // ===== UNDO STACK =====
     const undoStack = [];
+    const redoStack = [];   // box/volume-transform redo (Ctrl+Y / Ctrl+Shift+Z)
 
     // Attach undo tracking to a volume — captures transform before gizmo interaction, pushes on mouseup
     function trackVolumeUndo(volume) {
@@ -3001,16 +3002,13 @@
         var rotChanged = volume.rotation.x !== savedRot.x || volume.rotation.y !== savedRot.y || volume.rotation.z !== savedRot.z;
         var scaleChanged = !volume.scale.equals(savedScale);
         if (posChanged || rotChanged || scaleChanged) {
-          var sp = savedPos, sr = savedRot, ss = savedScale;
-          var vol = volume;
           undoStack.push({
             type: 'volume-transform',
-            apply: function() {
-              vol.position.copy(sp);
-              vol.rotation.copy(sr);
-              vol.scale.copy(ss);
-            }
+            vol: volume,
+            before: { pos: savedPos.clone(), rot: savedRot.clone(), scale: savedScale.clone() },
+            after:  { pos: volume.position.clone(), rot: volume.rotation.clone(), scale: volume.scale.clone() }
           });
+          redoStack.length = 0;   // a fresh transform invalidates the redo chain
         }
         savedPos = null;
         savedRot = null;
@@ -3107,8 +3105,31 @@
           }
         }
       } else if (action.type === 'volume-transform') {
-        action.apply();
+        if (action.vol) {
+          action.vol.position.copy(action.before.pos);
+          action.vol.rotation.copy(action.before.rot);
+          action.vol.scale.copy(action.before.scale);
+        }
+        redoStack.push(action);
         showToast('Undid box transform');
+      }
+      // Any non-redoable undo invalidates the redo chain (redo currently
+      // supports box/volume transforms only).
+      if (action.type !== 'volume-transform') redoStack.length = 0;
+    }
+
+    // -- Redo last undone action (box/volume transforms only for now) --
+    function performRedo() {
+      if (redoStack.length === 0) { showToast('Nothing to redo'); return; }
+      var action = redoStack.pop();
+      if (action.type === 'volume-transform') {
+        if (action.vol) {
+          action.vol.position.copy(action.after.pos);
+          action.vol.rotation.copy(action.after.rot);
+          action.vol.scale.copy(action.after.scale);
+        }
+        undoStack.push(action);
+        showToast('Redid box transform');
       }
     }
 
@@ -5976,6 +5997,7 @@
       exclusionBoxes = [];
       rebuildExclusionList();
       undoStack.length = 0;
+      redoStack.length = 0;
 
       // Restore constraints
       if (data.constraints) {
@@ -6196,6 +6218,7 @@
 
       // Clear undo stack from restore operations
       undoStack.length = 0;
+      redoStack.length = 0;
 
       showToast('Session loaded');
     }
@@ -10345,7 +10368,9 @@
         }
       }
       // Undo
-      if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
+      if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) { ev.preventDefault(); performRedo(); }
+      else if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
+      if ((ev.key === 'y' || ev.key === 'Y') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performRedo(); }
 
       // Enter: finalize fit-plane (when in that mode), otherwise restart
       // the last measurement/volume tool used (skip when typing in inputs).
@@ -10395,6 +10420,7 @@
       get notes()               { return notes;               },
       startNotePick:            function () { return startNotePick(); },
       performUndo:              function () { return performUndo();   },
+      performRedo:              function () { return performRedo();   },
       get undoStack()           { return undoStack;           },
       // Called from chrome.js after a clean 1-finger tap on touch. Exits any
       // single-action pick mode (Mark, Note, Constraint) so the user can
