@@ -2417,6 +2417,7 @@
 
     // ===== UNDO STACK =====
     const undoStack = [];
+    const redoStack = [];   // box/volume-transform redo (Ctrl+Y / Ctrl+Shift+Z)
 
     // Attach undo tracking to a volume — captures transform before gizmo interaction, pushes on mouseup
     function trackVolumeUndo(volume) {
@@ -2441,16 +2442,13 @@
         var rotChanged = volume.rotation.x !== savedRot.x || volume.rotation.y !== savedRot.y || volume.rotation.z !== savedRot.z;
         var scaleChanged = !volume.scale.equals(savedScale);
         if (posChanged || rotChanged || scaleChanged) {
-          var sp = savedPos, sr = savedRot, ss = savedScale;
-          var vol = volume;
           undoStack.push({
             type: 'volume-transform',
-            apply: function() {
-              vol.position.copy(sp);
-              vol.rotation.copy(sr);
-              vol.scale.copy(ss);
-            }
+            vol: volume,
+            before: { pos: savedPos.clone(), rot: savedRot.clone(), scale: savedScale.clone() },
+            after:  { pos: volume.position.clone(), rot: volume.rotation.clone(), scale: volume.scale.clone() }
           });
+          redoStack.length = 0;   // a fresh transform invalidates the redo chain
         }
         savedPos = null;
         savedRot = null;
@@ -2547,8 +2545,31 @@
           }
         }
       } else if (action.type === 'volume-transform') {
-        action.apply();
+        if (action.vol) {
+          action.vol.position.copy(action.before.pos);
+          action.vol.rotation.copy(action.before.rot);
+          action.vol.scale.copy(action.before.scale);
+        }
+        redoStack.push(action);
         showToast('Undid box transform');
+      }
+      // Any non-redoable undo invalidates the redo chain (redo currently
+      // supports box/volume transforms only).
+      if (action.type !== 'volume-transform') redoStack.length = 0;
+    }
+
+    // -- Redo last undone action (box/volume transforms only for now) --
+    function performRedo() {
+      if (redoStack.length === 0) { showToast('Nothing to redo'); return; }
+      var action = redoStack.pop();
+      if (action.type === 'volume-transform') {
+        if (action.vol) {
+          action.vol.position.copy(action.after.pos);
+          action.vol.rotation.copy(action.after.rot);
+          action.vol.scale.copy(action.after.scale);
+        }
+        undoStack.push(action);
+        showToast('Redid box transform');
       }
     }
 
@@ -3577,6 +3598,7 @@
       memberPickMode = true;
       memberPickPoints = [];
       clearMemberPickMarkers();
+      _ensureMemberPreviewMarker();
       document.body.classList.add('member-pick-mode');
       showToast('Pick endpoint (1/2) for member', 5000);
       var btn = document.getElementById('btn-add-member');
@@ -3589,6 +3611,7 @@
       placeMemberPickMarker(position);
       undoStack.push({ type: 'member-point' });
       if (memberPickPoints.length < 2) {
+        _startMemberRubberLine(position);
         showToast('Pick endpoint (2/2) for member', 5000);
       } else {
         finalizeMember();
@@ -3600,6 +3623,7 @@
       memberPickMode = false;
       memberPickPoints = [];
       clearMemberPickMarkers();
+      clearMemberPreview();
       document.body.classList.remove('member-pick-mode');
       var btn = document.getElementById('btn-add-member');
       if (btn) btn.classList.remove('active');
@@ -3637,9 +3661,84 @@
       memberPickMarkers.length = 0;
     }
 
+    // -- Rubber-band preview during member picking: an orange dot follows the
+    //    cursor's snapped pick, and once the first endpoint is down a line
+    //    stretches from it to the cursor — matching the dimension tool. Uses
+    //    the same circle+glow visual as placeMemberPickMarker. --
+    var _memberPreviewMarker = null;
+    var _memberRubberLine = null;
+    function _ensureMemberPreviewMarker() {
+      if (_memberPreviewMarker) return;
+      var g = new THREE.Group();
+      g.userData.isMemberPreview = true;
+      var dotGeo = new THREE.CircleGeometry(ringInnerRadius, RING_SEGMENTS);
+      var dotMat = new THREE.MeshBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.9, side: THREE.DoubleSide
+      });
+      g.add(new THREE.Mesh(dotGeo, dotMat));
+      g.add(createGlowSprite(0xff9900, ringOuterRadius));
+      g.visible = false;
+      memberScene.add(g);
+      _memberPreviewMarker = g;
+    }
+    function _startMemberRubberLine(position) {
+      _clearMemberRubberLine();
+      var rbGeo = new THREE.BufferGeometry();
+      rbGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+        position.x, position.y, position.z,
+        position.x, position.y, position.z
+      ], 3));
+      var rbMat = new THREE.LineBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95
+      });
+      _memberRubberLine = new THREE.Line(rbGeo, rbMat);
+      _memberRubberLine.renderOrder = 1;
+      memberScene.add(_memberRubberLine);
+    }
+    function _clearMemberRubberLine() {
+      if (!_memberRubberLine) return;
+      memberScene.remove(_memberRubberLine);
+      if (_memberRubberLine.geometry) _memberRubberLine.geometry.dispose();
+      if (_memberRubberLine.material) _memberRubberLine.material.dispose();
+      _memberRubberLine = null;
+    }
+    function clearMemberPreview() {
+      if (_memberPreviewMarker) {
+        memberScene.remove(_memberPreviewMarker);
+        _memberPreviewMarker.traverse(function(o){ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); });
+        _memberPreviewMarker = null;
+      }
+      _clearMemberRubberLine();
+    }
+    // Same pick + snap path as placement (patched picker + findSnapTarget @ 18px)
+    // so the preview lands exactly where the click will.
+    function _updateMemberPreview(e) {
+      if (!memberPickMode) return;
+      var rect = renderArea.getBoundingClientRect();
+      var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      var cam = viewer.scene.getActiveCamera();
+      var pick = Potree.Utils.getMousePointCloudIntersection(mouse, cam, viewer, viewer.scene.pointclouds, { pickClipped: true });
+      var loc = (pick && pick.location) ? pick.location.clone() : null;
+      if (loc) {
+        var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
+        if (snap) loc = snap.position.clone();
+      }
+      if (_memberPreviewMarker) {
+        if (loc) { _memberPreviewMarker.position.copy(loc); _memberPreviewMarker.visible = true; }
+        else { _memberPreviewMarker.visible = false; }
+      }
+      if (_memberRubberLine && memberPickPoints.length === 1 && loc) {
+        var attr = _memberRubberLine.geometry.attributes.position;
+        attr.setXYZ(1, loc.x, loc.y, loc.z);
+        attr.needsUpdate = true;
+      }
+    }
+
     // -- Finalize member from 2 picked points --
     function finalizeMember() {
       clearMemberPickMarkers();
+      clearMemberPreview();
       var member = {
         id: nextMemberId++,
         name: 'M' + (nextMemberId - 1),
@@ -4015,6 +4114,7 @@
         for (var pi = 0; pi < memberPickMarkers.length; pi++) {
           memberPickMarkers[pi].quaternion.copy(camera.quaternion);
         }
+        if (_memberPreviewMarker) _memberPreviewMarker.quaternion.copy(camera.quaternion);
         viewer.renderer.render(memberScene, camera);
       }
 
@@ -4246,6 +4346,7 @@
     // and the InputHandler still mid-drag. So we track which measurement is
     // currently being inserted and provide a hard "cancel + cleanup" routine.
     var pendingMeasurement = null;
+    var pendingVolume = null;             // volume currently mid-insertion (cleared on drop)
     var lastMeasurementToolArgs = null;   // last viewer.measuringTool.startInsertion args
     var lastVolumeToolArgs = null;        // last viewer.volumeTool.startInsertion args
 
@@ -4266,10 +4367,23 @@
     }
 
     function cancelPotreeInsertion() {
-      try { viewer.dispatchEvent({ type: 'cancel_insertions' }); } catch (_) {}
-      try { if (viewer.inputHandler) viewer.inputHandler.drag = null; } catch (_) {}
-      cleanupOrphanMeasurements();
       pendingMeasurement = null;
+      try { viewer.dispatchEvent({ type: 'cancel_insertions' }); } catch (_) {}
+      try {
+        if (viewer.inputHandler) {
+          viewer.inputHandler.drag = null;
+          // Force the InputHandler back on: clipping/profile insertion disables
+          // it and only re-enables from their own cancel callback, which isn't
+          // registered for every tool/state — leaving the user "stuck".
+          viewer.inputHandler.enabled = true;
+        }
+      } catch (_) {}
+      // The volume tool leaves its half-placed box in the scene when cancelled.
+      if (pendingVolume) {
+        try { viewer.scene.removeVolume(pendingVolume); } catch (_) {}
+        pendingVolume = null;
+      }
+      cleanupOrphanMeasurements();
     }
 
     function setupMeasurementLabelEvents() {
@@ -4293,7 +4407,12 @@
           viewer.volumeTool.startInsertion = function(args) {
             // Don't cancel prior measurement when starting volume — different tool family
             lastVolumeToolArgs = args || {};
-            return origVS(args);
+            var v = origVS(args);
+            pendingVolume = v;   // mid-insertion until 'drop' (or cancelled by Esc)
+            if (v && typeof v.addEventListener === 'function') {
+              v.addEventListener('drop', function() { pendingVolume = null; });
+            }
+            return v;
           };
           viewer.volumeTool._enableWrapped = true;
         }
@@ -5009,6 +5128,7 @@
       exclusionBoxes = [];
       rebuildExclusionList();
       undoStack.length = 0;
+      redoStack.length = 0;
 
       // Restore constraints
       if (data.constraints) {
@@ -5213,6 +5333,7 @@
 
       // Clear undo stack from restore operations
       undoStack.length = 0;
+      redoStack.length = 0;
 
       showToast('Session loaded');
     }
@@ -8283,6 +8404,8 @@
     var HOVER_THRESHOLD = 12; // pixels
 
     renderArea.addEventListener('mousemove', function(e) {
+      // Member rubber-band: orange cursor dot + line from the first endpoint.
+      if (memberPickMode) _updateMemberPreview(e);
       // Marker dragging
       if (markerDragActive && markerDragInfo) {
         var rect = renderArea.getBoundingClientRect();
@@ -8691,6 +8814,7 @@
           clipBox.userData = clipBox.userData || {};
           clipBox.userData.persistent = true;     // mark as locked
           initialClipBox = clipBox;               // store reference for elevation tool
+          trackVolumeUndo(clipBox);               // Ctrl+Z undoes accidental move/rotate/scale of the crop box
 
           // Disallow editing if API exists
           if (typeof clipBox.setEditable === "function") clipBox.setEditable(false);
@@ -8786,7 +8910,9 @@
         }
       }
       // Undo
-      if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
+      if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) { ev.preventDefault(); performRedo(); }
+      else if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
+      if ((ev.key === 'y' || ev.key === 'Y') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performRedo(); }
 
       // Enter: finalize fit-plane (when in that mode), otherwise restart
       // the last measurement/volume tool used (skip when typing in inputs).
