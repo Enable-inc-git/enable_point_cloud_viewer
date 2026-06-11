@@ -418,6 +418,25 @@
     if (e.key === 'Escape' && _openMenu && !typing) closeOpenMenu();
   }, true);
 
+  // -- Top-toolbar horizontal scroll. The tool-group row can overflow when many
+  //    tools are present; arrows appear only when it actually overflows. --
+  var _tbGroupsNav = null, _tbScrollArrowL = null, _tbScrollArrowR = null, _tbScrollBound = false;
+
+  function updateTbScrollArrows() {
+    var nav = _tbGroupsNav;
+    if (!nav) return;
+    var max = nav.scrollWidth - nav.clientWidth;
+    if (nav.parentNode) nav.parentNode.classList.toggle('has-overflow', max > 2);
+    if (_tbScrollArrowL) _tbScrollArrowL.disabled = nav.scrollLeft <= 1;
+    if (_tbScrollArrowR) _tbScrollArrowR.disabled = nav.scrollLeft >= max - 1;
+  }
+
+  function scrollTbGroups(dir) {
+    var nav = _tbGroupsNav;
+    if (!nav) return;
+    nav.scrollBy({ left: dir * Math.max(160, nav.clientWidth * 0.6), behavior: 'smooth' });
+  }
+
   function buildTopbar() {
     var topbar = document.getElementById('dev2-topbar');
     topbar.innerHTML = '';
@@ -489,7 +508,26 @@
       ]);
       groupsNav.appendChild(trigger);
     });
-    topbar.appendChild(groupsNav);
+
+    // Wrap the tool groups in a horizontal scroller with left/right arrows that
+    // appear only when the groups overflow the available width.
+    _tbGroupsNav = groupsNav;
+    _tbScrollArrowL = el('button', {
+      className: 'dev2-tb-scroll-arrow dev2-tb-scroll-left', type: 'button',
+      title: 'Scroll tools left', onClick: function () { scrollTbGroups(-1); }
+    }, [ (function () { var c = svg('chevron-right', 18); c.classList.add('dev2-tb-arrow-flip'); return c; })() ]);
+    _tbScrollArrowR = el('button', {
+      className: 'dev2-tb-scroll-arrow dev2-tb-scroll-right', type: 'button',
+      title: 'Scroll tools right', onClick: function () { scrollTbGroups(1); }
+    }, [ svg('chevron-right', 18) ]);
+    var groupsWrap = el('div', { className: 'dev2-tb-groups-wrap' }, [ _tbScrollArrowL, groupsNav, _tbScrollArrowR ]);
+    topbar.appendChild(groupsWrap);
+
+    groupsNav.addEventListener('scroll', updateTbScrollArrows);
+    if (!_tbScrollBound) { window.addEventListener('resize', updateTbScrollArrows); _tbScrollBound = true; }
+    // Defer until layout settles so scrollWidth/clientWidth are accurate.
+    setTimeout(updateTbScrollArrows, 0);
+    if (window.requestAnimationFrame) requestAnimationFrame(updateTbScrollArrows);
 
     // ---- Meta actions on the right (save / load / export / vis / undo / redo / about) ----
     topbar.appendChild(el('div', { className: 'dev2-tb-flex-spacer' }));
@@ -657,6 +695,7 @@
   // ============================================================
 
   var CONTEXT_SLOTS = [
+    'enable-models-panel',
     'enable-plane-depth-controls',
     'enable-elevation-status',
     'enable-constraint-status',

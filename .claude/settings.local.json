@@ -33,7 +33,18 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(xargs -I {} basename {})",
       "Bash(sed 's/.*\\\\.//')",
-      "PowerShell(Test-Path *)"
+      "PowerShell(Test-Path *)",
+      "PowerShell(Get-ChildItem \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\\" -Force | Format-Table Name, @{Name=\"Size\";Expression={if\\($_.PSIsContainer\\){\"<DIR>\"}else{$_.Length}}} -AutoSize)",
+      "PowerShell(Get-ChildItem \"C:\\\\enable_point_cloud_viewer\\\\temp work\" | Format-Table Name, @{Name=\"Size\";Expression={\"{0:N0} bytes\" -f $_.Length}} -AutoSize)",
+      "PowerShell(head *)",
+      "PowerShell(Get-ChildItem \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\dec20\" -Recurse -Force | Format-Table FullName, @{Name=\"Size\";Expression={if\\($_.PSIsContainer\\){\"<DIR>\"}else{$_.Length}}} -AutoSize)",
+      "PowerShell($file = Get-Item \"C:\\\\enable_point_cloud_viewer\\\\temp work\\\\backyard.e57\"; \"$\\($file.FullName\\) | Size: $\\($file.Length\\) bytes \\($\\(\"{0:N2}\" -f \\($file.Length / 1MB\\)\\) MB\\)\")",
+      "PowerShell(Get-ChildItem \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\" | Format-Table Name, @{Name=\"Type\";Expression={if\\($_.PSIsContainer\\){\"Folder\"}else{\"File\"}}} -AutoSize)",
+      "PowerShell(Get-ChildItem \"C:\\\\enable_point_cloud_viewer\\\\site\\\\clients\\\\Dev\\\\temporal\\\\pointclouds\\\\mar31\" -Recurse -Force | Select-Object -First 20 | Format-Table FullName, @{Name=\"Size\";Expression={if\\($_.PSIsContainer\\){\"<DIR>\"}else{$_.Length}}} -AutoSize)",
+      "Read(//c/PotreeTools/**)",
+      "Read(//c/PotreeTools/PotreeConverter_1.7_windows_x64/**)",
+      "Read(//c/Program Files/CloudCompare/**)",
+      "Bash(where pdal *)"
     ],
     "additionalDirectories": [
       "C:\\enable_point_cloud_viewer_scans"

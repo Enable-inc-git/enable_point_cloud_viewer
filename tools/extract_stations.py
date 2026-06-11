@@ -133,6 +133,10 @@ def main():
     ap.add_argument("output_dir", help="Directory to write stations.json + panoramas/ into")
     ap.add_argument("--image-type", default="4177",
                     help="Image type code to use (default: 4177 = full-res RGB)")
+    ap.add_argument("--image-dir", default=None,
+                    help="Override the source JPG folder (defaults to "
+                         "<db_dir>/scans/Images/HighResolution). Use this when the "
+                         "<idx>-<type>.jpg panoramas have been pulled into a flat folder.")
     ap.add_argument("--offset", nargs=3, type=float, metavar=("X", "Y", "Z"),
                     help="Subtracted from each station position to match the displayed Potree cloud frame")
     mode = ap.add_mutually_exclusive_group()
@@ -148,9 +152,12 @@ def main():
         sys.exit(1)
 
     project_dir = db_path.parent       # .../<Job>/
-    images_dir = project_dir / "scans" / "Images" / "HighResolution"
+    if args.image_dir:
+        images_dir = Path(args.image_dir).resolve()
+    else:
+        images_dir = project_dir / "scans" / "Images" / "HighResolution"
     if not images_dir.exists():
-        print("ERROR: HighResolution images folder not found at: " + str(images_dir), file=sys.stderr)
+        print("ERROR: image folder not found at: " + str(images_dir), file=sys.stderr)
         sys.exit(1)
 
     output_dir = Path(args.output_dir).resolve()

@@ -603,6 +603,7 @@
 
   <script src="../libs/three/build/three.min.js"></script>
   <script src="../libs/potree/potree.js"></script>
+  <script src="../libs/other/GLTFLoader.js"></script>
   <script src="../libs/plasio/js/laslaz.js"></script>
 
   <!-- Per-client project registry -->
@@ -3118,7 +3119,7 @@
     // -- Monkey-patch point picking to apply active constraint --
     const _origPick = Potree.Utils.getMousePointCloudIntersection;
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
-      const result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
+      let result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
       if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive) {
         var _ac0 = constraints.find(function(con) { return con.id === activeConstraintId; });
         var _hasPrior0 = !!(pendingMeasurement && pendingMeasurement.points.length >= 2);
@@ -3191,11 +3192,38 @@
           result.location = prior.clone().addScaledVector(bestAxis, bestT);
         }
       }
-      // Snap for Potree measurement tool (not during our custom picks or drags)
-      if (result && result.location && !constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
-        var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEASUREMENT);
+      // Snap for the measurement tool (not during our custom picks or drags).
+      // Runs even when the cloud pick missed, so a measurement point can land on
+      // an imported-model feature that has empty space (no cloud) behind it.
+      if (!constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
+        // ONE raycast against the model: gives the surface point + hit triangle.
+        var _mhit = modelSurfacePick(mouse);
+        // Base location: follow the model SURFACE when it's the frontmost thing
+        // under the cursor, so the point tracks the model everywhere.
+        if (_mhit) {
+          var _cam2 = viewer.scene.getActiveCamera();
+          var _cloudDist = (result && result.location && _cam2) ? _cam2.position.distanceTo(result.location) : Infinity;
+          if (!result || !result.location || _mhit.distance < _cloudDist) {
+            result = { location: _mhit.point.clone(), distance: _mhit.distance, pointcloud: null, point: { position: _mhit.point.clone() }, onModel: true };
+          }
+        }
+        // Snap target: model vertex/edge (from the hit triangle) takes priority,
+        // else an existing measurement/member/constraint point.
+        var mfeat = null;
+        if (_mhit) { try { mfeat = modelFeatureNear(_mhit.point, mouse); } catch (e) {} }
+        var snap = mfeat || findSnapTarget(mouse, SNAP_THRESHOLD_MEASUREMENT);
+        _snapTargetPos = snap ? snap.position.clone() : null;
+        if (window.__msDebug && (performance.now() - (window.__msLast || 0) > 250)) {
+          window.__msLast = performance.now();
+          console.log('[msnap] hit=' + (!!_mhit) + ' feature=' + (mfeat ? mfeat.label : 'none') + ' snap=' + (snap ? snap.label : 'none'));
+        }
         if (snap) {
-          result.location = snap.position;
+          _snapTargetTime = performance.now();
+          if (result && result.location) { result.location = snap.position; }
+          else {
+            var _scam = viewer.scene.getActiveCamera();
+            result = { location: snap.position.clone(), distance: _scam ? _scam.position.distanceTo(snap.position) : 0, pointcloud: null, point: { position: snap.position.clone() } };
+          }
           showToast('Snapped to ' + snap.label, 1000);
         }
       }
@@ -4587,17 +4615,24 @@
         }
       }
 
-      // Measurement points
+      // Measurement points — but NOT the point currently being placed (the
+      // dragged sphere of an in-progress measurement), or it would "snap to
+      // itself" and refuse to move onto a model feature under the cursor.
       var measurements = viewer.scene.measurements || [];
+      var draggedObj = (viewer.inputHandler && viewer.inputHandler.drag) ? viewer.inputHandler.drag.object : null;
       for (var i = 0; i < measurements.length; i++) {
         var meas = measurements[i];
         var nums = measurePointNumbers.get(meas);
         for (var j = 0; j < meas.points.length; j++) {
+          if (draggedObj && meas.spheres && meas.spheres[j] === draggedObj) continue;
           var pos = meas.points[j].position || meas.points[j];
           var pLabel = nums && j < nums.length ? 'D' + nums[j] : 'D?';
           check(pos, pLabel);
         }
       }
+
+      // (Model vertex/edge snapping is handled in the picker, which shares the one
+      // model raycast it already does for surface-follow — see modelFeatureNear.)
 
       return bestResult;
     }
@@ -4772,9 +4807,9 @@
     // ===== MEASUREMENT POINT LABEL FUNCTIONS =====
 
     // -- Create a Potree TextSprite label for measurement points --
-    function createMeasurePointLabel(text, position) {
+    function createMeasurePointLabel(text, position, onModel) {
       var label = new Potree.TextSprite(text);
-      label.setTextColor({r: 255, g: 0, b: 0, a: 1.0});
+      label.setTextColor(onModel ? {r: 0, g: 229, b: 255, a: 1.0} : {r: 255, g: 0, b: 0, a: 1.0});
       label.setBorderColor({r: 0, g: 0, b: 0, a: 0.0});
       label.setBackgroundColor({r: 0, g: 0, b: 0, a: 0.0});
       // TextSprite generates its texture in its constructor at the default fontsize (28).
@@ -4787,6 +4822,7 @@
       label.material.transparent = true;
       label.position.copy(position);
       label.userData.isMeasureLabel = true;
+      label.userData._onModel = !!onModel;
       return label;
     }
 
@@ -4940,14 +4976,34 @@
       while (labels.length < pts.length) {
         var idx = labels.length;
         var pos = pts[idx].position ? pts[idx].position.clone() : pts[idx].clone();
-        var lbl = createMeasurePointLabel('D' + nums[idx], pos);
+        var onMC = isPositionOnModel(pos);
+        var lbl = createMeasurePointLabel('D' + nums[idx], pos, onMC);
+        lbl.userData._lastCheckedPos = pos.clone();
         lbl.visible = measure.visible;
         measureLabelScene.add(lbl);
         labels.push(lbl);
       }
-      // Update positions
+      // Update positions, and re-evaluate model/cloud colour for points that moved.
       for (var i = 0; i < labels.length; i++) {
         var p = pts[i].position ? pts[i].position : pts[i];
+        var lc = labels[i].userData._lastCheckedPos;
+        if (!lc || lc.distanceToSquared(p) > 1e-6) {
+          var onM = isPositionOnModel(p);
+          labels[i].userData._lastCheckedPos = p.clone();
+          if (labels[i].userData._onModel !== onM) {
+            measureLabelScene.remove(labels[i]);
+            labels[i].traverse(function(o) { if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } });
+            labels[i] = createMeasurePointLabel('D' + nums[i], p, onM);
+            labels[i].userData._lastCheckedPos = p.clone();
+            measureLabelScene.add(labels[i]);
+          }
+          // Tint the measurement sphere teal on the model, original colour off it.
+          var sph = measure.spheres && measure.spheres[i];
+          if (sph && sph.material && sph.material.color) {
+            if (sph.userData._origColor === undefined) sph.userData._origColor = sph.material.color.getHex();
+            sph.material.color.setHex(onM ? MODEL_TEAL : sph.userData._origColor);
+          }
+        }
         labels[i].position.copy(p);
         labels[i].visible = measure.visible;
       }
@@ -8727,6 +8783,472 @@
     }
     function closeGroup() { return '</div></div>'; }
 
+    // ===== SKETCHUP / GLB MODEL IMPORT =====
+    // Models live in viewer.scene.scene (Potree's main THREE scene) so they render
+    // in the normal pass and occlude correctly against the point cloud.
+    // Each project's models/ folder auto-loads on start (hidden by default); the
+    // user toggles them on in the right "Tool settings" panel. Models render in
+    // viewer.scene.scene so they occlude correctly against the cloud.
+    let models = [];               // [{ name, group, visible }]
+    let loadedPointCloud = null;   // set when the cloud finishes loading
+    let modelLightsAdded = false;
+
+    // -- Model snapping support. modelSnapMeshes = leaf meshes of visible models.
+    //    The model is often very dense (this backyard glb is ~3.5M triangles), so
+    //    we rely on THREE's per-mesh bounds culling in intersectObjects (only the
+    //    few meshes under the cursor get triangle-tested) — ONE raycast per pick
+    //    gives both the surface point AND the hit triangle, from which we snap to
+    //    the nearest vertex / point-along-edge. No million-vertex precompute. --
+    let modelSnapMeshes = [];
+    let _modelRaycaster = null;
+    // Extracted hard edges/vertices (world space) of loaded+visible models. These
+    // are the REAL feature edges (EdgesGeometry drops flat interior tessellation),
+    // which is what you actually want to snap to on a dense model.
+    let modelSnapVerts = [];   // Array<Vector3>
+    let modelSnapEdges = [];   // Array<[Vector3, Vector3]>
+    let modelEdgeLines = null; // THREE.LineSegments overlay (toggleable)
+    let showModelEdges = false;
+    let modelFeatureGrid = null; // spatial hash → only project features near the cursor
+    function _vkey(v) { return Math.round(v.x * 1e4) + ',' + Math.round(v.y * 1e4) + ',' + Math.round(v.z * 1e4); }
+    function rebuildModelSnapMeshes() {
+      modelSnapMeshes = [];
+      for (var i = 0; i < models.length; i++) {
+        if (!models[i].group || !models[i].visible) continue;
+        models[i].group.traverse(function(obj) {
+          if (obj.isMesh && obj.geometry && obj.geometry.attributes && obj.geometry.attributes.position) modelSnapMeshes.push(obj);
+        });
+      }
+    }
+
+    // One raycast against the visible model under the cursor. Returns the surface
+    // hit + the hit triangle (object/face) so the caller can snap to features
+    // without a second raycast. Returns { point, distance, object, face } or null.
+    function modelSurfacePick(mousePixel) {
+      if (!modelSnapMeshes.length) return null;
+      var camera = viewer.scene.getActiveCamera();
+      if (!camera) return null;
+      var rect = renderArea.getBoundingClientRect();
+      if (!_modelRaycaster) _modelRaycaster = new THREE.Raycaster();
+      var ndc = new THREE.Vector2((mousePixel.x / rect.width) * 2 - 1, -(mousePixel.y / rect.height) * 2 + 1);
+      _modelRaycaster.setFromCamera(ndc, camera);
+      var hits = _modelRaycaster.intersectObjects(modelSnapMeshes, false);
+      if (!hits.length) return null;
+      return { point: hits[0].point.clone(), distance: hits[0].distance, object: hits[0].object, face: hits[0].face };
+    }
+
+    // Extract a model's hard edges/vertices (world space) via EdgesGeometry, run
+    // in time-sliced chunks so a 3.5M-tri model never freezes the viewer. ~18°
+    // keeps real feature edges (deck boards, slats, rims) and drops flat interior
+    // tessellation — exactly what should be snappable.
+    function scheduleEdgeExtract(rec) {
+      rec.snapEdges = [];
+      rec.snapVerts = [];
+      var vkeys = new Set();
+      var meshes = [];
+      rec.group.updateMatrixWorld(true);
+      rec.group.traverse(function(o) { if (o.isMesh && o.geometry && o.geometry.attributes && o.geometry.attributes.position) meshes.push(o); });
+      var mi = 0, tick = 0;
+      function step() {
+        var t0 = performance.now();
+        while (mi < meshes.length && (performance.now() - t0) < 15) {
+          var o = meshes[mi++];
+          try {
+            var eg = new THREE.EdgesGeometry(o.geometry, 18);
+            var ep = eg.attributes.position, a = new THREE.Vector3(), b = new THREE.Vector3();
+            for (var i = 0; i + 1 < ep.count; i += 2) {
+              a.fromBufferAttribute(ep, i); b.fromBufferAttribute(ep, i + 1);
+              o.localToWorld(a); o.localToWorld(b);
+              var A = a.clone(), B = b.clone();
+              rec.snapEdges.push([A, B]);
+              var ka = _vkey(A); if (!vkeys.has(ka)) { vkeys.add(ka); rec.snapVerts.push(A); }
+              var kb = _vkey(B); if (!vkeys.has(kb)) { vkeys.add(kb); rec.snapVerts.push(B); }
+            }
+            if (eg.dispose) eg.dispose();
+          } catch (e) {}
+        }
+        rebuildModelFeatures();
+        if (showModelEdges && (++tick % 6 === 0)) rebuildEdgeLines(); // fill in the overlay as it builds
+        if (mi < meshes.length) setTimeout(step, 0);
+        else { buildFeatureGrid(); rebuildEdgeLines(); console.log('[msnap] edges extracted "' + rec.name + '":', rec.snapEdges.length, 'edges,', rec.snapVerts.length, 'verts'); }
+      }
+      setTimeout(step, 0);
+    }
+    function rebuildModelFeatures() {
+      modelSnapVerts = [];
+      modelSnapEdges = [];
+      for (var i = 0; i < models.length; i++) {
+        var r = models[i];
+        if (!r.group || !r.visible || !r.snapVerts) continue;
+        for (var v = 0; v < r.snapVerts.length; v++) modelSnapVerts.push(r.snapVerts[v]);
+        for (var e = 0; e < r.snapEdges.length; e++) modelSnapEdges.push(r.snapEdges[e]);
+      }
+    }
+    // Cyan overlay of all snappable edges (toggle in the Models panel) so you can
+    // SEE what's detected.
+    function rebuildEdgeLines() {
+      if (modelEdgeLines) { viewer.scene.scene.remove(modelEdgeLines); modelEdgeLines.geometry.dispose(); modelEdgeLines.material.dispose(); modelEdgeLines = null; }
+      if (!showModelEdges || !modelSnapEdges.length) return;
+      var pos = new Float32Array(modelSnapEdges.length * 6);
+      for (var i = 0; i < modelSnapEdges.length; i++) {
+        var A = modelSnapEdges[i][0], B = modelSnapEdges[i][1], o = i * 6;
+        pos[o] = A.x; pos[o + 1] = A.y; pos[o + 2] = A.z; pos[o + 3] = B.x; pos[o + 4] = B.y; pos[o + 5] = B.z;
+      }
+      var g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      modelEdgeLines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.85 }));
+      modelEdgeLines.renderOrder = 5;
+      viewer.scene.scene.add(modelEdgeLines);
+    }
+    function toggleModelEdges() { showModelEdges = !showModelEdges; rebuildEdgeLines(); updateModelsPanel(); }
+
+    // Snap to the nearest extracted hard VERTEX (priority) or point ALONG a hard
+    // EDGE, near the raycast anchor H. The 3D distance pre-filter keeps it fast
+    // regardless of how many edges the model has (only local ones get projected).
+    var _mfAB = new THREE.Vector3(), _mfP = new THREE.Vector3(), _mfProj = new THREE.Vector3();
+    function _segDistSq(H, A, B) {
+      _mfAB.subVectors(B, A);
+      var abl = _mfAB.lengthSq() || 1;
+      var t = _mfP.subVectors(H, A).dot(_mfAB) / abl; t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      _mfP.copy(A).addScaledVector(_mfAB, t);
+      return H.distanceToSquared(_mfP);
+    }
+    // Spatial hash over the extracted features so each pick only touches features
+    // near the cursor (a 3.5M-tri model yields enormous edge counts; scanning all
+    // of them per mousemove freezes the drag). Edges are rasterized into every
+    // cell they cross so long edges are found from anywhere along them.
+    function buildFeatureGrid() {
+      modelFeatureGrid = null;
+      if (!modelSnapVerts.length && !modelSnapEdges.length) return;
+      var bb = new THREE.Box3();
+      for (var i = 0; i < modelSnapVerts.length; i++) bb.expandByPoint(modelSnapVerts[i]);
+      var diag = bb.getSize(new THREE.Vector3()).length() || 1;
+      var cell = Math.max(diag / 256, 0.03);
+      var min = bb.min.clone();
+      var vgrid = new Map(), egrid = new Map();
+      function push(map, k, idx) { var a = map.get(k); if (!a) { a = []; map.set(k, a); } a.push(idx); }
+      function key(x, y, z) { return x + ',' + y + ',' + z; }
+      for (var v = 0; v < modelSnapVerts.length; v++) {
+        var p = modelSnapVerts[v];
+        push(vgrid, key(Math.floor((p.x - min.x) / cell), Math.floor((p.y - min.y) / cell), Math.floor((p.z - min.z) / cell)), v);
+      }
+      for (var e = 0; e < modelSnapEdges.length; e++) {
+        var A = modelSnapEdges[e][0], B = modelSnapEdges[e][1];
+        var steps = Math.max(1, Math.ceil(A.distanceTo(B) / cell)), lastK = null;
+        for (var s = 0; s <= steps; s++) {
+          var t = s / steps;
+          var k = key(Math.floor((A.x + (B.x - A.x) * t - min.x) / cell), Math.floor((A.y + (B.y - A.y) * t - min.y) / cell), Math.floor((A.z + (B.z - A.z) * t - min.z) / cell));
+          if (k !== lastK) { push(egrid, k, e); lastK = k; }
+        }
+      }
+      modelFeatureGrid = { cell: cell, min: min, vgrid: vgrid, egrid: egrid };
+      console.log('[msnap] feature grid built: cell=' + cell.toFixed(3) + ' vcells=' + vgrid.size + ' ecells=' + egrid.size);
+    }
+
+    function modelFeatureNear(H, mousePixel) {
+      if (!modelSnapVerts.length && !modelSnapEdges.length) return null;
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var dist = camera.position.distanceTo(H);
+      var pr = Potree.Utils.projectedRadius(1, camera, dist, rect.width, rect.height);
+      var r3d = pr > 1e-6 ? 30 / pr : dist * 0.05;   // world radius ≈ 30 px
+      var r3d2 = r3d * r3d;
+      var RV = 24, RE = 14, s, dx, dy, d;
+      function scr(wp) { _mfProj.copy(wp).project(camera); return { x: (_mfProj.x * 0.5 + 0.5) * rect.width, y: (1 - (_mfProj.y * 0.5 + 0.5)) * rect.height }; }
+      // Gather candidate indices from the grid cells around H (or all, pre-grid).
+      var vCand = null, eCand = null, g = modelFeatureGrid;
+      if (g) {
+        vCand = new Set(); eCand = new Set();
+        var rc = Math.min(8, Math.ceil(r3d / g.cell));
+        var cx = Math.floor((H.x - g.min.x) / g.cell), cy = Math.floor((H.y - g.min.y) / g.cell), cz = Math.floor((H.z - g.min.z) / g.cell);
+        for (var ax = -rc; ax <= rc; ax++) for (var ay = -rc; ay <= rc; ay++) for (var az = -rc; az <= rc; az++) {
+          var k = (cx + ax) + ',' + (cy + ay) + ',' + (cz + az);
+          var va = g.vgrid.get(k); if (va) for (var iv = 0; iv < va.length; iv++) vCand.add(va[iv]);
+          var ea = g.egrid.get(k); if (ea) for (var ie = 0; ie < ea.length; ie++) eCand.add(ea[ie]);
+        }
+      }
+      var bV = null, bVd = RV;
+      function checkVert(idx) { var V = modelSnapVerts[idx]; if (V.distanceToSquared(H) > r3d2) return; s = scr(V); dx = s.x - mousePixel.x; dy = s.y - mousePixel.y; d = Math.sqrt(dx * dx + dy * dy); if (d < bVd) { bVd = d; bV = V; } }
+      if (vCand) vCand.forEach(checkVert); else for (var i = 0; i < modelSnapVerts.length; i++) checkVert(i);
+      if (bV) return { position: bV.clone(), label: 'model vertex' };
+      var bEpos = null, bEd = RE;
+      function checkEdge(idx) {
+        var A = modelSnapEdges[idx][0], B = modelSnapEdges[idx][1];
+        if (_segDistSq(H, A, B) > r3d2) return;
+        var sa = scr(A), sb = scr(B), ex = sb.x - sa.x, ey = sb.y - sa.y, el2 = ex * ex + ey * ey;
+        var t = el2 > 0 ? ((mousePixel.x - sa.x) * ex + (mousePixel.y - sa.y) * ey) / el2 : 0; t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        var qx = sa.x + ex * t, qy = sa.y + ey * t; dx = qx - mousePixel.x; dy = qy - mousePixel.y; d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bEd) { bEd = d; bEpos = A.clone().lerp(B, t); }
+      }
+      if (eCand) eCand.forEach(checkEdge); else for (var j = 0; j < modelSnapEdges.length; j++) checkEdge(j);
+      if (bEpos) return { position: bEpos, label: 'model edge' };
+      return null;
+    }
+
+    // Does a finalized measurement point sit on the model surface? (camera-ray test;
+    // used to colour model points teal vs cloud points red.)
+    function isPositionOnModel(pos) {
+      if (!modelSnapMeshes.length) return false;
+      var camera = viewer.scene.getActiveCamera();
+      if (!camera) return false;
+      if (!_modelRaycaster) _modelRaycaster = new THREE.Raycaster();
+      var dir = pos.clone().sub(camera.position);
+      var dist = dir.length();
+      if (dist < 1e-6) return false;
+      dir.multiplyScalar(1 / dist);
+      _modelRaycaster.set(camera.position.clone(), dir);
+      var hits = _modelRaycaster.intersectObjects(modelSnapMeshes, false);
+      if (!hits.length) return false;
+      return Math.abs(hits[0].distance - dist) < Math.max(0.03, dist * 0.01);
+    }
+    var MODEL_TEAL = 0x00e5ff;
+
+    // -- Visual snap indicator: a cyan dot that jumps to the feature the next
+    //    measurement click will grab. Lives in markerScene (renders on top). --
+    var _snapTargetPos = null;
+    var _snapTargetTime = 0;
+    var _snapIndicator = (function () {
+      var geo = new THREE.SphereGeometry(1, 16, 12);
+      var mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 });
+      var mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 99999;
+      mesh.visible = false;
+      markerScene.add(mesh);
+      return mesh;
+    })();
+    var _snapIndSize = new THREE.Vector2();
+    viewer.addEventListener("render.pass.perspective_overlay", function () {
+      if (!_snapIndicator) return;
+      var show = _snapTargetPos && (performance.now() - _snapTargetTime) < 350;
+      _snapIndicator.visible = !!show;
+      if (!show) return;
+      var cam = viewer.scene.getActiveCamera();
+      _snapIndicator.position.copy(_snapTargetPos);
+      var sz = viewer.renderer.getSize(_snapIndSize);
+      var dist = cam.position.distanceTo(_snapTargetPos);
+      var pr = Potree.Utils.projectedRadius(1, cam, dist, sz.x, sz.y);
+      var s = pr > 0.0001 ? (6 / pr) : 0.05; // ~6 px radius
+      _snapIndicator.scale.set(s, s, s);
+    });
+
+    // -- Diagnostic: run __msInfo() in the console to check model snap state /
+    //    whether the model and cloud overlap. --
+    window.__msInfo = function () {
+      var info = {
+        models: models.map(function (m) { return { name: m.name, visible: m.visible }; }),
+        snapMeshes: modelSnapMeshes.length,
+        triangles: 0, modelBounds: null, cloudBounds: null
+      };
+      try {
+        for (var i = 0; i < modelSnapMeshes.length; i++) {
+          var g = modelSnapMeshes[i].geometry;
+          info.triangles += g.index ? g.index.count / 3 : g.attributes.position.count / 3;
+        }
+        if (models.length) {
+          var mb = new THREE.Box3();
+          models.forEach(function (m) { mb.expandByObject(m.group); });
+          info.modelBounds = { min: mb.min.toArray(), max: mb.max.toArray() };
+        }
+        if (loadedPointCloud) {
+          loadedPointCloud.updateMatrixWorld(true);
+          var cb = (typeof loadedPointCloud.getBoundingBoxWorld === 'function')
+            ? loadedPointCloud.getBoundingBoxWorld(new THREE.Box3())
+            : loadedPointCloud.boundingBox.clone().applyMatrix4(loadedPointCloud.matrixWorld);
+          info.cloudBounds = { min: cb.min.toArray(), max: cb.max.toArray() };
+        }
+      } catch (e) { info.error = String(e); }
+      console.log('[msInfo]', info);
+      return info;
+    };
+
+    // GLTFLoader yields a scene that is correct in glTF's Y-up convention. This
+    // Potree scene is Z-up (raw LAS coords), so rotate +90° about X to map the
+    // model's up axis to world +Z. The model was built directly on this scan with
+    // origins untouched, so its coords already match — position stays at origin.
+    const MODEL_X_ROTATION = Math.PI / 2;
+
+    function ensureModelLights() {
+      if (modelLightsAdded) return;
+      const s = viewer.scene.scene;
+      s.add(new THREE.AmbientLight(0xffffff, 0.7));
+      const d1 = new THREE.DirectionalLight(0xffffff, 0.6); d1.position.set(1, 1, 2); s.add(d1);
+      const d2 = new THREE.DirectionalLight(0xffffff, 0.4); d2.position.set(-1, -1, 1); s.add(d2);
+      modelLightsAdded = true;
+    }
+
+    function prepModelMaterials(root) {
+      // SketchUp faces are often single-sided/reversed (render black or invisible)
+      // and its PBR export can be fully metallic (renders black without an env map).
+      // Make materials double-sided and non-metallic so colors/textures show.
+      root.traverse(function(obj) {
+        if (!obj.isMesh || !obj.material) return;
+        var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(function(m) {
+          if (!m) return;
+          m.side = THREE.DoubleSide;
+          if (m.isMeshStandardMaterial && !m.envMap && m.metalness > 0.1) m.metalness = 0.1;
+          m.needsUpdate = true;
+        });
+      });
+    }
+
+    // A model record is a directory entry; group === null until the user loads it.
+    function addModelEntry(name, url, fromFile) {
+      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false };
+      models.push(rec);
+      return rec;
+    }
+
+    function displayLoadedGroup(rec, scene3d) {
+      ensureModelLights();
+      prepModelMaterials(scene3d);
+      var group = new THREE.Group();
+      group.name = 'EnableModel:' + rec.name;
+      group.add(scene3d);
+      group.position.set(0, 0, 0);          // model already shares scan coords
+      group.rotation.x = MODEL_X_ROTATION;  // glTF Y-up -> scan Z-up
+      group.visible = true;
+      viewer.scene.scene.add(group);
+      group.updateMatrixWorld(true);
+      rec.group = group;
+      rec.visible = true;
+      rec.loading = false;
+      rebuildModelSnapMeshes();
+      scheduleEdgeExtract(rec);   // extract hard edges/verts in the background
+      updateModelsPanel();
+      try {
+        var b = new THREE.Box3().setFromObject(group);
+        console.log('[model] loaded "' + rec.name + '" bounds', b.min.toArray(), b.max.toArray());
+      } catch (e) {}
+    }
+
+    function loadModelRec(rec) {
+      if (rec.group) { setModelVisible(rec, true); return; }
+      if (rec.loading) return;
+      if (typeof THREE.GLTFLoader !== 'function') { showToast('GLTFLoader not available'); return; }
+      rec.loading = true;
+      updateModelsPanel();
+      showToast('Loading model: ' + rec.name + ' …');
+      new THREE.GLTFLoader().load(rec.url, function(gltf) {
+        displayLoadedGroup(rec, gltf.scene);
+        showToast('Loaded model: ' + rec.name);
+      }, undefined, function(err) {
+        rec.loading = false;
+        updateModelsPanel();
+        console.error('GLTFLoader error for', rec.name, err);
+        showToast('Failed to load model: ' + rec.name);
+      });
+    }
+
+    function setModelVisible(rec, vis) {
+      if (!rec.group) { if (vis) loadModelRec(rec); return; }
+      rec.visible = !!vis;
+      rec.group.visible = !!vis;
+      rebuildModelSnapMeshes();   // snapping only considers loaded + visible models
+      rebuildModelFeatures();
+      buildFeatureGrid();
+      rebuildEdgeLines();
+      updateModelsPanel();
+    }
+
+    function unloadModelRec(rec) {
+      if (rec.group) {
+        viewer.scene.scene.remove(rec.group);
+        rec.group.traverse(function(obj) {
+          if (obj.geometry && obj.geometry.dispose) obj.geometry.dispose();
+          if (obj.material) { var mats = Array.isArray(obj.material) ? obj.material : [obj.material]; mats.forEach(function(m) { if (m && m.dispose) m.dispose(); }); }
+        });
+        rec.group = null;
+      }
+      rec.visible = false;
+      rec.loading = false;
+      // Ad-hoc file entries vanish; folder entries stay as directory rows to reload.
+      if (rec.fromFile) { var idx = models.indexOf(rec); if (idx !== -1) models.splice(idx, 1); }
+      rebuildModelSnapMeshes();
+      rebuildModelFeatures();
+      buildFeatureGrid();
+      rebuildEdgeLines();
+      updateModelsPanel();
+    }
+
+    // Manual load via the panel's file picker.
+    function loadModelFile(file) {
+      if (!file) return;
+      var rec = addModelEntry(file.name.replace(/\.(glb|gltf)$/i, ''), URL.createObjectURL(file), true);
+      loadModelRec(rec);
+    }
+
+    // Discover the project's models/ folder (lists, does NOT load — the user loads
+    // on demand). Folder: <root>/pointclouds/<x> -> <root>/models
+    function discoverProjectModels() {
+      var root = meta.folder.replace(/\/+$/, '').replace(/\/pointclouds\/[^/]*$/, '');
+      var modelsURL = root + '/models';
+      fetch(modelsURL + '/').then(function(r) { return r.ok ? r.text() : Promise.reject(); })
+        .then(function(html) {
+          var files = [], re = /href="([^"?]+\.glb)"/gi, m;
+          while ((m = re.exec(html))) { var f = decodeURIComponent(m[1].split('/').pop()); if (f && files.indexOf(f) === -1) files.push(f); }
+          return files.length ? files : Promise.reject();
+        })
+        .catch(function() {
+          // Fallback manifest for hosts without directory listing (e.g. Netlify).
+          return fetch(modelsURL + '/models.json').then(function(r) { return r.ok ? r.json() : []; }).catch(function() { return []; });
+        })
+        .then(function(list) {
+          if (!list || !list.length) { console.log('[models] none in', modelsURL); return; }
+          list.forEach(function(item) {
+            var file = typeof item === 'string' ? item : item.file;
+            if (!file) return;
+            var name = (typeof item === 'object' && item.name) ? item.name : file.replace(/\.glb$/i, '');
+            addModelEntry(name, modelsURL + '/' + encodeURIComponent(file), false);
+          });
+          console.log('[models] discovered', list.length, 'in', modelsURL);
+          updateModelsPanel();
+        });
+    }
+
+    // -- Right-panel Models directory (adopted into Tool settings by chrome.js). --
+    function ensureModelsPanel() {
+      var p = document.getElementById('enable-models-panel');
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'enable-models-panel';
+        document.body.appendChild(p); // chrome.js reparents this into the context panel
+      }
+      return p;
+    }
+    function updateModelsPanel() {
+      var p = ensureModelsPanel();
+      if (!models.length) { p.style.display = 'none'; p.innerHTML = ''; return; }
+      p.style.display = '';
+      var rows = '';
+      for (var i = 0; i < models.length; i++) {
+        var rec = models[i], right;
+        if (rec.loading) {
+          right = '<span style="opacity:0.7;font-size:12px">Loading…</span>';
+        } else if (rec.group) {
+          right = '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+                  '<button class="enable-model-unload" data-idx="' + i + '" title="Unload" style="background:none;border:0;cursor:pointer;color:#f66;font-size:14px;padding:0 2px">✕</button>';
+        } else {
+          right = '<button class="enable-model-load" data-idx="' + i + '" title="Load this model" style="font-size:12px;padding:2px 10px">Load</button>';
+        }
+        rows += '<div class="enable-models-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">' +
+          '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + rec.name + '">' + rec.name + '</span>' + right + '</div>';
+      }
+      var anyLoaded = models.some(function(m) { return m.group; });
+      p.innerHTML =
+        '<div style="font-weight:600;margin:2px 0 6px">Models</div>' + rows +
+        (anyLoaded ? '<div style="margin-top:8px"><button id="btn-toggle-edges" style="width:100%">' + (showModelEdges ? 'Hide' : 'Show') + ' snappable edges</button></div>' : '') +
+        '<div style="margin-top:8px"><button id="btn-load-model" style="width:100%">Load model from file (.glb)…</button></div>' +
+        '<input type="file" id="model-file-input" accept=".glb,.gltf" style="display:none">';
+      var te = p.querySelector('#btn-toggle-edges');
+      if (te) te.addEventListener('click', toggleModelEdges);
+      p.querySelectorAll('.enable-model-load').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) loadModelRec(r); }); });
+      p.querySelectorAll('.enable-model-eye').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelVisible(r, !r.visible); }); });
+      p.querySelectorAll('.enable-model-unload').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) unloadModelRec(r); }); });
+      var lb = p.querySelector('#btn-load-model');
+      if (lb) lb.addEventListener('click', function() { p.querySelector('#model-file-input').click(); });
+      var fi = p.querySelector('#model-file-input');
+      if (fi) fi.addEventListener('change', function(e) { var f = e.target.files[0]; if (f) loadModelFile(f); e.target.value = ''; });
+    }
+
     function injectMarkButtons() {
       const $tools = $('#tools');
       if ($tools.length === 0) { setTimeout(injectMarkButtons, 200); return; }
@@ -9492,6 +10014,8 @@
       const pc    = e.pointcloud;
       const scene = viewer.scene;
       scene.addPointCloud(pc);
+      loadedPointCloud = pc; // used by model import
+      discoverProjectModels(); // list this project's models/ folder (load on demand)
 
       // material defaults
       pc.material.size = 1.0;

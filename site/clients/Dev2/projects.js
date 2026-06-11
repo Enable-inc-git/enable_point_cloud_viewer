@@ -5,5 +5,9 @@ window.PROJECTS = {
   "7_st_dennis_scan": {
     name: "Development",
     folder: "../WJ Properties/7 St Dennis - South Garage Slab/pointclouds/7_st_dennis_scan"
+  },
+  "backyard": {
+    name: "Backyard",
+    folder: "../Dev/backyard/pointclouds/backyard"
   }
 };
