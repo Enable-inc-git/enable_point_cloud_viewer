@@ -4223,6 +4223,7 @@
       memberPickMode = true;
       memberPickPoints = [];
       clearMemberPickMarkers();
+      _ensureMemberPreviewSphere();
       document.body.classList.add('member-pick-mode');
       showToast('Pick endpoint (1/2) for member', 5000);
       var btn = document.getElementById('btn-add-member');
@@ -4235,6 +4236,7 @@
       placeMemberPickMarker(position);
       undoStack.push({ type: 'member-point' });
       if (memberPickPoints.length < 2) {
+        _startMemberRubberLine(position);
         showToast('Pick endpoint (2/2) for member', 5000);
       } else {
         finalizeMember();
@@ -4246,6 +4248,7 @@
       memberPickMode = false;
       memberPickPoints = [];
       clearMemberPickMarkers();
+      clearMemberPreview();
       document.body.classList.remove('member-pick-mode');
       var btn = document.getElementById('btn-add-member');
       if (btn) btn.classList.remove('active');
@@ -4281,9 +4284,72 @@
       memberPickMarkers.length = 0;
     }
 
+    // -- Rubber-band preview during member picking (mirrors the constraint
+    //    X-axis rubber line): an orange sphere follows the cursor's snapped
+    //    pick, and once the first endpoint is down a line stretches from it to
+    //    the cursor — matching the dimension tool's live feedback. --
+    var _memberPreviewSphere = null;
+    var _memberRubberLine = null;
+    function _ensureMemberPreviewSphere() {
+      if (_memberPreviewSphere) return;
+      _memberPreviewSphere = _makePreviewSphere(0xff9900);
+      memberScene.add(_memberPreviewSphere);
+    }
+    function _startMemberRubberLine(position) {
+      _clearMemberRubberLine();
+      var rbGeo = new THREE.BufferGeometry();
+      rbGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+        position.x, position.y, position.z,
+        position.x, position.y, position.z
+      ], 3));
+      var rbMat = new THREE.LineBasicMaterial({
+        color: 0xff9900, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95
+      });
+      _memberRubberLine = new THREE.Line(rbGeo, rbMat);
+      _memberRubberLine.renderOrder = 1;
+      memberScene.add(_memberRubberLine);
+    }
+    function _clearMemberRubberLine() {
+      if (!_memberRubberLine) return;
+      memberScene.remove(_memberRubberLine);
+      if (_memberRubberLine.geometry) _memberRubberLine.geometry.dispose();
+      if (_memberRubberLine.material) _memberRubberLine.material.dispose();
+      _memberRubberLine = null;
+    }
+    function clearMemberPreview() {
+      _disposePreviewSphere(_memberPreviewSphere, memberScene);
+      _memberPreviewSphere = null;
+      _clearMemberRubberLine();
+    }
+    // Update the member preview each mousemove. Uses the SAME pick + snap path
+    // as actual placement (patched picker + findSnapTarget @ 18px), so the
+    // preview lands exactly where the click will.
+    function _updateMemberPreview(e) {
+      if (!memberPickMode) return;
+      var rect = renderArea.getBoundingClientRect();
+      var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      var cam = viewer.scene.getActiveCamera();
+      var pick = Potree.Utils.getMousePointCloudIntersection(mouse, cam, viewer, viewer.scene.pointclouds, { pickClipped: true });
+      var loc = (pick && pick.location) ? pick.location.clone() : null;
+      if (loc) {
+        var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
+        if (snap) loc = snap.position.clone();
+      }
+      if (_memberPreviewSphere) {
+        if (loc) { _memberPreviewSphere.position.copy(loc); _memberPreviewSphere.visible = true; }
+        else { _memberPreviewSphere.visible = false; }
+      }
+      if (_memberRubberLine && memberPickPoints.length === 1 && loc) {
+        var attr = _memberRubberLine.geometry.attributes.position;
+        attr.setXYZ(1, loc.x, loc.y, loc.z);
+        attr.needsUpdate = true;
+      }
+    }
+
     // -- Finalize member from 2 picked points --
     function finalizeMember() {
       clearMemberPickMarkers();
+      clearMemberPreview();
       var member = {
         id: nextMemberId++,
         name: 'M' + (nextMemberId - 1),
@@ -4738,6 +4804,10 @@
               _scaleMarkerSphere(obj, camera, _mbRSize);
             }
           });
+        }
+        // Cursor preview sphere (direct child of memberScene during a pick)
+        if (_memberPreviewSphere && _memberPreviewSphere.userData.isMarkerSphere) {
+          _scaleMarkerSphere(_memberPreviewSphere, camera, _mbRSize);
         }
         viewer.renderer.render(memberScene, camera);
       }
@@ -9652,6 +9722,8 @@
     var HOVER_THRESHOLD = 12; // pixels
 
     renderArea.addEventListener('mousemove', function(e) {
+      // Member rubber-band: orange cursor sphere + line from the first endpoint.
+      if (memberPickMode) _updateMemberPreview(e);
       // Hover-preview spheres — Mark (red), Note (yellow), Constraint (green).
       // Shows the exact cloud point that will be picked, replacing the
       // crosshair cursor as the visual cue across all placement tools.
@@ -10117,6 +10189,7 @@
           clipBox.userData = clipBox.userData || {};
           clipBox.userData.persistent = true;     // mark as locked
           initialClipBox = clipBox;               // store reference for elevation tool
+          trackVolumeUndo(clipBox);               // Ctrl+Z undoes accidental move/rotate/scale of the crop box
 
           // Disallow editing if API exists
           if (typeof clipBox.setEditable === "function") clipBox.setEditable(false);
