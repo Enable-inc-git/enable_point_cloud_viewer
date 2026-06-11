@@ -1257,16 +1257,12 @@
       });
       _spm._blockedTypes = blockedTypes;
 
-      // Esc handler (form-field-aware per feedback_keyboard_guards.md)
-      _spm.escHandler = function(ev) {
-        if (ev.key !== 'Escape') return;
-        var t = ev.target, tag = t && t.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
-        ev.stopPropagation();
-        ev.preventDefault();
-        closeStationPanorama();
-      };
-      document.addEventListener('keydown', _spm.escHandler, true);
+      // NOTE: Esc intentionally does NOT close the panorama. While the panorama
+      // is open the user is often mid-measurement in the point cloud, and Esc
+      // must reach the measurement-tool cancel handler — not steal the keypress
+      // to close the image. The panorama closes ONLY via its close button (see
+      // closeStationPanorama). _spm.escHandler is left unset, so the cleanup in
+      // closeStationPanorama is a guarded no-op.
 
       _spm.resizeHandler = function() { _spmResize(); };
       window.addEventListener('resize', _spm.resizeHandler);
@@ -4761,6 +4757,11 @@
       if (measurePointLabels && measurePointLabels.size > 0) {
         measurePointLabels.forEach(function(_labels, measure) {
           repositionMeasureLabels(measure, camera);
+          // Reassert model/cloud colours every frame: Potree's Measure.update()
+          // resets spheres+edges to the shared measure.color on each geometry
+          // change (and fires marker_moved before update()), so event-time
+          // colouring alone won't stick.
+          applyMeasureColors(measure, _labels);
         });
         viewer.renderer.render(measureLabelScene, camera);
       }
@@ -4997,19 +4998,57 @@
             labels[i].userData._lastCheckedPos = p.clone();
             measureLabelScene.add(labels[i]);
           }
-          // Tint the measurement sphere teal on the model, original colour off it.
-          var sph = measure.spheres && measure.spheres[i];
-          if (sph && sph.material && sph.material.color) {
-            if (sph.userData._origColor === undefined) sph.userData._origColor = sph.material.color.getHex();
-            sph.material.color.setHex(onM ? MODEL_TEAL : sph.userData._origColor);
-          }
         }
         labels[i].position.copy(p);
         labels[i].visible = measure.visible;
       }
+      // Colour spheres + connecting edges by on-model state (also reasserted
+      // every frame — see applyMeasureColors for why that's required).
+      applyMeasureColors(measure, labels);
       // Apply final screen-space offset/scale now so labels don't visibly jump
       // on the next frame when the per-frame reposition pass runs.
       repositionMeasureLabels(measure);
+    }
+
+    // -- Colour a measurement's spheres + edges by on-model state. --
+    // A point ON the model is teal; on the cloud, red. An edge is teal ONLY when
+    // BOTH its endpoints are on the model — any edge touching a cloud point
+    // (including a model→cloud span) stays red.
+    //
+    // Two non-obvious reasons each element gets its OWN Color object (rather than
+    // the obvious sph.material.color.setHex()), re-applied every frame:
+    //   1. Potree's Measure.update() runs on every geometry change and sets
+    //      sphere.material.color / edge.material.color = the single shared
+    //      measure.color object. setHex() on that would bleed one point's colour
+    //      onto the whole measurement.
+    //   2. setMarker/setPosition dispatch 'marker_moved' BEFORE calling update(),
+    //      so colouring inside the event handler is immediately clobbered. Hence
+    //      this is ALSO called every frame from the perspective_overlay pass.
+    // Each sphere/edge gets its OWN persistent Color (created once, mutated in
+    // place via setHex) so there's no per-frame allocation and no shared object
+    // a stray setHex elsewhere could bleed through.
+    function _measColorFor(obj, teal) {
+      if (!obj.userData._measColor) obj.userData._measColor = new THREE.Color();
+      obj.userData._measColor.setHex(teal ? MODEL_TEAL : 0xff0000);
+      return obj.userData._measColor;
+    }
+    function applyMeasureColors(measure, labels) {
+      if (!measure || !labels) return;
+      var n = labels.length;
+      for (var i = 0; i < n; i++) {
+        var onM = !!(labels[i] && labels[i].userData && labels[i].userData._onModel);
+        var sph = measure.spheres && measure.spheres[i];
+        if (sph && sph.material) sph.material.color = _measColorFor(sph, onM);
+      }
+      if (measure.edges && n > 1) {
+        for (var e = 0; e < measure.edges.length; e++) {
+          var aOn = !!(labels[e] && labels[e].userData && labels[e].userData._onModel);
+          var bIdx = (e + 1) % n;
+          var bOn = !!(labels[bIdx] && labels[bIdx].userData && labels[bIdx].userData._onModel);
+          var edg = measure.edges[e];
+          if (edg && edg.material) edg.material.color = _measColorFor(edg, (aOn && bOn));
+        }
+      }
     }
 
     // -- Remove all labels for a measurement --
@@ -5044,6 +5083,7 @@
     // and the InputHandler still mid-drag. So we track which measurement is
     // currently being inserted and provide a hard "cancel + cleanup" routine.
     var pendingMeasurement = null;
+    var pendingVolume = null;             // volume currently mid-insertion (cleared on drop)
     var lastMeasurementToolArgs = null;   // last viewer.measuringTool.startInsertion args
     var lastVolumeToolArgs = null;        // last viewer.volumeTool.startInsertion args
 
@@ -5072,7 +5112,23 @@
       // misclassified as a trailing and hidden by repositionMeasureLabels.
       pendingMeasurement = null;
       try { viewer.dispatchEvent({ type: 'cancel_insertions' }); } catch (_) {}
-      try { if (viewer.inputHandler) viewer.inputHandler.drag = null; } catch (_) {}
+      try {
+        if (viewer.inputHandler) {
+          viewer.inputHandler.drag = null;
+          // Some insertion paths (clipping/profile) disable the InputHandler and
+          // only re-enable it from their own cancel callback — which isn't
+          // registered for every tool/state. If that callback didn't fire, the
+          // handler stays disabled and the user is stuck ("can't escape the
+          // tool"). Force it back on so Esc always returns camera control.
+          viewer.inputHandler.enabled = true;
+        }
+      } catch (_) {}
+      // The volume tool leaves its half-placed box in the scene when cancelled;
+      // drop any volume that was still mid-insertion when Esc was pressed.
+      if (pendingVolume) {
+        try { viewer.scene.removeVolume(pendingVolume); } catch (_) {}
+        pendingVolume = null;
+      }
       cleanupOrphanMeasurements();
     }
 
@@ -5098,6 +5154,7 @@
             // Don't cancel prior measurement when starting volume — different tool family
             lastVolumeToolArgs = args || {};
             var v = origVS(args);
+            pendingVolume = v;   // mid-insertion until 'drop' (or cancelled by Esc)
             // After the user finishes dragging out the box, Potree fires 'drop'
             // on the volume itself. Without explicit cleanup the just-placed
             // volume stays in InputHandler.selection/hoveredElements and its
@@ -5105,6 +5162,7 @@
             // pre-existing measurement spheres, marker dots, etc.
             if (v && typeof v.addEventListener === 'function') {
               v.addEventListener('drop', function() {
+                pendingVolume = null;   // box committed — no longer mid-insertion
                 try {
                   var ih = viewer.inputHandler;
                   if (!ih) return;

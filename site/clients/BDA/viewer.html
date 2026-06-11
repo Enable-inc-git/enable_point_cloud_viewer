@@ -1257,16 +1257,12 @@
       });
       _spm._blockedTypes = blockedTypes;
 
-      // Esc handler (form-field-aware per feedback_keyboard_guards.md)
-      _spm.escHandler = function(ev) {
-        if (ev.key !== 'Escape') return;
-        var t = ev.target, tag = t && t.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
-        ev.stopPropagation();
-        ev.preventDefault();
-        closeStationPanorama();
-      };
-      document.addEventListener('keydown', _spm.escHandler, true);
+      // NOTE: Esc intentionally does NOT close the panorama. While the panorama
+      // is open the user is often mid-measurement in the point cloud, and Esc
+      // must reach the measurement-tool cancel handler — not steal the keypress
+      // to close the image. The panorama closes ONLY via its close button (see
+      // closeStationPanorama). _spm.escHandler is left unset, so the cleanup in
+      // closeStationPanorama is a guarded no-op.
 
       _spm.resizeHandler = function() { _spmResize(); };
       window.addEventListener('resize', _spm.resizeHandler);

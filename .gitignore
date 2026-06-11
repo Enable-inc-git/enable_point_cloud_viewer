@@ -38,3 +38,16 @@ Thumbs.db
 !clients/libs/potree/**
 site/clients/Fida Restoration/Royal Ontario Golf Course Hole 13/Scan 0.subsampled.las
 site/clients/August/tomken_shoring/hydrovault.las
+
+# ---------- Raw scan sources (NOT served — only the converted Potree octree is) ----------
+# The viewer serves pointclouds/<id>/ (cloud.js + data), never the raw LAS/E57.
+*.las
+*.e57
+
+# ---------- Scratch / working files ----------
+/temp work/
+
+# ---------- Panorama staging (redundant with stations/panoramas/) ----------
+# The viewer loads each station's JPG from <project>/stations/panoramas/ via the
+# manifest; the flat <project>/images/ upload folder is only a staging area.
+site/clients/BDA/222 Jarvis Elevator 4/images/
