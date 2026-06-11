@@ -10273,6 +10273,18 @@
           clipBox.userData.persistent = true;     // mark as locked
           initialClipBox = clipBox;               // store reference for elevation tool
           trackVolumeUndo(clipBox);               // Ctrl+Z undoes accidental move/rotate/scale of the crop box
+          // Make the crop box grabbable ONLY by its wireframe perimeter: route
+          // the fill mesh's hit-test to the frame, which only registers a hit
+          // near an edge. So dragging OVER the interior orbits/pans the camera,
+          // while grabbing/clicking an EDGE still selects + moves the box (the
+          // drag locks to the volume, so you can then drag inward). The volume's
+          // own raycast delegates to box.raycast, so this re-aims it at the
+          // frame. Edge tolerance = the InputHandler's 0.2u Line threshold.
+          if (clipBox.box && clipBox.frame) {
+            clipBox.box.raycast = function(raycaster, intersects) {
+              clipBox.frame.raycast(raycaster, intersects);
+            };
+          }
 
           // Disallow editing if API exists
           if (typeof clipBox.setEditable === "function") clipBox.setEditable(false);
