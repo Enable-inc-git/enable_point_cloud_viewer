@@ -10276,15 +10276,22 @@
           initialClipBox = clipBox;               // store reference for elevation tool
           trackVolumeUndo(clipBox);               // Ctrl+Z undoes accidental move/rotate/scale of the crop box
           // Make the crop box grabbable ONLY by its wireframe perimeter: route
-          // the fill mesh's hit-test to the frame, which only registers a hit
-          // near an edge. So dragging OVER the interior orbits/pans the camera,
-          // while grabbing/clicking an EDGE still selects + moves the box (the
-          // drag locks to the volume, so you can then drag inward). The volume's
-          // own raycast delegates to box.raycast, so this re-aims it at the
-          // frame. Edge tolerance = the InputHandler's 0.2u Line threshold.
+          // the fill mesh's hit-test to the frame, so dragging OVER the interior
+          // orbits/pans while grabbing an EDGE selects + moves the box.
+          // CRUCIAL THRESHOLD FIX: the frame is a UNIT-cube wireframe whose size
+          // lives in the volume's matrixWorld, but THREE.Line.raycast divides the
+          // pick threshold by the frame's OWN scale (1,1,1) and tests in unit-cube
+          // space — so the default 0.2 becomes a grab band of 0.2 * boxSize
+          // (METRES), which swallows the interior (you'd have to drag far off the
+          // outline to orbit). Force a thin ~1.5%-of-box band so you grab right on
+          // the wireframe and orbit everywhere else.
           if (clipBox.box && clipBox.frame) {
             clipBox.box.raycast = function(raycaster, intersects) {
-              clipBox.frame.raycast(raycaster, intersects);
+              var lp = raycaster.params && raycaster.params.Line;
+              var saved = lp ? lp.threshold : null;
+              if (lp) lp.threshold = 0.015;   // unit-cube space → ~1.5% of box size in world units
+              try { clipBox.frame.raycast(raycaster, intersects); }
+              finally { if (lp) lp.threshold = saved; }
             };
           }
 
