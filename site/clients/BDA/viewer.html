@@ -609,6 +609,14 @@
   <!-- Per-client project registry -->
   <script src="projects.js"></script>
 
+  <!-- ===================== FIREBASE (auth gate + cloud sessions) ===================== -->
+  <link rel="stylesheet" href="../libs/firebase/login-overlay.css">
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="../libs/firebase/firebase-config.js"></script>
+  <script src="../libs/firebase/enable-firebase.js"></script>
+
   <!-- ===================== APP ===================== -->
   <script>
   (function () {
@@ -2063,6 +2071,9 @@
       var listEl = document.getElementById('enable-note-list');
       if (!listEl) return;
       listEl.innerHTML = '';
+      _appendDeleteAll(listEl, notes.length, 'notes', function() {
+        if (notes.length && window.confirm('Delete all ' + notes.length + ' note(s)?')) clearAllNotes();
+      });
       for (var i = 0; i < notes.length; i++) {
         (function (n) {
           var row = document.createElement('div');
@@ -3133,6 +3144,294 @@
       }
     }
 
+    // ============================================================
+    // SAVED VIEWS — camera + annotation-visibility snapshots
+    // (SketchUp-Scenes model: a view captures the camera AND which
+    //  dimensions/marks/members/notes are visible. Recall restores both.
+    //  Dimensions stay a single global pool — a view just stores an on/off
+    //  map keyed by stable ids, so the same dimension can appear in many
+    //  views without duplication.)
+    // ============================================================
+    var savedViews = [];      // { id, name, cam, vis }
+    var nextViewId = 1;
+    var _activeViewId = null;
+    var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
+    try { console.info('[Enable] BDA build 2026-06-12a — orbit-unstick + measure-hide v1.3 loaded'); } catch (e) {}
+
+    function _viewEsc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+      });
+    }
+    function _findView(id) {
+      for (var i = 0; i < savedViews.length; i++) if (savedViews[i].id === id) return savedViews[i];
+      return null;
+    }
+    function _ensureMid(m) {
+      if (!m.userData) m.userData = {};
+      if (m.userData._mid == null) m.userData._mid = _nextMeasureMid++;
+      return m.userData._mid;
+    }
+
+    // Fully hide/show a measurement, INCLUDING the value labels the Dev2 chrome
+    // reparents into its own depth scene — measure.visible alone won't touch
+    // those (that's why a plain hide left the dimension text on screen).
+    function _measMaterials(o) {
+      var mats = [];
+      if (o) {
+        if (o.material) mats.push(o.material);
+        if (o.sprite && o.sprite.material) mats.push(o.sprite.material);
+      }
+      return mats;
+    }
+    function _setMeasureVisible(m, vis) {
+      m.visible = vis;
+      // The connecting LINES (Line2 edges) and value labels are reparented into
+      // the chrome's depth scene, where .visible alone proved unreliable (and
+      // Potree's update() resets edge.visible). So hide them mechanism-
+      // independently: object .visible AND material opacity=0 (restored on show).
+      var parts = [];
+      (m.edges || []).forEach(function(e) { parts.push(e); });
+      (m.edgeLabels || []).forEach(function(l) { parts.push(l); });
+      (m.angleLabels || []).forEach(function(l) { parts.push(l); });
+      (m.coordinateLabels || []).forEach(function(l) { parts.push(l); });
+      if (vis) {
+        try { if (typeof m.update === 'function') m.update(); } catch (e) {}  // restore correct per-edge visibility
+        (m.spheres || []).forEach(function(s) { s.visible = true; });
+        parts.forEach(function(o) {
+          o.visible = true;
+          if (o.userData && o.userData._savedOpacity !== undefined) {
+            _measMaterials(o).forEach(function(mt) { mt.opacity = o.userData._savedOpacity; });
+          }
+        });
+      } else {
+        (m.spheres || []).forEach(function(s) { s.visible = false; });
+        parts.forEach(function(o) {
+          o.visible = false;
+          if (!o.userData) o.userData = {};
+          _measMaterials(o).forEach(function(mt) {
+            if (o.userData._savedOpacity === undefined) o.userData._savedOpacity = mt.opacity;
+            mt.transparent = true; mt.opacity = 0;
+          });
+        });
+      }
+      try { syncMeasurePointLabels(m); } catch (e) {}  // D-labels follow m.visible
+    }
+
+    // Clip/crop box state — captured into a view so recalling restores the crop.
+    function _eul(r) { return { x: r.x, y: r.y, z: r.z }; }
+    function _captureClip() {
+      var out = {};
+      if (typeof initialClipBox !== 'undefined' && initialClipBox) {
+        out.initial = {
+          position: v3toObj(initialClipBox.position), rotation: _eul(initialClipBox.rotation),
+          scale: v3toObj(initialClipBox.scale), visible: initialClipBox.visible !== false,
+          outlineHidden: !!initialClipBox._outlineHidden
+        };
+      }
+      if (typeof cutoutBoxes !== 'undefined' && cutoutBoxes.length) {
+        out.cutouts = cutoutBoxes.map(function(b) {
+          return { position: v3toObj(b.position), rotation: _eul(b.rotation), scale: v3toObj(b.scale), visible: b.visible !== false };
+        });
+      }
+      return out;
+    }
+    function _applyBox(b, s) {
+      if (!b || !s) return;
+      if (s.position) b.position.set(s.position.x, s.position.y, s.position.z);
+      if (s.rotation) b.rotation.set(s.rotation.x, s.rotation.y, s.rotation.z);
+      if (s.scale) b.scale.set(s.scale.x, s.scale.y, s.scale.z);
+      if (typeof s.visible === 'boolean') b.visible = s.visible;
+      b.updateMatrixWorld(true);
+      if (typeof b.update === 'function') { try { b.update(); } catch (e) {} }
+    }
+    function _applyClip(clip) {
+      if (!clip) return;
+      if (clip.initial && typeof initialClipBox !== 'undefined' && initialClipBox) {
+        _applyBox(initialClipBox, clip.initial);
+        initialClipBox._outlineHidden = !!clip.initial.outlineHidden;
+      }
+      // Cut-outs are matched by index (in-session); skip if the set has changed.
+      if (clip.cutouts && typeof cutoutBoxes !== 'undefined' && clip.cutouts.length === cutoutBoxes.length) {
+        for (var i = 0; i < cutoutBoxes.length; i++) _applyBox(cutoutBoxes[i], clip.cutouts[i]);
+      }
+    }
+
+    function _captureCamera() {
+      var v = viewer.scene.view;
+      return {
+        position: { x: v.position.x, y: v.position.y, z: v.position.z },
+        yaw: v.yaw, pitch: v.pitch, radius: v.radius,
+        mode: viewer.scene.cameraMode
+      };
+    }
+    function _applyCamera(c) {
+      if (!c) return;
+      try {
+        var ctl = viewer.getControls && viewer.getControls();
+        if (ctl && ctl.stopTweens) ctl.stopTweens();
+        if (c.mode != null && viewer.setCameraMode) viewer.setCameraMode(c.mode);
+        var v = viewer.scene.view;
+        if (c.position) v.position.set(c.position.x, c.position.y, c.position.z);
+        if (typeof c.yaw === 'number') v.yaw = c.yaw;
+        if (typeof c.pitch === 'number') v.pitch = c.pitch;
+        if (typeof c.radius === 'number') v.radius = c.radius;
+      } catch (e) { console.warn('[views] applyCamera failed', e); }
+    }
+
+    function _captureVisibility() {
+      var vis = { marks: {}, members: {}, notes: {}, measures: {} };
+      markedPoints.forEach(function(m) { vis.marks[m.id] = (m.visible !== false); });
+      members.forEach(function(m) { vis.members[m.id] = (m.visible !== false); });
+      notes.forEach(function(n) { vis.notes[n.id] = (n.visible !== false); });
+      (viewer.scene.measurements || []).forEach(function(m) { vis.measures[_ensureMid(m)] = (m.visible !== false); });
+      return vis;
+    }
+    function _applyVisibility(vis) {
+      if (!vis) return;
+      if (vis.marks) markedPoints.forEach(function(m) {
+        if (vis.marks[m.id] !== undefined) { m.visible = !!vis.marks[m.id]; if (m.visual) m.visual.visible = m.visible; }
+      });
+      if (vis.members) members.forEach(function(m) {
+        if (vis.members[m.id] !== undefined) { m.visible = !!vis.members[m.id]; if (m.visual) m.visual.visible = m.visible; }
+      });
+      if (vis.notes) notes.forEach(function(n) {
+        if (vis.notes[n.id] !== undefined) { n.visible = !!vis.notes[n.id]; if (n.visual) n.visual.visible = n.visible; }
+      });
+      if (vis.measures) (viewer.scene.measurements || []).forEach(function(m) {
+        var mid = _ensureMid(m);
+        if (vis.measures[mid] !== undefined) _setMeasureVisible(m, !!vis.measures[mid]);
+      });
+      _refreshAnnotationLists();
+    }
+    function _refreshAnnotationLists() {
+      try { rebuildMarkList(); } catch (e) {}
+      try { rebuildMemberList(); } catch (e) {}
+      try { rebuildNoteList(); } catch (e) {}
+      try { rebuildAllMeasurementLists(); } catch (e) {}
+    }
+
+    function saveCurrentView() {
+      var id = nextViewId++;
+      savedViews.push({ id: id, name: 'View ' + id, cam: _captureCamera(), vis: _captureVisibility(), clip: _captureClip() });
+      _activeViewId = id;
+      rebuildViewsList();
+      showToast('Saved "View ' + id + '"');
+    }
+    function recallView(id) {
+      var v = _findView(id); if (!v) return;
+      _applyCamera(v.cam);
+      _applyClip(v.clip);
+      _applyVisibility(v.vis);
+      _activeViewId = id;
+      rebuildViewsList();
+      showToast('View: ' + v.name);
+    }
+    function updateView(id) {
+      var v = _findView(id); if (!v) return;
+      v.cam = _captureCamera(); v.vis = _captureVisibility(); v.clip = _captureClip();
+      showToast('Updated "' + v.name + '"');
+    }
+    function deleteView(id) {
+      savedViews = savedViews.filter(function(v) { return v.id !== id; });
+      if (_activeViewId === id) _activeViewId = null;
+      rebuildViewsList();
+    }
+    function renameView(id) {
+      var v = _findView(id); if (!v) return;
+      var name = window.prompt('Rename view:', v.name);
+      if (name != null && name.trim()) { v.name = name.trim(); rebuildViewsList(); }
+    }
+
+    // Global "all dimensions in the model" vs "hidden" — the two modes the user
+    // wanted. Reuses the existing stations+notes switch so everything stays
+    // consistent, then also covers marks / members / measurements.
+    // Show/hide all DIMENSIONS — marks, members, measurements (incl. their value
+    // labels), notes. Deliberately does NOT touch scan-station camera pins; those
+    // have their own toggle (that's the "only the camera icons moved" bug).
+    function setAllAnnotationsVisibility(vis) {
+      markedPoints.forEach(function(m) { m.visible = vis; if (m.visual) m.visual.visible = vis; });
+      members.forEach(function(m) { m.visible = vis; if (m.visual) m.visual.visible = vis; });
+      notes.forEach(function(n) { n.visible = vis; if (n.visual) n.visual.visible = vis; });
+      (viewer.scene.measurements || []).forEach(function(m) { _setMeasureVisible(m, vis); });
+      _activeViewId = null;
+      _refreshAnnotationLists();
+      rebuildViewsList();
+      showToast(vis ? 'All dimensions shown' : 'All dimensions hidden');
+    }
+    function clearAllViews() {
+      if (savedViews.length === 0) return;
+      if (!window.confirm('Delete all ' + savedViews.length + ' saved view(s)?')) return;
+      savedViews = []; _activeViewId = null; rebuildViewsList();
+      showToast('Deleted all saved views');
+    }
+    // Delete all distance/height measurements (the ones shown under Measurements).
+    function clearAllDistMeasurements() {
+      var ms = (viewer.scene.measurements || []).filter(function(m) {
+        return (m.showDistances || m.showHeight) && !m.showArea && !m.showAngles;
+      });
+      if (ms.length === 0) return;
+      if (!window.confirm('Delete all ' + ms.length + ' distance/height measurement(s)?')) return;
+      ms.forEach(function(m) { try { viewer.scene.removeMeasurement(m); } catch (e) {} });
+      showToast('Deleted all measurements');
+    }
+    function clearAllMembers() {
+      if (!members.length) return;
+      if (!window.confirm('Delete all ' + members.length + ' member(s)?')) return;
+      members.slice().forEach(function(m) { deleteMember(m.id); });
+      showToast('Deleted all members');
+    }
+    function clearAllConstraints() {
+      if (!constraints.length) return;
+      if (!window.confirm('Delete all ' + constraints.length + ' constraint(s)?')) return;
+      constraints.slice().forEach(function(c) { deleteConstraint(c.id); });
+      showToast('Deleted all constraints');
+    }
+    // NB: clearAllNotes already exists elsewhere (no-confirm, used during load) —
+    // the notes button below wraps it in a confirm rather than redefining it.
+    // Prepend a small "Delete all" button to a list element (count>0 only).
+    function _appendDeleteAll(listEl, count, label, fn) {
+      if (!listEl || count <= 0) return;
+      var b = document.createElement('button');
+      b.textContent = 'Delete all';
+      b.title = 'Delete all ' + label;
+      b.style.cssText = 'display:block;margin:2px 0 6px;background:none;border:none;color:var(--muted,#9aa3b2);cursor:pointer;font:11px sans-serif';
+      b.addEventListener('click', fn);
+      listEl.appendChild(b);
+    }
+
+    function rebuildViewsList() {
+      var el = document.getElementById('enable-views-list');
+      if (!el) return;
+      var html = '<div id="enable-views-buttons" style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 6px">' +
+        '<button id="btn-save-view" title="Save current camera + clip box + which dimensions are visible">Save View</button>' +
+        (savedViews.length ? '<button id="btn-views-clear" title="Delete all saved views">Delete all</button>' : '') +
+        '</div>';
+      if (savedViews.length === 0) {
+        html += '<div style="opacity:.6;font:11px sans-serif;padding:2px 2px 4px">No saved views yet — frame a shot and hit Save View.</div>';
+      } else {
+        for (var i = 0; i < savedViews.length; i++) {
+          var v = savedViews[i];
+          var active = (v.id === _activeViewId);
+          html += '<div class="enable-view-item" style="display:flex;align-items:center;gap:4px;padding:3px 2px;border-radius:4px;' +
+            (active ? 'background:rgba(62,173,74,.18)' : '') + '">' +
+            '<span class="view-name" data-vid="' + v.id + '" title="Recall this view" style="flex:1;cursor:pointer;font:12px sans-serif;color:var(--sidebar-text,#fbfbfb)">' + _viewEsc(v.name) + '</span>' +
+            '<button class="view-update" data-vid="' + v.id + '" title="Update to current view">↻</button>' +
+            '<button class="view-rename" data-vid="' + v.id + '" title="Rename">✎</button>' +
+            '<button class="view-del" data-vid="' + v.id + '" title="Delete">×</button>' +
+            '</div>';
+        }
+      }
+      el.innerHTML = html;
+      var b;
+      if ((b = el.querySelector('#btn-save-view'))) b.addEventListener('click', saveCurrentView);
+      if ((b = el.querySelector('#btn-views-clear'))) b.addEventListener('click', clearAllViews);
+      el.querySelectorAll('.view-name').forEach(function(n) { n.addEventListener('click', function() { recallView(parseInt(this.getAttribute('data-vid'), 10)); }); });
+      el.querySelectorAll('.view-update').forEach(function(x) { x.addEventListener('click', function() { updateView(parseInt(this.getAttribute('data-vid'), 10)); }); });
+      el.querySelectorAll('.view-rename').forEach(function(x) { x.addEventListener('click', function() { renameView(parseInt(this.getAttribute('data-vid'), 10)); }); });
+      el.querySelectorAll('.view-del').forEach(function(x) { x.addEventListener('click', function() { deleteView(parseInt(this.getAttribute('data-vid'), 10)); }); });
+    }
+
     // -- Monkey-patch point picking to apply active constraint --
     const _origPick = Potree.Utils.getMousePointCloudIntersection;
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
@@ -3833,6 +4132,7 @@
       var listEl = document.getElementById('enable-constraint-list');
       if (!listEl) return;
       listEl.innerHTML = '';
+      _appendDeleteAll(listEl, constraints.length, 'constraints', clearAllConstraints);
 
       for (var ci = 0; ci < constraints.length; ci++) {
         (function(c) {
@@ -4480,6 +4780,7 @@
       var listEl = document.getElementById('enable-member-list');
       if (!listEl) return;
       listEl.innerHTML = '';
+      _appendDeleteAll(listEl, members.length, 'members', clearAllMembers);
 
       for (var mi = 0; mi < members.length; mi++) {
         (function(m) {
@@ -5279,6 +5580,7 @@
 
       viewer.scene.addEventListener('measurement_added', function(e) {
         var m = e.measurement;
+        _ensureMid(m);   // stable id so saved-view visibility snapshots can reference it
         syncMeasurePointLabels(m);
         rebuildAllMeasurementLists();
         m.addEventListener('marker_added', function() {
@@ -5405,7 +5707,9 @@
         return;
       }
 
-      var html = '<div class="enable-list-section-label">Distance &amp; Height</div>';
+      var html = '<div class="enable-list-section-label">Distance &amp; Height' +
+        '<button id="btn-clear-dist-meas" title="Delete all distance/height measurements" style="float:right;background:none;border:none;color:var(--muted,#9aa3b2);cursor:pointer;font:11px sans-serif">Delete all</button>' +
+        '</div>';
       for (var mi = 0; mi < distMeasures.length; mi++) {
         var measure = distMeasures[mi];
         var nums = measurePointNumbers.get(measure);
@@ -5424,6 +5728,7 @@
         html += '<div class="enable-meas-item">' +
           '<div class="meas-header">' +
           '<span class="meas-title">' + firstName + ' \u2192 ' + lastName + '</span>' +
+          '<button class="btn-vis meas-vis' + (measure.visible === false ? ' hidden' : '') + '" data-meas-idx="' + mi + '" title="Show/hide this dimension">\ud83d\udc41</button>' +
           '<button class="meas-delete" data-meas-idx="' + mi + '" title="Delete measurement">\u00d7</button>' +
           '</div>';
 
@@ -5481,6 +5786,17 @@
           }
         });
       });
+      // Per-measurement show/hide toggle (flip these, then Save View to capture)
+      listEl.querySelectorAll('.meas-vis').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var m = distMeasures[parseInt(btn.getAttribute('data-meas-idx'))];
+          if (!m) return;
+          _setMeasureVisible(m, m.visible === false);     // toggle
+          btn.classList.toggle('hidden', m.visible === false);
+        });
+      });
+      var _cda = listEl.querySelector('#btn-clear-dist-meas');
+      if (_cda) _cda.addEventListener('click', clearAllDistMeasurements);
       // Per-point delete chips
       listEl.querySelectorAll('.point-chip button').forEach(function(btn) {
         btn.addEventListener('click', function() {
@@ -5897,6 +6213,7 @@
             }
             var nums = measurePointNumbers.get(m) || [];
             arr.push({
+              id: (m.userData && m.userData._mid != null) ? m.userData._mid : null,
               points: pts,
               pointNumbers: nums.slice(),
               showDistances: !!m.showDistances,
@@ -5915,6 +6232,8 @@
           return { id: n.id, name: n.name, text: n.text || '', visible: !!n.visible, position: v3toObj(n.position) };
         }),
         nextNoteId: nextNoteId,
+        savedViews: savedViews.map(function(v) { return { id: v.id, name: v.name, cam: v.cam, vis: v.vis, clip: v.clip }; }),
+        nextViewId: nextViewId,
         // Elevation map state
         elevationMap: (function() {
           if (elevationCropVolumes.length === 0 && !elevationActive) return null;
@@ -5948,6 +6267,69 @@
         })()
       };
       return data;
+    }
+
+    // ===== CLOUD SESSIONS (Firebase / Firestore) =====
+    // Private per-user cloud storage layered on top of the existing local-file
+    // save/load. Reuses serializeSession() / loadSession() verbatim.
+    function _cloudReady() {
+      return !!(window.EnableCloud && window.EnableAuth && EnableAuth.currentUser());
+    }
+    function saveCloudSession() {
+      if (!_cloudReady()) { showToast('Sign in to save to the cloud'); return; }
+      var name = prompt('Name this cloud session:', 'Session ' + new Date().toLocaleDateString());
+      if (!name) return;
+      EnableCloud.saveSession(pointCloudID, name, serializeSession()).then(function() {
+        showToast('Saved to cloud');
+        refreshCloudSessions();
+      }).catch(function(err) {
+        console.error('[cloud] save failed', err);
+        showToast('Cloud save failed');
+      });
+    }
+    function refreshCloudSessions() {
+      var listEl = document.getElementById('enable-cloud-list');
+      if (!listEl) return;
+      if (!_cloudReady()) { listEl.innerHTML = ''; return; }
+      listEl.innerHTML = '<div class="enable-cloud-empty">Loading…</div>';
+      EnableCloud.listSessions(pointCloudID).then(function(items) {
+        if (!items.length) { listEl.innerHTML = '<div class="enable-cloud-empty">No cloud sessions yet.</div>'; return; }
+        listEl.innerHTML = '';
+        items.forEach(function(it) {
+          var row = document.createElement('div');
+          row.className = 'enable-cloud-row';
+          var label = document.createElement('span');
+          label.className = 'enable-cloud-name';
+          label.textContent = it.name;
+          label.title = it.updatedAt ? new Date(it.updatedAt).toLocaleString() : it.name;
+          var load = document.createElement('button');
+          load.textContent = 'Load'; load.title = 'Load this cloud session';
+          load.onclick = function() {
+            if (it.data) { loadSession(it.data); showToast('Loaded "' + it.name + '"'); }
+            else showToast('Session data is missing');
+          };
+          var del = document.createElement('button');
+          del.textContent = '✕'; del.title = 'Delete this cloud session';
+          del.className = 'enable-cloud-del';
+          del.onclick = function() {
+            if (!confirm('Delete cloud session "' + it.name + '"?')) return;
+            EnableCloud.deleteSession(pointCloudID, it.id).then(function() {
+              showToast('Deleted'); refreshCloudSessions();
+            }).catch(function(err) { console.error('[cloud] delete failed', err); showToast('Delete failed'); });
+          };
+          row.appendChild(label); row.appendChild(load); row.appendChild(del);
+          listEl.appendChild(row);
+        });
+      }).catch(function(err) {
+        console.error('[cloud] list failed', err);
+        listEl.innerHTML = '<div class="enable-cloud-empty">Could not load cloud sessions.</div>';
+      });
+    }
+    function updateUserBar(user) {
+      var em = document.getElementById('enable-user-email');
+      if (em) em.textContent = (user && user.email) ? user.email : '';
+      var so = document.getElementById('enable-signout');
+      if (so) so.onclick = function() { EnableAuth.signOut().then(function() { location.reload(); }); };
     }
 
     function saveSessionToFile() {
@@ -6067,6 +6449,8 @@
             measure.addMarker(new THREE.Vector3(pp.x, pp.y, pp.z));
           }
           viewer.scene.addMeasurement(measure);
+          // Preserve the saved stable id so saved-view visibility snapshots still match
+          if (sm2.id != null) { measure.userData._mid = sm2.id; if (sm2.id >= _nextMeasureMid) _nextMeasureMid = sm2.id + 1; }
           // Override auto-assigned P-numbers with saved ones
           if (sm2.pointNumbers && sm2.pointNumbers.length > 0) {
             measurePointNumbers.set(measure, sm2.pointNumbers.slice());
@@ -6075,6 +6459,18 @@
         }
       }
       rebuildAllMeasurementLists();
+
+      // Restore saved views (camera + visibility snapshots). Safe to restore
+      // before marks/members are recreated — views are only applied on recall.
+      savedViews = [];
+      _activeViewId = null;
+      if (data.savedViews && data.savedViews.length) {
+        savedViews = data.savedViews.map(function(v) { return { id: v.id, name: v.name, cam: v.cam, vis: v.vis, clip: v.clip }; });
+        nextViewId = data.nextViewId || (savedViews.reduce(function(mx, v) { return Math.max(mx, v.id); }, 0) + 1);
+      } else {
+        nextViewId = data.nextViewId || 1;
+      }
+      rebuildViewsList();
 
       // Restore marks
       if (data.marks) {
@@ -9416,6 +9812,10 @@
             '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
           '</div>' +
           '<input type="file" id="session-file-input" accept=".json" style="display:none">' +
+          '<div id="enable-cloud-section">' +
+            '<button id="btn-save-cloud" title="Save your work to the cloud (private to you)">Save to Cloud</button>' +
+            '<div id="enable-cloud-list"></div>' +
+          '</div>' +
           '<div id="enable-stations-toggle-row" style="display:none; margin-top:8px">' +
             '<button id="btn-toggle-stations" title="Show/hide scan station pins">Hide Scan Stations</button>' +
           '</div>' +
@@ -9436,6 +9836,11 @@
           '<div id="enable-measurement-buttons-export">' +
             '<button id="btn-export-measurements" title="Export all measurements to .txt">Export Measurements (.txt)</button>' +
           '</div>' +
+        closeGroup() +
+
+        // === SAVED VIEWS ===
+        createGroup('views', 'Saved Views', true) +
+          '<div id="enable-views-list"></div>' +
         closeGroup() +
 
         // === 4. POINTS & CONSTRAINTS (collapsed) ===
@@ -9512,9 +9917,15 @@
           '<div id="enable-scene-slot"></div>' +
         closeGroup() +
 
+        // === 9. SIGNED-IN USER (identity + sign out) ===
+        '<div id="enable-user-bar">' +
+          '<span id="enable-user-email"></span>' +
+          '<button id="enable-signout" title="Sign out">Sign out</button>' +
+        '</div>' +
+
         // === 10. LICENSE (always visible, not collapsible) ===
         '<div id="enable-license-footer">' +
-          'Enable Point Cloud Viewer v1.0<br>' +
+          'Enable Point Cloud Viewer v1.0 · build 2026-06-12a<br>' +
           'Powered by <a href="http://potree.org" target="_blank" rel="noopener">Potree</a>' +
           ' &copy; 2011&ndash;2020 Markus Sch&uuml;tz. ' +
           '<a href="licenses/POTREE_LICENSE.txt" target="_blank" rel="noopener">BSD 2-Clause License</a>' +
@@ -9594,6 +10005,8 @@
       document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
       document.getElementById('btn-save-session').addEventListener('click', function() { saveSessionToFile(); });
       document.getElementById('btn-load-session').addEventListener('click', function() { loadSessionFromFile(); });
+      var _bsc = document.getElementById('btn-save-cloud');
+      if (_bsc) _bsc.addEventListener('click', function() { saveCloudSession(); });
       document.getElementById('session-file-input').addEventListener('change', function(e) {
         var file = e.target.files[0];
         if (!file) return;
@@ -9641,6 +10054,8 @@
       var btnTogStations = document.getElementById('btn-toggle-stations');
       if (btnTogStations) btnTogStations.textContent = _annotationsVisible ? 'Hide Annotations' : 'Show Annotations';
 
+      // Saved Views panel (its Save/Show-all/Hide-all buttons + rows live inside #enable-views-list)
+      rebuildViewsList();
     }
     injectMarkButtons();
 
@@ -9696,10 +10111,35 @@
 
     // -- Click handler with drag guard + constraint point dragging --
     let mouseDownPos = null;
+    let _orbitNextDrag = false;    // set on Esc: force the next left-drag to orbit (don't grab the trailing sphere)
+    let _draggingMeasureSphere = false;  // true while a measurement point's handle is being dragged
+    // When a measurement-point adjust ends, the cursor is resting ON that point,
+    // so the next click-drag would re-grab it (the point follows the cursor)
+    // instead of orbiting. The adjust is DONE on release — force the next
+    // left-drag to orbit. Capture phase, so it runs alongside Potree's mouseup.
+    window.addEventListener('mouseup', function(e) {
+      if (e.button === 0 && _draggingMeasureSphere) {
+        _draggingMeasureSphere = false;
+        _orbitNextDrag = true;
+      }
+    }, true);
     let _stationCandidate = null;  // { station, downX, downY } set in mousedown if a pin is under cursor
     let _noteCandidate    = null;  // { note,    downX, downY } same pattern for note icons
 
     renderArea.addEventListener('mousedown', function(e) {
+      // Right after Esc (e.g. finishing the distance tool), the cursor is sitting
+      // on the trailing measurement sphere, so the next drag grabs it instead of
+      // orbiting. Force this ONE left-drag to orbit: null the drag and clear
+      // Potree's hovered set so its bubble-phase onMouseDown starts a scene-drag.
+      if (e.button === 0 && _orbitNextDrag) {
+        _orbitNextDrag = false;
+        _stationCandidate = null; _noteCandidate = null;
+        if (viewer.inputHandler) {
+          viewer.inputHandler.drag = null;
+          if (viewer.inputHandler.hoveredElements) viewer.inputHandler.hoveredElements = [];
+        }
+        return;
+      }
       // Station / Note pin click candidates (left-click only, no other tool/drag
       // mode active). We don't stopPropagation here — Potree's orbit still works
       // if the user drags. mouseup decides click vs drag with a 5px threshold.
@@ -9791,12 +10231,25 @@
         if (sphHit) {
           viewer.inputHandler.mouse.set(mousePixelMS.x, mousePixelMS.y);
           viewer.inputHandler.startDragging(sphHit);
+          _draggingMeasureSphere = true;   // on release, force next drag to orbit (see mouseup above)
           e.stopPropagation();
           mouseDownPos = null;
           return;
         }
       }
-      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) return;
+      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) {
+        // Not grabbing anything and not in a pick mode → this left-drag should
+        // ORBIT. Potree only starts a fresh scene-drag (orbit) when
+        // inputHandler.drag is null, but a tool/insertion (or Potree auto-arming
+        // a trailing measurement sphere) can leave a stale drag set — which
+        // silently blocks orbit until a priming left-click clears it. We run in
+        // capture phase, BEFORE Potree's bubble-phase onMouseDown, so clearing it
+        // here makes a plain left-drag always orbit, no priming click needed.
+        if (e.button === 0 && viewer.inputHandler && viewer.inputHandler.drag) {
+          viewer.inputHandler.drag = null;
+        }
+        return;
+      }
       if (e.button !== 0) return; // left-click only for placing points
       mouseDownPos = { x: e.clientX, y: e.clientY };
     }, true);
@@ -10162,8 +10615,16 @@
       }
     }, true);
 
-    // ----- load the point cloud -----
-    Potree.loadPointCloud(cloudURL, pointCloudID).then((e) => {
+    // ----- gate access, then load the point cloud -----
+    // EnableAuth.requireAccess shows the login overlay and only resolves once the
+    // signed-in user is an authorized member of this client. The point cloud (and
+    // the rest of the viewer) only comes alive after that.
+    EnableAuth.requireAccess('BDA').then(function (access) {
+      window.__enableUser = access.user;
+      updateUserBar(access.user);
+      refreshCloudSessions();
+      return Potree.loadPointCloud(cloudURL, pointCloudID);
+    }).then((e) => {
       const pc    = e.pointcloud;
       const scene = viewer.scene;
       scene.addPointCloud(pc);
@@ -10424,6 +10885,10 @@
         // cancel_insertions, stops the InputHandler drag, and removes any
         // orphan measurement that has fewer than the required points.
         cancelPotreeInsertion();
+        // The user pressed Esc to stop a tool — they want to navigate next, not
+        // grab whatever sphere/mark the cursor is resting on. Force the next
+        // left-drag to orbit.
+        _orbitNextDrag = true;
       }
     });
 

@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function userEmail() {
+      return request.auth.token.email.lower();
+    }
+    function clientData(cid) {
+      return get(/databases/$(database)/documents/clients/$(cid)).data;
+    }
+    function isExplicitMember(cid) {
+      return exists(/databases/$(database)/documents/clients/$(cid)/members/$(userEmail()));
+    }
+    function isDomainMember(cid) {
+      return exists(/databases/$(database)/documents/clients/$(cid))
+        && ('allowedDomains' in clientData(cid))
+        && (userEmail().split('@')[1] in clientData(cid).allowedDomains);
+    }
+    function isMember(cid) {
+      return signedIn() && (isExplicitMember(cid) || isDomainMember(cid));
+    }
+    function accessActive(cid) {
+      let c = clientData(cid);
+      let grace = duration.value(15, 'd');
+      return (('grantUntil' in c) && request.time < c.grantUntil + grace)
+        || (('subscriptionStatus' in c) && c.subscriptionStatus == 'active')
+        || (('subscriptionStatus' in c) && c.subscriptionStatus == 'trialing')
+        || (('subscriptionStatus' in c) && c.subscriptionStatus == 'past_due'
+            && ('currentPeriodEnd' in c) && request.time < c.currentPeriodEnd + grace);
+    }
+    function canUse(cid) {
+      return isMember(cid) && accessActive(cid);
+    }
+
+    match /clients/{cid} {
+      allow read: if isMember(cid);
+      allow write: if false;
+
+      match /members/{memberEmail} {
+        allow read: if signedIn() && memberEmail == userEmail();
+        allow write: if false;
+      }
+
+      match /signins/{uid} {
+        allow read: if false;
+        allow create, update: if signedIn() && request.auth.uid == uid && isMember(cid);
+      }
+
+      match /projects/{projectId} {
+        allow read: if canUse(cid);
+        allow write: if false;
+      }
+    }
+
+    match /users/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+  }
+}

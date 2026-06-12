@@ -444,8 +444,17 @@
     // ---- Brand area (logo + project name) — width matches the sidebar so the
     //      first tool aligns with the canvas's left edge. ----
     var brandArea = el('div', { className: 'dev2-tb-brand-area' }, [
-      el('img', { className: 'dev2-tb-logo', src: '../EnableLogo.png', alt: 'Enable' }),
-      el('span', { className: 'dev2-tb-project-name', text: projectName() })
+      el('div', { className: 'dev2-tb-brand-main' }, [
+        el('img', { className: 'dev2-tb-logo', src: '../EnableLogo.png', alt: 'Enable' }),
+        el('span', { className: 'dev2-tb-project-name', text: projectName() })
+      ]),
+      // Company contact, tight beside the logo/title — same font as the project
+      // name, two stacked lines that fit the existing bar height. Lives INSIDE
+      // the fixed-width brand area, so the tools keep their original position.
+      el('div', { className: 'dev2-tb-contact' }, [
+        el('a', { className: 'dev2-tb-contact-line', href: 'https://www.enable-inc.com', target: '_blank', rel: 'noopener', text: 'www.enable-inc.com' }),
+        el('a', { className: 'dev2-tb-contact-line', href: 'mailto:info@enable-inc.com', text: 'info@enable-inc.com' })
+      ])
     ]);
     topbar.appendChild(brandArea);
 
@@ -637,6 +646,7 @@
   // while working), Scene Tree last (the underlying Potree object graph — useful
   // but rarely the primary thing).
   var SIDEBAR_SECTIONS = [
+    { id: 'views',        title: 'Saved Views',   iconName: 'frame',        slotIds: ['enable-views-list'],         defaultOpen: true  },
     { id: 'marks',        title: 'Marks',         iconName: 'map-pin',      slotIds: ['enable-mark-list'],          defaultOpen: true  },
     { id: 'notes',        title: 'Notes',         iconName: 'sticky-note',  slotIds: ['enable-note-list'],          defaultOpen: false },
     { id: 'constraints',  title: 'Constraints',   iconName: 'axis-3d',      slotIds: ['enable-constraint-list'],    defaultOpen: true  },
@@ -1589,12 +1599,20 @@
     var LABEL_SINGLE = ['heightLabel', 'areaLabel'];
 
     v.scene.measurements.forEach(function (m) {
+      // Respect a hidden measurement (m.visible===false, set by the viewer's
+      // per-measurement eye toggle / Save View). The parts are reparented out of
+      // m's subtree into this depth scene, so m.visible alone can't hide them;
+      // and Potree's Measure.update() resets edge.visible (but NOT sphere.visible)
+      // — that's why points/D# labels hid but the LINES and value labels stayed.
+      // Re-assert it every frame, after adoption, so the hide sticks.
+      var hidden = (m.visible === false);
       GEOM_GROUPS.forEach(function (key) {
         var arr = m[key]; if (!arr || !arr.length) return;
         arr.forEach(function (item) {
           if (!item) return;
           valid.add(item);
           adoptIntoDepthScene(item, false);
+          if (hidden) item.visible = false;
         });
       });
       LABEL_GROUPS.forEach(function (key) {
@@ -1603,17 +1621,20 @@
           if (!item) return;
           valid.add(item);
           adoptIntoDepthScene(item, true);
+          if (hidden) item.visible = false;
         });
       });
       GEOM_SINGLE.forEach(function (key) {
         var item = m[key]; if (!item || !item.visible) return;
         valid.add(item);
         adoptIntoDepthScene(item, false);
+        if (hidden) item.visible = false;
       });
       LABEL_SINGLE.forEach(function (key) {
         var item = m[key]; if (!item || !item.visible) return;
         valid.add(item);
         adoptIntoDepthScene(item, true);
+        if (hidden) item.visible = false;
       });
     });
 

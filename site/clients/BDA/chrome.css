@@ -127,13 +127,25 @@ html, body {
    line beneath it — both confined to sidebar width. */
 .dev2-tb-brand-area {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  width: var(--sidebar-width);
+  flex-direction: row;
+  align-items: center;
+  box-sizing: border-box;
+  /* Match the sidebar's OUTER edge (280px content + 1px right border) so this
+     area's right border lines up with the sidebar's right border below it.
+     Without border-box the 12px h-padding + border overhang it by ~25px and
+     also shove the tools right. */
+  width: calc(var(--sidebar-width) + 1px);
   flex: 0 0 auto;
   padding: 4px 12px;
   border-right: 1px solid var(--tb-divider);
+  gap: 12px;
+  min-width: 0;
+}
+.dev2-tb-brand-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
   gap: 2px;
   min-width: 0;
 }
@@ -154,6 +166,29 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+/* Company contact, beside the brand — matches .dev2-tb-project-name font so it
+   reads as part of the title block. Two short lines fit the existing bar height. */
+.dev2-tb-contact {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
+.dev2-tb-contact-line {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tb-fg-dim);
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.dev2-tb-contact-line:hover {
+  color: var(--tb-fg);
+  text-decoration: underline;
 }
 
 .dev2-tb-groups {
