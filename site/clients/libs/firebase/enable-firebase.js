@@ -192,17 +192,23 @@
     var domain = email.indexOf('@') >= 0 ? email.split('@')[1] : '';
     var clientRef = db.doc('clients/' + clientId);
     var memberRef = clientRef.collection('members').doc(email);
+    // A members/'everyone' sentinel doc opens the client to ANY signed-in
+    // (verified-email) user: they still log in, but no per-user grant is needed.
+    var everyoneRef = clientRef.collection('members').doc('everyone');
     return Promise.all([
       clientRef.get().catch(function () { return null; }),
-      memberRef.get().catch(function () { return null; })
+      memberRef.get().catch(function () { return null; }),
+      everyoneRef.get().catch(function () { return null; })
     ]).then(function (res) {
-      var cSnap = res[0], mSnap = res[1];
+      var cSnap = res[0], mSnap = res[1], eSnap = res[2];
       var data = (cSnap && cSnap.exists) ? cSnap.data() : {};
       var domains = data.allowedDomains || [];
-      var belongs = (mSnap && mSnap.exists) || (domain && domains.indexOf(domain) >= 0);
+      var openToEveryone = !!(eSnap && eSnap.exists);
+      var belongs = openToEveryone || (mSnap && mSnap.exists) || (domain && domains.indexOf(domain) >= 0);
       if (!belongs) return { ok: false, reason: 'not-member' };
       writeSigninLog(clientId, user);
-      if (!accessActive(data)) return { ok: false, reason: 'expired' };
+      // Open clients skip the subscription/grant window entirely.
+      if (!openToEveryone && !accessActive(data)) return { ok: false, reason: 'expired' };
       return { ok: true, client: data };
     });
   }
@@ -215,13 +221,15 @@
       }, { merge: true });
     } catch (e) { /* best effort */ }
   }
-  // Per-client sign-in log: clients/{clientId}/signins/{uid}. Captures everyone
-  // who reaches the viewer (explicit members AND auto-admitted domain users).
+  // Per-client sign-in log: clients/{clientId}/signins/{email}. Keyed by email so
+  // the document name is human-readable. Captures everyone who reaches the viewer
+  // (explicit members AND auto-admitted domain users).
   function writeSigninLog(clientId, user) {
     try {
-      db.doc('clients/' + clientId + '/signins/' + user.uid).set({
+      db.doc('clients/' + clientId + '/signins/' + emailOf(user)).set({
         email: emailOf(user),
         displayName: user.displayName || '',
+        uid: user.uid,
         lastSeenAt: firebase.firestore.FieldValue.serverTimestamp(),
         visits: firebase.firestore.FieldValue.increment(1)
       }, { merge: true });

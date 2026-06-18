@@ -19,8 +19,12 @@ service cloud.firestore {
         && ('allowedDomains' in clientData(cid))
         && (userEmail().split('@')[1] in clientData(cid).allowedDomains);
     }
+    // A members/'everyone' sentinel doc opens the client to ANY signed-in user.
+    function isOpenToEveryone(cid) {
+      return exists(/databases/$(database)/documents/clients/$(cid)/members/everyone);
+    }
     function isMember(cid) {
-      return signedIn() && (isExplicitMember(cid) || isDomainMember(cid));
+      return signedIn() && (isExplicitMember(cid) || isDomainMember(cid) || isOpenToEveryone(cid));
     }
     function accessActive(cid) {
       let c = clientData(cid);
@@ -40,13 +44,15 @@ service cloud.firestore {
       allow write: if false;
 
       match /members/{memberEmail} {
-        allow read: if signedIn() && memberEmail == userEmail();
+        // A user may read their own member doc, plus the 'everyone' sentinel
+        // (so the client can detect open-to-anyone access).
+        allow read: if signedIn() && (memberEmail == userEmail() || memberEmail == 'everyone');
         allow write: if false;
       }
 
-      match /signins/{uid} {
+      match /signins/{signinEmail} {
         allow read: if false;
-        allow create, update: if signedIn() && request.auth.uid == uid && isMember(cid);
+        allow create, update: if signedIn() && signinEmail == userEmail() && isMember(cid);
       }
 
       match /projects/{projectId} {

@@ -43,6 +43,21 @@ site/clients/August/tomken_shoring/hydrovault.las
 # The viewer serves pointclouds/<id>/ (cloud.js + data), never the raw LAS/E57.
 *.las
 *.e57
+# Trimble RealWorks project DB (source for station extraction; not served).
+*.scan
+# Tekla IFC export (source; the served asset is the converted models/*.glb).
+*.ifc
+
+# ---------- Multi-GB feature scratch binaries (NEVER commit) ----------
+# Temporal-compare / project scratch blobs (e.g. temporal_project.bin 3.6 GB,
+# 7_st_dennis_project.bin 21 GB). Octree node data (data/r/*.bin) is NOT matched.
+*_project.bin
+
+# ---------- Local PotreeConverter tool checkout at repo root (not site content) ----------
+/potree/
+
+# ---------- Panorama staging dup (served copy lives in stations/panoramas/) ----------
+site/clients/MurrayFranks/1531 Dupont (steel canopy)/images/
 
 # ---------- Scratch / working files ----------
 /temp work/
