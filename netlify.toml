@@ -43,6 +43,14 @@
     cp -r libs/plasio/*                     site/clients/libs/plasio/        || true
   """
 
+# The Firebase Web config (apiKey "AIza...") is intentionally PUBLIC — Firebase web
+# API keys identify the project and are not secrets; access is enforced by Firestore
+# rules + authorized domains. Netlify's secret scanner flags the AIza... pattern, so
+# exclude that one file. (No real secrets ship in site/; service-account keys / .env
+# are gitignored.)
+[build.environment]
+  SECRETS_SCAN_OMIT_PATHS = "site/clients/libs/firebase/firebase-config.js,clients/libs/firebase/firebase-config.js,**/firebase-config.js"
+
 # (optional) long-cache static libs, don't cache HTML
 [[headers]]
   for = "/libs/*"
