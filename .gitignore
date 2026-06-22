@@ -66,3 +66,10 @@ site/clients/MurrayFranks/1531 Dupont (steel canopy)/images/
 # The viewer loads each station's JPG from <project>/stations/panoramas/ via the
 # manifest; the flat <project>/images/ upload folder is only a staging area.
 site/clients/BDA/222 Jarvis Elevator 4/images/
+
+# ---------- HRI 40 Larch 1: panorama staging dup + local tooling scratch ----------
+# HighResolution/ holds the raw-named source jpgs; served copies are in stations/panoramas/.
+site/clients/HRI/40 Larch 1/HighResolution/
+site/clients/HRI/**/_*.py
+site/clients/HRI/**/feedback_*.png
+site/clients/HRI/**/_stale/
