@@ -12,5 +12,12 @@ window.PROJECTS = {
     clouds: [
       { id: "scan", name: "Scan", folder: "40 Larch 1/pointclouds/scan", visible: true }
     ]
+  },
+  "30weston": {
+    name: "30 Weston Rd",
+    folder: "30 Weston Rd/pointclouds/bridgeScan",
+    clouds: [
+      { id: "bridgeScan", name: "Bridge scan", folder: "30 Weston Rd/pointclouds/bridgeScan", visible: true }
+    ]
   }
 };
