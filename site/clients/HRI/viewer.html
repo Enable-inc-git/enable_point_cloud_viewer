@@ -9949,7 +9949,8 @@
             '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
           '</div>' +
           '<input type="file" id="session-file-input" accept=".json" style="display:none">' +
-          '<div id="enable-cloud-section">' +
+          // Cloud sessions require sign-in; HRI is open-access (no login), so hidden.
+          '<div id="enable-cloud-section" style="display:none">' +
             '<button id="btn-save-cloud" title="Save your work to the cloud (private to you)">Save to Cloud</button>' +
             '<div id="enable-cloud-list"></div>' +
           '</div>' +
@@ -10054,8 +10055,8 @@
           '<div id="enable-scene-slot"></div>' +
         closeGroup() +
 
-        // === 9. SIGNED-IN USER (identity + sign out) ===
-        '<div id="enable-user-bar">' +
+        // === 9. SIGNED-IN USER (identity + sign out) — hidden: HRI has no login ===
+        '<div id="enable-user-bar" style="display:none">' +
           '<span id="enable-user-email"></span>' +
           '<button id="enable-signout" title="Sign out">Sign out</button>' +
         '</div>' +
@@ -10752,14 +10753,20 @@
       }
     }, true);
 
-    // ----- gate access, then load the point cloud -----
-    // EnableAuth.requireAccess shows the login overlay and only resolves once the
-    // signed-in user is an authorized member of this client. The point cloud (and
-    // the rest of the viewer) only comes alive after that.
-    EnableAuth.requireAccess('HRI', pointCloudID).then(function (access) {
-      window.__enableUser = access.user;
-      updateUserBar(access.user);
-      refreshCloudSessions();
+    // ----- HRI: login requirement REMOVED — open access for everyone -----
+    // The auth gate (EnableAuth.requireAccess) is intentionally bypassed for HRI
+    // so the viewer loads immediately with no sign-in. enable-firebase.js still
+    // auto-shows its login overlay on load, so hide it; and hide the cloud-session
+    // UI (Save to Cloud / user bar) since those require sign-in and don't apply.
+    (function () {
+      var ov = document.getElementById('enable-auth-overlay');
+      if (ov) ov.style.display = 'none';
+      ['enable-cloud-section', 'enable-user-bar'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+    })();
+    Promise.resolve().then(function () {
       return Potree.loadPointCloud(cloudURL, pointCloudID);
     }).then((e) => {
       const pc    = e.pointcloud;
