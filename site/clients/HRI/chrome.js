@@ -1225,11 +1225,12 @@
   // User selections persist in localStorage.
   // ============================================================
 
-  // Point rendering mode is fixed to ADAPTIVE — it's the only one that gave
-  // a usable, visibly-responsive slider in practice. FIXED and ATTENUATED
-  // are removed from the UI; the user requested a single size control.
-  var POINT_SIZE_DEFAULT  = 2.0;  // moderate — big enough to fill gaps, small enough to stay crisp/fast
-  var POINT_MODE_DEFAULT  = 'ADAPTIVE';
+  // Point rendering mode: FIXED (every point the same on-screen pixel size).
+  // ADAPTIVE sizes points by their octree NODE level, so when the view is a
+  // patchwork of LOD levels you get visible rectangular "steps" in point size
+  // (worse at low budget / high minNodeSize). FIXED removes that stepping.
+  var POINT_SIZE_DEFAULT  = 2.0;
+  var POINT_MODE_DEFAULT  = 'FIXED';
   var POINT_SHAPE_DEFAULT = 'CIRCLE';
 
   function getActivePointcloud() {

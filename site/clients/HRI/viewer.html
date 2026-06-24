@@ -639,10 +639,12 @@
     try { viewer.setEDLRadius(1.0); } catch (e) {}   // default 1.4 — tighter halo
     try { viewer.setEDLStrength(0.3); } catch (e) {} // default ~0.4 — gentler darkening
     viewer.setFOV(60);
-    viewer.setPointBudget(16_000_000); // 29.9M-pt cloud — high budget for CloudCompare-like density (tune live with +/-)
-    // Lower minNodeSize so smaller/deeper octree nodes load (denser when zoomed);
-    // native cloud spacing is ~1cm but default minNodeSize=30 leaves it ~2-3cm.
-    try { viewer.setMinNodeSize(20); } catch (e) {}
+    // Responsiveness-first budget. The clean (despeckled) look lives in the octree
+    // data and costs nothing to render — this only trades some density at WIDE zoom
+    // for a much smoother experience (zoom in to recover full ~1cm detail; +/- to tune).
+    viewer.setPointBudget(3_000_000); // was 16M (laggy) -> 5M -> 3M for responsiveness (+/- to tune live)
+    // minNodeSize raised above Potree default (30) to cull more small/deep nodes = fewer draw calls.
+    try { viewer.setMinNodeSize(40); } catch (e) {}
     viewer.setDescription(meta.name || pointCloudID);
     document.title = 'Enable Viewer — ' + (meta.name || pointCloudID); // tab title per loaded project
     viewer.loadSettingsFromURL(); // allow ? overrides
@@ -9791,7 +9793,7 @@
     function applyScanMaterialDefaults(pc) {
       try {
         pc.material.size = 2.0;  // moderate — fills gaps without amplifying speckle; stays fast
-        pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+        pc.material.pointSizeType = Potree.PointSizeType.FIXED; // FIXED = uniform size, no octree-node "steps" (chrome.js governs)
         pc.material.shape = Potree.PointShape.CIRCLE;
       } catch (e) { /* ignore */ }
     }
