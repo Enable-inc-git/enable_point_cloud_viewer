@@ -10,7 +10,8 @@ window.PROJECTS = {
     name: "40 Larch 1",
     folder: "40 Larch 1/pointclouds/scan",
     clouds: [
-      { id: "scan", name: "Scan", folder: "40 Larch 1/pointclouds/scan", visible: true }
+      { id: "scan",  name: "Scan",   folder: "40 Larch 1/pointclouds/scan",  visible: true  },
+      { id: "gprhd", name: "GPR HD", folder: "40 Larch 1/pointclouds/gprhd", visible: true }
     ]
   },
   "30weston": {
