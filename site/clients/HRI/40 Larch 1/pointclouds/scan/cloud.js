@@ -45,7 +45,7 @@
             "description": ""
         }
     ],
-    "spacing": 0.05000000074505806,
+    "spacing": 0.20000000298023225,
     "scale": 0.001,
     "hierarchyStepSize": 5
 }
