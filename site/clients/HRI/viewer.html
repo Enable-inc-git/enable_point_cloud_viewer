@@ -9643,6 +9643,93 @@
     // origins untouched, so its coords already match — position stays at origin.
     const MODEL_X_ROTATION = Math.PI / 2;
 
+    // =====================================================================
+    // Model clipping — make loaded GLB models obey the SAME crop boxes that
+    // clip the point cloud. Potree clips points in its point shader and never
+    // touches THREE meshes, so the model used to persist outside the crop.
+    // We inject Potree's box test into each model material via onBeforeCompile
+    // and `discard` fragments that fall outside the active crop boxes. Mirrors
+    // potree.js update() (clipBox = box.matrixWorld.invert()) and the point
+    // shader test (inside == abs(local) <= 0.5; SHOW_INSIDE + INSIDE_ANY, or
+    // INSIDE_ALL during plane-ortho view). Per-model toggle (rec.clipped,
+    // default true); with no active crop box the model shows fully.
+    // =====================================================================
+    var MODEL_CLIP_MAX = 8; // GLSL array size; live count varies via a uniform
+    var _modelClipBoxes = (function () { var a = []; for (var k = 0; k < MODEL_CLIP_MAX; k++) a.push(new THREE.Matrix4()); return a; })();
+    var modelClipUniforms = {
+      count:  { value: 0 },
+      method: { value: 0 },          // 0 = INSIDE_ANY, 1 = INSIDE_ALL
+      boxes:  { value: _modelClipBoxes }
+    };
+
+    function refreshModelClipUniforms() {
+      var vols = (viewer.scene.volumes || []).filter(function (v) {
+        return v && v.clip === true && (v instanceof Potree.BoxVolume);
+      });
+      var n = Math.min(vols.length, MODEL_CLIP_MAX);
+      for (var i = 0; i < n; i++) {
+        vols[i].updateMatrixWorld();
+        _modelClipBoxes[i].copy(vols[i].matrixWorld).invert();
+      }
+      modelClipUniforms.count.value  = n;
+      modelClipUniforms.method.value = (viewer.clipMethod === Potree.ClipMethod.INSIDE_ALL) ? 1 : 0;
+    }
+    viewer.addEventListener("update", refreshModelClipUniforms);
+
+    // Inject the clip test into every material of a loaded model group. A
+    // per-model enable uniform lets the panel toggle clipping without a shader
+    // recompile (box matrices/count are shared across all models).
+    function applyModelClip(root, rec) {
+      if (!rec._clipEnabledUniform) rec._clipEnabledUniform = { value: (rec.clipped !== false) ? 1 : 0 };
+      root.traverse(function (obj) {
+        if (!obj.isMesh || !obj.material) return;
+        var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(function (m) {
+          if (!m) return;
+          m.userData = m.userData || {};
+          if (m.userData._enableClipInstalled) return;
+          m.userData._enableClipInstalled = true;
+          m.onBeforeCompile = function (shader) {
+            shader.uniforms.uClipEnabled = rec._clipEnabledUniform;
+            shader.uniforms.uClipCount   = modelClipUniforms.count;
+            shader.uniforms.uClipMethod  = modelClipUniforms.method;
+            shader.uniforms.uClipBoxes   = modelClipUniforms.boxes;
+            shader.vertexShader =
+              'varying vec3 vEnableClipWPos;\n' +
+              shader.vertexShader.replace(
+                '#include <begin_vertex>',
+                '#include <begin_vertex>\n  vEnableClipWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+              );
+            shader.fragmentShader =
+              'uniform int uClipEnabled;\nuniform int uClipCount;\nuniform int uClipMethod;\n' +
+              'uniform mat4 uClipBoxes[' + MODEL_CLIP_MAX + '];\nvarying vec3 vEnableClipWPos;\n' +
+              shader.fragmentShader.replace(
+                'void main() {',
+                'void main() {\n' +
+                '  if (uClipEnabled == 1 && uClipCount > 0) {\n' +
+                '    int _ins = 0;\n' +
+                '    for (int i = 0; i < ' + MODEL_CLIP_MAX + '; i++) {\n' +
+                '      if (i >= uClipCount) break;\n' +
+                '      vec3 _l = (uClipBoxes[i] * vec4(vEnableClipWPos, 1.0)).xyz;\n' +
+                '      if (all(lessThanEqual(abs(_l), vec3(0.5)))) _ins++;\n' +
+                '    }\n' +
+                '    bool _keep = (uClipMethod == 1) ? (_ins == uClipCount) : (_ins > 0);\n' +
+                '    if (!_keep) discard;\n' +
+                '  }\n'
+              );
+          };
+          m.needsUpdate = true;
+        });
+      });
+    }
+
+    function setModelClipped(rec, on) {
+      rec.clipped = !!on;
+      if (rec._clipEnabledUniform) rec._clipEnabledUniform.value = on ? 1 : 0;
+      if (viewer.repaint) viewer.repaint();
+      updateModelsPanel();
+    }
+
     function ensureModelLights() {
       if (modelLightsAdded) return;
       const s = viewer.scene.scene;
@@ -9670,7 +9757,7 @@
 
     // A model record is a directory entry; group === null until the user loads it.
     function addModelEntry(name, url, fromFile) {
-      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false };
+      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false, clipped: true };
       models.push(rec);
       return rec;
     }
@@ -9678,6 +9765,7 @@
     function displayLoadedGroup(rec, scene3d) {
       ensureModelLights();
       prepModelMaterials(scene3d);
+      applyModelClip(scene3d, rec);   // obey the same crop boxes as the point cloud
       var group = new THREE.Group();
       group.name = 'EnableModel:' + rec.name;
       group.add(scene3d);
@@ -9908,7 +9996,8 @@
         if (rec.loading) {
           right = '<span style="opacity:0.7;font-size:12px">Loading…</span>';
         } else if (rec.group) {
-          right = '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+          right = '<button class="enable-model-clip" data-idx="' + i + '" title="Clip to crop box (' + (rec.clipped !== false ? 'on' : 'off') + ')" style="background:none;border:0;cursor:pointer;font-size:14px;padding:0 2px;opacity:' + (rec.clipped !== false ? '1' : '0.35') + '">✂️</button>' +
+                  '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
                   '<button class="enable-model-unload" data-idx="' + i + '" title="Unload" style="background:none;border:0;cursor:pointer;color:#f66;font-size:14px;padding:0 2px">✕</button>';
         } else {
           right = '<button class="enable-model-load" data-idx="' + i + '" title="Load this model" style="font-size:12px;padding:2px 10px">Load</button>';
@@ -9925,6 +10014,7 @@
       var te = p.querySelector('#btn-toggle-edges');
       if (te) te.addEventListener('click', toggleModelEdges);
       p.querySelectorAll('.enable-model-load').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) loadModelRec(r); }); });
+      p.querySelectorAll('.enable-model-clip').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelClipped(r, !(r.clipped !== false)); }); });
       p.querySelectorAll('.enable-model-eye').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelVisible(r, !r.visible); }); });
       p.querySelectorAll('.enable-model-unload').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) unloadModelRec(r); }); });
       var lb = p.querySelector('#btn-load-model');
