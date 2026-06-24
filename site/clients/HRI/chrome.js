@@ -1218,19 +1218,16 @@
   // ============================================================
   // Point cloud display settings: size, size-mode, shape.
   //
-  // viewer.html defaults pointSizeType to ADAPTIVE (line 8608), which sizes
-  // points inversely to octree node density — creates a visible "some big,
-  // some small" pattern at zoom. We override to FIXED for uniform sizing
-  // on load, then expose live controls in a Display topbar dropdown.
-  // User selections persist in localStorage.
+  // Defaults to ADAPTIVE (points auto-scale with zoom/distance). Live controls
+  // are exposed in a Display topbar dropdown; user selections persist in
+  // localStorage. (FIXED uniform sizing was tried but felt unnatural in use.)
   // ============================================================
 
-  // Point rendering mode: FIXED (every point the same on-screen pixel size).
-  // ADAPTIVE sizes points by their octree NODE level, so when the view is a
-  // patchwork of LOD levels you get visible rectangular "steps" in point size
-  // (worse at low budget / high minNodeSize). FIXED removes that stepping.
-  var POINT_SIZE_DEFAULT  = 2.0;
-  var POINT_MODE_DEFAULT  = 'FIXED';
+  // Point rendering mode: ADAPTIVE — points scale automatically with zoom/distance
+  // (closer points render larger), which reads as natural depth. FIXED (uniform
+  // on-screen pixel size, slider-controlled) was tried but felt unnatural in use.
+  var POINT_SIZE_DEFAULT  = 2.0;  // moderate — big enough to fill gaps, small enough to stay crisp/fast
+  var POINT_MODE_DEFAULT  = 'ADAPTIVE';
   var POINT_SHAPE_DEFAULT = 'CIRCLE';
 
   function getActivePointcloud() {

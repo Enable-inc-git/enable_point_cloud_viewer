@@ -9793,7 +9793,7 @@
     function applyScanMaterialDefaults(pc) {
       try {
         pc.material.size = 2.0;  // moderate — fills gaps without amplifying speckle; stays fast
-        pc.material.pointSizeType = Potree.PointSizeType.FIXED; // FIXED = uniform size, no octree-node "steps" (chrome.js governs)
+        pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE; // auto-size with zoom/distance (chrome.js governs)
         pc.material.shape = Potree.PointShape.CIRCLE;
       } catch (e) { /* ignore */ }
     }
