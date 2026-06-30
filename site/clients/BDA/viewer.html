@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>Enable Viewer — BDA</title>
+  <title>Enable Viewer</title>
 
   <!-- ===================== CSS ===================== -->
   <link rel="stylesheet" href="../libs/potree/potree.css">
@@ -634,9 +634,19 @@
 
     // sensible defaults
     viewer.setEDLEnabled(true);
+    // Soften EDL so the dark shading between octree-LOD points doesn't read as
+    // cross-hatch/streak artifacts on flat slabs (and stops burying GPR marks).
+    try { viewer.setEDLRadius(1.0); } catch (e) {}   // default 1.4 — tighter halo
+    try { viewer.setEDLStrength(0.3); } catch (e) {} // default ~0.4 — gentler darkening
     viewer.setFOV(60);
-    viewer.setPointBudget(2_000_000);
+    // Responsiveness-first budget. The clean (despeckled) look lives in the octree
+    // data and costs nothing to render — this only trades some density at WIDE zoom
+    // for a much smoother experience (zoom in to recover full ~1cm detail; +/- to tune).
+    viewer.setPointBudget(3_000_000); // was 16M (laggy) -> 5M -> 3M for responsiveness (+/- to tune live)
+    // minNodeSize raised above Potree default (30) to cull more small/deep nodes = fewer draw calls.
+    try { viewer.setMinNodeSize(40); } catch (e) {}
     viewer.setDescription(meta.name || pointCloudID);
+    document.title = 'Enable Viewer — ' + (meta.name || pointCloudID); // tab title per loaded project
     viewer.loadSettingsFromURL(); // allow ? overrides
 
     // -- Fix: Right-click always pans, even during measurement tool use --
@@ -695,12 +705,21 @@
 
       domEl.addEventListener('mousedown', function(e) {
         if (e.button !== 0) return;
-        if (typeof elevationCropVolumes === 'undefined' || elevationCropVolumes.length === 0) return;
         // Skip if the user is in any pick mode that consumes left clicks
         if (typeof MARK_MODE !== 'undefined' && MARK_MODE) return;
         if (typeof constraintPickMode !== 'undefined' && constraintPickMode) return;
         if (typeof memberPickMode !== 'undefined' && memberPickMode) return;
         if (typeof zBasePickMode !== 'undefined' && zBasePickMode) return;
+
+        // All internally-managed boxes whose fill-mesh raycast is disabled
+        // (elevation crop, cut-out, exclusion) need this manual OBB hit-test to be
+        // selectable — Potree can no longer pick them by their (now non-raycasting)
+        // fill mesh, so without this their wireframe edges can't be clicked.
+        var selBoxes = [];
+        if (typeof elevationCropVolumes !== 'undefined') selBoxes = selBoxes.concat(elevationCropVolumes);
+        if (typeof cutoutBoxes !== 'undefined') selBoxes = selBoxes.concat(cutoutBoxes);
+        if (typeof exclusionBoxes !== 'undefined') selBoxes = selBoxes.concat(exclusionBoxes);
+        if (selBoxes.length === 0) return;
 
         var rect = domEl.getBoundingClientRect();
         var ndc = {
@@ -711,8 +730,8 @@
         var raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(ndc, camera);
 
-        for (var i = 0; i < elevationCropVolumes.length; i++) {
-          var vol = elevationCropVolumes[i];
+        for (var i = 0; i < selBoxes.length; i++) {
+          var vol = selBoxes[i];
           if (vol._disabled) continue;
           vol.updateMatrixWorld(true);
           var inv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
@@ -740,14 +759,26 @@
         // intervene in those cases — Potree's bubble-phase onMouseUp must run
         // to fire the 'drop' event that commits placement / ends drag.
         if (ih && ih.drag && ih.drag.object) return;
-        // If Potree already has the volume in hoveredElements (i.e. the click
-        // landed on the wireframe edge), let Potree's own onMouseUp run — it
-        // does the right thing for selection. We only take over for clicks
-        // INSIDE the box where Potree can't see the volume (fill raycast off)
-        // and would otherwise call deselectAll(), undoing our selection.
+        // If Potree already has a wireframe pick on the click, let its own
+        // onMouseUp run — it does the right thing for selection. We only take over
+        // for clicks INSIDE a managed box where Potree can't see the volume (fill
+        // raycast off) and would otherwise call deselectAll(), undoing our pick.
+        //
+        // CRUCIAL: defer for ANY hovered scene volume, not just `vol`. The mousedown
+        // OBB test uses an INFINITE camera ray, so a managed box lying anywhere along
+        // the ray's depth sets pendingClick even when the user actually clicked the
+        // persistent clip box's edge across the scene. The clip box IS Potree-pickable
+        // (its box.raycast routes to its frame), so without this broader check we'd
+        // hijack the edge click and deselectAll() — making the clip-box edge feel
+        // "unresponsive" the moment any elevation/cut-out/exclusion box exists.
+        var sceneVols = (viewer.scene && viewer.scene.volumes) ? viewer.scene.volumes : [];
         var hoveredHasVol = ih && ih.hoveredElements && ih.hoveredElements.some(function(h) {
           var o = h && h.object;
-          while (o) { if (o === vol) return true; o = o.parent; }
+          while (o) {
+            if (o === vol) return true;                  // the managed box itself
+            if (sceneVols.indexOf(o) >= 0) return true;  // any other volume (e.g. clip-box edge)
+            o = o.parent;
+          }
           return false;
         });
         if (hoveredHasVol) return;
@@ -1338,8 +1369,8 @@
 
       // Resolve base path for panorama URLs (relative to the project's folder).
       // meta.folder = "<project>/pointclouds/<scan_id>"; drop those two segments.
-      var _mbParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
-      var manifestBase = _mbParts.slice(0, -2).join('/') + '/stations/';
+      // Regex (not split/join) so an absolute R2 URL keeps its "https://".
+      var manifestBase = meta.folder.replace(/\/+$/, '').replace(/\/[^/]+\/[^/]+$/, '') + '/stations/';
 
       // Auto-scale pin size from cloud diagonal.
       try {
@@ -3156,7 +3187,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] BDA build 2026-06-12a — orbit-unstick + measure-hide v1.3 loaded'); } catch (e) {}
+    try { console.info('[Enable] BDA build 2026-06-30 — no-login + R2 + mobile viewer stack'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -9612,6 +9643,93 @@
     // origins untouched, so its coords already match — position stays at origin.
     const MODEL_X_ROTATION = Math.PI / 2;
 
+    // =====================================================================
+    // Model clipping — make loaded GLB models obey the SAME crop boxes that
+    // clip the point cloud. Potree clips points in its point shader and never
+    // touches THREE meshes, so the model used to persist outside the crop.
+    // We inject Potree's box test into each model material via onBeforeCompile
+    // and `discard` fragments that fall outside the active crop boxes. Mirrors
+    // potree.js update() (clipBox = box.matrixWorld.invert()) and the point
+    // shader test (inside == abs(local) <= 0.5; SHOW_INSIDE + INSIDE_ANY, or
+    // INSIDE_ALL during plane-ortho view). Per-model toggle (rec.clipped,
+    // default true); with no active crop box the model shows fully.
+    // =====================================================================
+    var MODEL_CLIP_MAX = 8; // GLSL array size; live count varies via a uniform
+    var _modelClipBoxes = (function () { var a = []; for (var k = 0; k < MODEL_CLIP_MAX; k++) a.push(new THREE.Matrix4()); return a; })();
+    var modelClipUniforms = {
+      count:  { value: 0 },
+      method: { value: 0 },          // 0 = INSIDE_ANY, 1 = INSIDE_ALL
+      boxes:  { value: _modelClipBoxes }
+    };
+
+    function refreshModelClipUniforms() {
+      var vols = (viewer.scene.volumes || []).filter(function (v) {
+        return v && v.clip === true && (v instanceof Potree.BoxVolume);
+      });
+      var n = Math.min(vols.length, MODEL_CLIP_MAX);
+      for (var i = 0; i < n; i++) {
+        vols[i].updateMatrixWorld();
+        _modelClipBoxes[i].copy(vols[i].matrixWorld).invert();
+      }
+      modelClipUniforms.count.value  = n;
+      modelClipUniforms.method.value = (viewer.clipMethod === Potree.ClipMethod.INSIDE_ALL) ? 1 : 0;
+    }
+    viewer.addEventListener("update", refreshModelClipUniforms);
+
+    // Inject the clip test into every material of a loaded model group. A
+    // per-model enable uniform lets the panel toggle clipping without a shader
+    // recompile (box matrices/count are shared across all models).
+    function applyModelClip(root, rec) {
+      if (!rec._clipEnabledUniform) rec._clipEnabledUniform = { value: (rec.clipped !== false) ? 1 : 0 };
+      root.traverse(function (obj) {
+        if (!obj.isMesh || !obj.material) return;
+        var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(function (m) {
+          if (!m) return;
+          m.userData = m.userData || {};
+          if (m.userData._enableClipInstalled) return;
+          m.userData._enableClipInstalled = true;
+          m.onBeforeCompile = function (shader) {
+            shader.uniforms.uClipEnabled = rec._clipEnabledUniform;
+            shader.uniforms.uClipCount   = modelClipUniforms.count;
+            shader.uniforms.uClipMethod  = modelClipUniforms.method;
+            shader.uniforms.uClipBoxes   = modelClipUniforms.boxes;
+            shader.vertexShader =
+              'varying vec3 vEnableClipWPos;\n' +
+              shader.vertexShader.replace(
+                '#include <begin_vertex>',
+                '#include <begin_vertex>\n  vEnableClipWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+              );
+            shader.fragmentShader =
+              'uniform int uClipEnabled;\nuniform int uClipCount;\nuniform int uClipMethod;\n' +
+              'uniform mat4 uClipBoxes[' + MODEL_CLIP_MAX + '];\nvarying vec3 vEnableClipWPos;\n' +
+              shader.fragmentShader.replace(
+                'void main() {',
+                'void main() {\n' +
+                '  if (uClipEnabled == 1 && uClipCount > 0) {\n' +
+                '    int _ins = 0;\n' +
+                '    for (int i = 0; i < ' + MODEL_CLIP_MAX + '; i++) {\n' +
+                '      if (i >= uClipCount) break;\n' +
+                '      vec3 _l = (uClipBoxes[i] * vec4(vEnableClipWPos, 1.0)).xyz;\n' +
+                '      if (all(lessThanEqual(abs(_l), vec3(0.5)))) _ins++;\n' +
+                '    }\n' +
+                '    bool _keep = (uClipMethod == 1) ? (_ins == uClipCount) : (_ins > 0);\n' +
+                '    if (!_keep) discard;\n' +
+                '  }\n'
+              );
+          };
+          m.needsUpdate = true;
+        });
+      });
+    }
+
+    function setModelClipped(rec, on) {
+      rec.clipped = !!on;
+      if (rec._clipEnabledUniform) rec._clipEnabledUniform.value = on ? 1 : 0;
+      if (viewer.repaint) viewer.repaint();
+      updateModelsPanel();
+    }
+
     function ensureModelLights() {
       if (modelLightsAdded) return;
       const s = viewer.scene.scene;
@@ -9639,7 +9757,7 @@
 
     // A model record is a directory entry; group === null until the user loads it.
     function addModelEntry(name, url, fromFile) {
-      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false };
+      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false, clipped: true };
       models.push(rec);
       return rec;
     }
@@ -9647,6 +9765,7 @@
     function displayLoadedGroup(rec, scene3d) {
       ensureModelLights();
       prepModelMaterials(scene3d);
+      applyModelClip(scene3d, rec);   // obey the same crop boxes as the point cloud
       var group = new THREE.Group();
       group.name = 'EnableModel:' + rec.name;
       group.add(scene3d);
@@ -9751,6 +9870,112 @@
         });
     }
 
+    // =====================================================================
+    // Multi-scan support — load >1 point cloud and view/hide each from the
+    // right-hand "Scans" panel (adopted into Tool settings by chrome.js).
+    // Driven by projects.js: meta.folder is the primary cloud, meta.clouds[]
+    // lists every cloud + its default visibility.
+    // =====================================================================
+    var scanClouds = []; // [{ id, name, pc, visible }]
+
+    function applyScanMaterialDefaults(pc) {
+      try {
+        pc.material.size = 2.0;  // moderate — fills gaps without amplifying speckle; stays fast
+        pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE; // auto-size with zoom/distance (chrome.js governs)
+        pc.material.shape = Potree.PointShape.CIRCLE;
+      } catch (e) { /* ignore */ }
+    }
+
+    function _cloudMetaFor(folder) {
+      var cs = (meta && meta.clouds) || [];
+      for (var i = 0; i < cs.length; i++) { if (cs[i].folder === folder) return cs[i]; }
+      return null;
+    }
+
+    // The primary cloud is already loaded by the main flow; register it here.
+    function registerPrimaryScan(pc) {
+      var cm = _cloudMetaFor(meta.folder) || { id: 'scan', name: 'Scan', visible: true };
+      pc.visible = (cm.visible !== false);
+      scanClouds.push({ id: cm.id || 'scan', name: cm.name || 'Scan', pc: pc, visible: pc.visible });
+      updateScansPanel();
+    }
+
+    // Load every non-primary cloud listed in meta.clouds and add to the scene.
+    function loadAdditionalScans() {
+      var cs = (meta && meta.clouds) || [];
+      cs.forEach(function (cm) {
+        if (!cm.folder || cm.folder === meta.folder) return; // skip the primary (already loaded)
+        var url = cm.folder.replace(/\/+$/, '') + '/cloud.js';
+        Potree.loadPointCloud(url, cm.id).then(function (e) {
+          var pc = e.pointcloud;
+          viewer.scene.addPointCloud(pc);
+          applyScanMaterialDefaults(pc);
+          // Inherit the primary cloud's CURRENT display settings (size/mode/shape)
+          // so a scan that finishes loading after the point-size slider was set
+          // still matches it. The slider itself now updates all clouds (chrome.js).
+          try {
+            var prim = loadedPointCloud;
+            if (prim && prim.material && pc.material) {
+              pc.material.size = prim.material.size;
+              pc.material.pointSizeType = prim.material.pointSizeType;
+              pc.material.shape = prim.material.shape;
+              if (pc.material.uniforms && prim.material.uniforms) {
+                if (pc.material.uniforms.minSize && prim.material.uniforms.minSize) pc.material.uniforms.minSize.value = prim.material.uniforms.minSize.value;
+                if (pc.material.uniforms.maxSize && prim.material.uniforms.maxSize) pc.material.uniforms.maxSize.value = prim.material.uniforms.maxSize.value;
+              }
+            }
+          } catch (e2) { /* ignore */ }
+          pc.visible = (cm.visible === true);
+          scanClouds.push({ id: cm.id, name: cm.name || cm.id, pc: pc, visible: pc.visible });
+          updateScansPanel();
+          console.log('[scans] loaded', cm.id, '(visible=' + pc.visible + ')');
+        }).catch(function (err) { console.warn('[scans] failed to load', cm.id, err); });
+      });
+    }
+
+    function setScanVisible(idx, vis) {
+      var s = scanClouds[idx];
+      if (!s || !s.pc) return;
+      s.visible = vis;
+      s.pc.visible = vis;
+      updateScansPanel();
+    }
+
+    function ensureScansPanel() {
+      var p = document.getElementById('enable-scans-panel');
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'enable-scans-panel';
+        document.body.appendChild(p); // chrome.js reparents this into the context panel
+      }
+      return p;
+    }
+
+    function updateScansPanel() {
+      var p = ensureScansPanel();
+      // Only show the Scans panel when the project actually has >1 cloud — a
+      // single-cloud project doesn't need a selector.
+      var nClouds = (meta && meta.clouds && meta.clouds.length) || 0;
+      if (nClouds < 2) { p.style.display = 'none'; p.innerHTML = ''; return; }
+      p.style.display = '';
+      var rows = '<div style="font-weight:600;font-size:12px;opacity:0.85;padding:4px 2px 6px">Scans</div>';
+      for (var i = 0; i < scanClouds.length; i++) {
+        var s = scanClouds[i];
+        rows += '<div class="enable-scans-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">' +
+          '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + s.name + '">' + s.name + '</span>' +
+          '<button class="enable-scan-eye" data-idx="' + i + '" title="Show / hide this scan" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (s.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+          '</div>';
+      }
+      p.innerHTML = rows;
+      var btns = p.querySelectorAll('.enable-scan-eye');
+      for (var j = 0; j < btns.length; j++) {
+        btns[j].addEventListener('click', function () {
+          var k = parseInt(this.getAttribute('data-idx'), 10);
+          setScanVisible(k, !scanClouds[k].visible);
+        });
+      }
+    }
+
     // -- Right-panel Models directory (adopted into Tool settings by chrome.js). --
     function ensureModelsPanel() {
       var p = document.getElementById('enable-models-panel');
@@ -9771,7 +9996,8 @@
         if (rec.loading) {
           right = '<span style="opacity:0.7;font-size:12px">Loading…</span>';
         } else if (rec.group) {
-          right = '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+          right = '<button class="enable-model-clip" data-idx="' + i + '" title="Clip to crop box (' + (rec.clipped !== false ? 'on' : 'off') + ')" style="background:none;border:0;cursor:pointer;font-size:14px;padding:0 2px;opacity:' + (rec.clipped !== false ? '1' : '0.35') + '">✂️</button>' +
+                  '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
                   '<button class="enable-model-unload" data-idx="' + i + '" title="Unload" style="background:none;border:0;cursor:pointer;color:#f66;font-size:14px;padding:0 2px">✕</button>';
         } else {
           right = '<button class="enable-model-load" data-idx="' + i + '" title="Load this model" style="font-size:12px;padding:2px 10px">Load</button>';
@@ -9788,6 +10014,7 @@
       var te = p.querySelector('#btn-toggle-edges');
       if (te) te.addEventListener('click', toggleModelEdges);
       p.querySelectorAll('.enable-model-load').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) loadModelRec(r); }); });
+      p.querySelectorAll('.enable-model-clip').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelClipped(r, !(r.clipped !== false)); }); });
       p.querySelectorAll('.enable-model-eye').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelVisible(r, !r.visible); }); });
       p.querySelectorAll('.enable-model-unload').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) unloadModelRec(r); }); });
       var lb = p.querySelector('#btn-load-model');
@@ -9812,7 +10039,8 @@
             '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
           '</div>' +
           '<input type="file" id="session-file-input" accept=".json" style="display:none">' +
-          '<div id="enable-cloud-section">' +
+          // Cloud sessions require sign-in; HRI is open-access (no login), so hidden.
+          '<div id="enable-cloud-section" style="display:none">' +
             '<button id="btn-save-cloud" title="Save your work to the cloud (private to you)">Save to Cloud</button>' +
             '<div id="enable-cloud-list"></div>' +
           '</div>' +
@@ -9917,8 +10145,8 @@
           '<div id="enable-scene-slot"></div>' +
         closeGroup() +
 
-        // === 9. SIGNED-IN USER (identity + sign out) ===
-        '<div id="enable-user-bar">' +
+        // === 9. SIGNED-IN USER (identity + sign out) — hidden: HRI has no login ===
+        '<div id="enable-user-bar" style="display:none">' +
           '<span id="enable-user-email"></span>' +
           '<button id="enable-signout" title="Sign out">Sign out</button>' +
         '</div>' +
@@ -10615,14 +10843,20 @@
       }
     }, true);
 
-    // ----- gate access, then load the point cloud -----
-    // EnableAuth.requireAccess shows the login overlay and only resolves once the
-    // signed-in user is an authorized member of this client. The point cloud (and
-    // the rest of the viewer) only comes alive after that.
-    EnableAuth.requireAccess('BDA').then(function (access) {
-      window.__enableUser = access.user;
-      updateUserBar(access.user);
-      refreshCloudSessions();
+    // ----- HRI: login requirement REMOVED — open access for everyone -----
+    // The auth gate (EnableAuth.requireAccess) is intentionally bypassed for HRI
+    // so the viewer loads immediately with no sign-in. enable-firebase.js still
+    // auto-shows its login overlay on load, so hide it; and hide the cloud-session
+    // UI (Save to Cloud / user bar) since those require sign-in and don't apply.
+    (function () {
+      var ov = document.getElementById('enable-auth-overlay');
+      if (ov) ov.style.display = 'none';
+      ['enable-cloud-section', 'enable-user-bar'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+    })();
+    Promise.resolve().then(function () {
       return Potree.loadPointCloud(cloudURL, pointCloudID);
     }).then((e) => {
       const pc    = e.pointcloud;
@@ -10632,9 +10866,13 @@
       discoverProjectModels(); // list this project's models/ folder (load on demand)
 
       // material defaults
-      pc.material.size = 1.0;
-      pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
-      pc.material.shape = Potree.PointShape.CIRCLE;
+      applyScanMaterialDefaults(pc);
+
+      // ----- Multi-scan: register the primary cloud + load any extra clouds -----
+      // (e.g. 40 Larch has scan [default visible] + croppedScan [hidden], both
+      // listed in the right-hand "Scans" panel with view/hide toggles.)
+      registerPrimaryScan(pc);
+      loadAdditionalScans();
 
       // Fit camera to content on first load
       viewer.fitToScreen();
@@ -10679,8 +10917,8 @@
           // Manifest sits at <projectRoot>/stations/stations.json; meta.folder is
           // "<projectRoot>/pointclouds/<scan_id>", so we drop the last two path
           // segments rather than relying on browser '../' normalization.
-          var _folderParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
-          var _projectRoot = _folderParts.slice(0, -2).join('/');
+          // Regex (not split/join) so an absolute R2 URL keeps its "https://".
+          var _projectRoot = meta.folder.replace(/\/+$/, '').replace(/\/[^/]+\/[^/]+$/, '');
           var manifestURL = _projectRoot + '/stations/stations.json';
           console.log('[stations] fetching manifest:', manifestURL);
           fetch(manifestURL)

@@ -98,3 +98,12 @@ site/clients/HRI/40 Larch 1/stations/
 site/clients/HRI/40 Larch 1/models/
 site/clients/HRI/30 Weston Rd/pointclouds/
 site/clients/HRI/30 Weston Rd/stations/
+
+# ---------- BDA St. Joseph's Hamilton: octree + panoramas served from Cloudflare R2 ----------
+# pointclouds/ + stations/ live in R2 bucket 'enable-pointclouds' (bda/stjoseph/...).
+# HighResolution/ is the raw panorama staging dump (served copies in stations/panoramas/).
+site/clients/BDA/St. Joseph's Hamilton/pointclouds/
+site/clients/BDA/St. Joseph's Hamilton/stations/
+site/clients/BDA/St. Joseph's Hamilton/HighResolution/
+site/clients/BDA/222 Jarvis Elevator 4/pointclouds/
+site/clients/BDA/222 Jarvis Elevator 4/stations/

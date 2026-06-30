@@ -28,7 +28,16 @@
     try { savedCtxWidth  = localStorage.getItem('dev2.context.width'); } catch (_) {}
     try { savedPanoWidth = localStorage.getItem('dev2.panorama.width'); } catch (_) {}
     document.documentElement.dataset.theme = 'dark';
-    if (savedSidebar === 'true') document.documentElement.dataset.sidebarCollapsed = 'true';
+    if (savedSidebar === 'true') {
+      document.documentElement.dataset.sidebarCollapsed = 'true';
+    } else if (savedSidebar === null && window.matchMedia &&
+               window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 600px)').matches) {
+      // Phone-size screen (narrow portrait OR short landscape) and no saved
+      // preference → start with the sidebar collapsed so the cloud gets the full
+      // screen. The toggle still opens it (as an overlay drawer on mobile — see
+      // the chrome.css small-screen block).
+      document.documentElement.dataset.sidebarCollapsed = 'true';
+    }
     // Tool Settings is closed by default. Only "pinned" persists; auto-open
     // on content arrival happens through updateContextPanelVisibility.
     if (savedPinned === 'true') document.documentElement.dataset.contextPinned = 'true';
@@ -635,7 +644,7 @@
   }
 
   function openAboutModal() {
-    flashToast('Enable Point Cloud Viewer — BDA');
+    flashToast('Enable Point Cloud Viewer');
   }
 
   // ============================================================
@@ -705,6 +714,7 @@
   // ============================================================
 
   var CONTEXT_SLOTS = [
+    'enable-scans-panel',
     'enable-models-panel',
     'enable-plane-depth-controls',
     'enable-elevation-status',
@@ -753,6 +763,14 @@
     // Pin overrides everything: panel stays open.
     if (document.documentElement.dataset.contextPinned === 'true') {
       cp.dataset.open = 'true';
+      return;
+    }
+    // On phones, do NOT auto-open from content — keep the right Tool Settings
+    // panel closed until the user explicitly opens it (the toggle pins it). It
+    // otherwise pops open on load and eats the small screen.
+    if (window.matchMedia &&
+        window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 600px)').matches) {
+      cp.dataset.open = 'false';
       return;
     }
     // Transient manual-hide override — user clicked tab while content was
@@ -1217,17 +1235,15 @@
   // ============================================================
   // Point cloud display settings: size, size-mode, shape.
   //
-  // viewer.html defaults pointSizeType to ADAPTIVE (line 8608), which sizes
-  // points inversely to octree node density — creates a visible "some big,
-  // some small" pattern at zoom. We override to FIXED for uniform sizing
-  // on load, then expose live controls in a Display topbar dropdown.
-  // User selections persist in localStorage.
+  // Defaults to ADAPTIVE (points auto-scale with zoom/distance). Live controls
+  // are exposed in a Display topbar dropdown; user selections persist in
+  // localStorage. (FIXED uniform sizing was tried but felt unnatural in use.)
   // ============================================================
 
-  // Point rendering mode is fixed to ADAPTIVE — it's the only one that gave
-  // a usable, visibly-responsive slider in practice. FIXED and ATTENUATED
-  // are removed from the UI; the user requested a single size control.
-  var POINT_SIZE_DEFAULT  = 1.0;
+  // Point rendering mode: ADAPTIVE — points scale automatically with zoom/distance
+  // (closer points render larger), which reads as natural depth. FIXED (uniform
+  // on-screen pixel size, slider-controlled) was tried but felt unnatural in use.
+  var POINT_SIZE_DEFAULT  = 2.0;  // moderate — big enough to fill gaps, small enough to stay crisp/fast
   var POINT_MODE_DEFAULT  = 'ADAPTIVE';
   var POINT_SHAPE_DEFAULT = 'CIRCLE';
 
@@ -1238,29 +1254,31 @@
   }
 
   function applyPointCloudSettings(opts) {
-    var pc = getActivePointcloud();
-    if (!pc || !pc.material) return false;
+    var v = window.__dev2 && window.__dev2.viewer;
+    if (!v || !v.scene || !v.scene.pointclouds || !v.scene.pointclouds.length) return false;
     var Potree = window.Potree;
     if (!Potree) return false;
-    // Loosen the shader-side pixel clamp. Potree's defaults are minSize=2,
-    // maxSize=50; in ATTENUATED mode the calculated `size * spacing * projFactor`
-    // is often less than 2 for dense scans, which makes the slider feel dead.
-    // We set these once per material so all three modes have meaningful range.
-    if (pc.material.uniforms && pc.material.uniforms.minSize) {
-      pc.material.uniforms.minSize.value = 0.6;
-    }
-    if (pc.material.uniforms && pc.material.uniforms.maxSize) {
-      pc.material.uniforms.maxSize.value = 100;
-    }
-    if (opts.size != null)  pc.material.size = opts.size;
-    if (opts.mode != null && Potree.PointSizeType[opts.mode] != null) {
-      pc.material.pointSizeType = Potree.PointSizeType[opts.mode];
-    }
-    if (opts.shape != null && Potree.PointShape[opts.shape] != null) {
-      pc.material.shape = Potree.PointShape[opts.shape];
-    }
-    var v = window.__dev2 && window.__dev2.viewer;
-    if (v && v.repaint) v.repaint();
+    // Apply to EVERY loaded point cloud, not just the first — multi-scan
+    // projects (e.g. multi-scan: scan + croppedScan) must all respond to the slider.
+    v.scene.pointclouds.forEach(function (pc) {
+      if (!pc || !pc.material) return;
+      // Loosen the shader-side pixel clamp (Potree defaults minSize=2/maxSize=50)
+      // so the slider has meaningful range on dense scans.
+      if (pc.material.uniforms && pc.material.uniforms.minSize) {
+        pc.material.uniforms.minSize.value = 0.6;
+      }
+      if (pc.material.uniforms && pc.material.uniforms.maxSize) {
+        pc.material.uniforms.maxSize.value = 100;
+      }
+      if (opts.size != null) pc.material.size = opts.size;
+      if (opts.mode != null && Potree.PointSizeType[opts.mode] != null) {
+        pc.material.pointSizeType = Potree.PointSizeType[opts.mode];
+      }
+      if (opts.shape != null && Potree.PointShape[opts.shape] != null) {
+        pc.material.shape = Potree.PointShape[opts.shape];
+      }
+    });
+    if (v.repaint) v.repaint();
     return true;
   }
 
