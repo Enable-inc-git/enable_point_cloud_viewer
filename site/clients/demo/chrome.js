@@ -28,7 +28,16 @@
     try { savedCtxWidth  = localStorage.getItem('dev2.context.width'); } catch (_) {}
     try { savedPanoWidth = localStorage.getItem('dev2.panorama.width'); } catch (_) {}
     document.documentElement.dataset.theme = 'dark';
-    if (savedSidebar === 'true') document.documentElement.dataset.sidebarCollapsed = 'true';
+    if (savedSidebar === 'true') {
+      document.documentElement.dataset.sidebarCollapsed = 'true';
+    } else if (savedSidebar === null && window.matchMedia &&
+               window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 600px)').matches) {
+      // Phone-size screen (narrow portrait OR short landscape) and no saved
+      // preference → start with the sidebar collapsed so the cloud gets the full
+      // screen. The toggle still opens it (as an overlay drawer on mobile — see
+      // the chrome.css small-screen block).
+      document.documentElement.dataset.sidebarCollapsed = 'true';
+    }
     // Tool Settings is closed by default. Only "pinned" persists; auto-open
     // on content arrival happens through updateContextPanelVisibility.
     if (savedPinned === 'true') document.documentElement.dataset.contextPinned = 'true';
@@ -754,6 +763,14 @@
     // Pin overrides everything: panel stays open.
     if (document.documentElement.dataset.contextPinned === 'true') {
       cp.dataset.open = 'true';
+      return;
+    }
+    // On phones, do NOT auto-open from content — keep the right Tool Settings
+    // panel closed until the user explicitly opens it (the toggle pins it). It
+    // otherwise pops open on load and eats the small screen.
+    if (window.matchMedia &&
+        window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 600px)').matches) {
+      cp.dataset.open = 'false';
       return;
     }
     // Transient manual-hide override — user clicked tab while content was

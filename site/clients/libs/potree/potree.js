@@ -61077,7 +61077,18 @@ void main() {
 			{ // update pick material
 				pickMaterial.pointSizeType = pointSizeType;
 				//pickMaterial.shape = this.material.shape;
-				pickMaterial.shape = Potree.PointShape.PARABOLOID;
+				// PARABOLOID picking writes gl_FragDepthEXT, which requires the
+				// GL_EXT_frag_depth extension (WebGL1) or WebGL2. Many mobile GPUs
+				// expose neither, so that pick shader fails to compile and Potree
+				// crashes ("could not compile shader") on the first click/tap. Fall
+				// back to SQUARE there (it never touches frag depth). Desktops keep
+				// PARABOLOID for slightly sharper edge picking.
+				{
+					let _glc = renderer.getContext();
+					let _hasFragDepth = (renderer.capabilities && renderer.capabilities.isWebGL2) ||
+						(_glc && typeof _glc.getExtension === 'function' && !!_glc.getExtension('EXT_frag_depth'));
+					pickMaterial.shape = _hasFragDepth ? Potree.PointShape.PARABOLOID : Potree.PointShape.SQUARE;
+				}
 
 				pickMaterial.uniforms.uFilterReturnNumberRange.value = this.material.uniforms.uFilterReturnNumberRange.value;
 				pickMaterial.uniforms.uFilterNumberOfReturnsRange.value = this.material.uniforms.uFilterNumberOfReturnsRange.value;
