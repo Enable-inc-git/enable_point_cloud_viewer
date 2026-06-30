@@ -1,24 +1,24 @@
 // HRI project registry.
-// Folder paths are relative to this client's viewer.html (clients/HRI/).
+// Octrees, panoramas, and GLB models are served from the Cloudflare R2 bucket
+// 'enable-pointclouds' (NOT the git repo). `folder` is an absolute R2 URL.
 //
-// Multi-scan: `folder` is the PRIMARY cloud (loaded as the main point cloud and
-// used for fit-to-screen / model base / station base). `clouds[]` lists every
-// cloud to load with a per-cloud visibility default; they all appear in the
-// right-hand "Scans" panel with view/hide toggles.
+// Multi-scan: `folder` is the PRIMARY cloud; `clouds[]` lists every cloud to load
+// with a per-cloud visibility default (shown in the right-hand "Scans" panel).
+// The viewer derives <project>/stations and <project>/models from `folder` root.
 window.PROJECTS = {
   "40larch1": {
     name: "40 Larch 1",
-    folder: "40 Larch 1/pointclouds/scan",
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/hri/40larch1/pointclouds/scan",
     clouds: [
-      { id: "scan",  name: "Scan",   folder: "40 Larch 1/pointclouds/scan",  visible: true  },
-      { id: "gprhd", name: "GPR HD", folder: "40 Larch 1/pointclouds/gprhd", visible: true }
+      { id: "scan",  name: "Scan",   folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/hri/40larch1/pointclouds/scan",  visible: true  },
+      { id: "gprhd", name: "GPR HD", folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/hri/40larch1/pointclouds/gprhd", visible: true }
     ]
   },
   "30weston": {
     name: "30 Weston Rd",
-    folder: "30 Weston Rd/pointclouds/bridgeScan",
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/hri/30weston/pointclouds/bridgeScan",
     clouds: [
-      { id: "bridgeScan", name: "Bridge scan", folder: "30 Weston Rd/pointclouds/bridgeScan", visible: true }
+      { id: "bridgeScan", name: "Bridge scan", folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/hri/30weston/pointclouds/bridgeScan", visible: true }
     ]
   }
 };

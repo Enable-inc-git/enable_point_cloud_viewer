@@ -84,3 +84,17 @@ site/clients/WJ Properties/7 St Dennis - South Garage Slab/images/
 # points its folder at the r2.dev URL. Kept locally for re-testing but never committed.
 # This is the pilot of the R2 migration (octrees off git -> repo stays small).
 site/clients/demo/demo1/
+
+# ---------- WJ/Solar/HRI octrees+panoramas+models served from Cloudflare R2 (2026-06-30) ----------
+# All these live in the R2 bucket 'enable-pointclouds' (projects.js folders point at the
+# r2.dev URL). Kept locally for re-testing but never committed. See reference_r2_migration.
+site/clients/WJ Properties/7 St Dennis - South Garage Slab/pointclouds/
+site/clients/WJ Properties/7 St Dennis - South Garage Slab/stations/
+site/clients/WJ Properties/140 Carlton/pointclouds/
+site/clients/WJ Properties/2560 kingston rd/pointclouds/
+site/clients/Solar Restoration/pointclouds/
+site/clients/HRI/40 Larch 1/pointclouds/
+site/clients/HRI/40 Larch 1/stations/
+site/clients/HRI/40 Larch 1/models/
+site/clients/HRI/30 Weston Rd/pointclouds/
+site/clients/HRI/30 Weston Rd/stations/
