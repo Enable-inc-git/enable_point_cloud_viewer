@@ -5,7 +5,9 @@
 window.PROJECTS = {
   "demo1": {
     name: "Demo1",
-    folder: "demo1/pointclouds/cloud",
+    // Cloud + panoramas served from Cloudflare R2 (not the git repo). The viewer
+    // loads <folder>/cloud.js and derives <folder>/../../stations/ from this.
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/demo1/pointclouds/cloud",
     // Trim the initial (locked) clip box down from the top by this many metres
     // in Z on first load, to hide a few errant uncleaned points near the ceiling.
     clipTopTrimZ: 1.0

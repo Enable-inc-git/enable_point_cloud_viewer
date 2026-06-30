@@ -1382,8 +1382,8 @@
 
       // Resolve base path for panorama URLs (relative to the project's folder).
       // meta.folder = "<project>/pointclouds/<scan_id>"; drop those two segments.
-      var _mbParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
-      var manifestBase = _mbParts.slice(0, -2).join('/') + '/stations/';
+      // Regex (not split/join) so an absolute URL keeps its "https://" intact.
+      var manifestBase = meta.folder.replace(/\/+$/, '').replace(/\/[^/]+\/[^/]+$/, '') + '/stations/';
 
       // Auto-scale pin size from cloud diagonal.
       try {
@@ -10930,8 +10930,8 @@
           // Manifest sits at <projectRoot>/stations/stations.json; meta.folder is
           // "<projectRoot>/pointclouds/<scan_id>", so we drop the last two path
           // segments rather than relying on browser '../' normalization.
-          var _folderParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
-          var _projectRoot = _folderParts.slice(0, -2).join('/');
+          // Regex (not split/join) so an absolute R2 URL keeps its "https://".
+          var _projectRoot = meta.folder.replace(/\/+$/, '').replace(/\/[^/]+\/[^/]+$/, '');
           var manifestURL = _projectRoot + '/stations/stations.json';
           console.log('[stations] fetching manifest:', manifestURL);
           fetch(manifestURL)
