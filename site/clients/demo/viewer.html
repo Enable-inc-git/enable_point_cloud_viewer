@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <!-- This viewer is also served at the clean slug "/demo1" via a Netlify 200
+       rewrite. At that URL the document path is "/demo1", so relative asset paths
+       (./custom.css, ../libs/..., projects.js, the cloud + stations folders) would
+       resolve against the site root and 404. The <base> pins them to this client's
+       folder so the same file works at both "/demo1" and the full viewer.html URL. -->
+  <base href="/clients/demo/">
   <title>Enable Viewer</title>
 
   <!-- ===================== CSS ===================== -->
@@ -620,9 +626,16 @@
   <!-- ===================== APP ===================== -->
   <script>
   (function () {
-    // ----- read ?p=<PointCloudID> and lookup in projects.js -----
+    // ----- resolve PointCloudID, then lookup in projects.js -----
+    // Prefer ?p=<id>. If absent (clean Netlify slug like "/demo1", a 200 rewrite
+    // that keeps "/demo1" in the bar with no query string), fall back to the first
+    // URL path segment. Ignore a "*.html" segment (the full viewer.html path).
     const params = new URLSearchParams(location.search);
-    const pointCloudID = params.get('p');
+    let pointCloudID = params.get('p');
+    if (!pointCloudID) {
+      var _seg = location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0];
+      if (_seg && !/\.html?$/i.test(_seg)) pointCloudID = decodeURIComponent(_seg);
+    }
     if (!pointCloudID) { alert('Missing ?p=<PointCloudID> in URL'); return; }
     const meta = (window.PROJECTS || {})[pointCloudID];
     if (!meta || !meta.folder) { alert('PointCloudID "' + pointCloudID + '" not found in projects.js'); return; }
