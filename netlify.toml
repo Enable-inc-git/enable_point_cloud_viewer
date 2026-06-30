@@ -82,6 +82,14 @@
   [headers.values]
     Cache-Control = "public, max-age=86400"
 
+# Short public demo aliases (FAQ / wider audience). Keep these ABOVE the generic
+# /clients patterns. status = 200 = rewrite, so the short slug stays in the URL
+# bar. One line per demo.
+[[redirects]]
+  from = "/demo1"
+  to = "/clients/demo/viewer.html?p=demo1"
+  status = 200
+
 # Pretty URLs (make sure these match your site/ layout)
 [[redirects]]
   from = "/clients/:client/:project"
