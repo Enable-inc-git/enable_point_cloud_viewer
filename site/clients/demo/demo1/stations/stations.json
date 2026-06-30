@@ -1,0 +1,312 @@
+{
+  "version": 1,
+  "source_db": "Scan Job 1.scan",
+  "image_source_dir": "(omitted)",
+  "image_type": "4177",
+  "generated": "2026-06-23T14:11:48Z",
+  "applied_offset": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "station_bbox": {
+    "min": [
+      -10.69632600932833,
+      0.0,
+      1.72280676332776
+    ],
+    "max": [
+      12.53137448565567,
+      13.59450911365761,
+      9.8698553143605
+    ]
+  },
+  "stations": [
+    {
+      "id": "station_001",
+      "name": "1",
+      "index": 1,
+      "position": [
+        0.0,
+        0.0,
+        1.993
+      ],
+      "rotation_quat": [
+        0.005232965450401731,
+        -0.008290494633265802,
+        0.3098365440337899,
+        0.9507392911584766
+      ],
+      "panorama": "panoramas/station_001.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_002",
+      "name": "2",
+      "index": 2,
+      "position": [
+        4.63447801941761,
+        0.28231856165488,
+        1.99063655324796
+      ],
+      "rotation_quat": [
+        0.0006262712987188583,
+        -0.021182754819310035,
+        0.1676149990648113,
+        0.9856247312091106
+      ],
+      "panorama": "panoramas/station_002.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_003",
+      "name": "3",
+      "index": 3,
+      "position": [
+        11.14657492502352,
+        0.01627556328157,
+        1.97187005436648
+      ],
+      "rotation_quat": [
+        0.004413927479783915,
+        -0.0009834021133186747,
+        -0.15407220469009467,
+        0.9880492426526203
+      ],
+      "panorama": "panoramas/station_003.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_004",
+      "name": "4",
+      "index": 4,
+      "position": [
+        -3.28948653416014,
+        6.70177945511573,
+        1.97793083372503
+      ],
+      "rotation_quat": [
+        -0.01841524569584908,
+        -0.0013006080814770044,
+        -0.540274791916938,
+        0.8412861203916838
+      ],
+      "panorama": "panoramas/station_004.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_005",
+      "name": "5",
+      "index": 5,
+      "position": [
+        -0.29091574402269,
+        12.54231297784515,
+        1.82320379165137
+      ],
+      "rotation_quat": [
+        0.03143919313194868,
+        0.010445351433439977,
+        0.9973910123369033,
+        -0.06413766661029106
+      ],
+      "panorama": "panoramas/station_005.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_006",
+      "name": "6",
+      "index": 6,
+      "position": [
+        4.94396154053502,
+        13.59450911365761,
+        1.72280676332776
+      ],
+      "rotation_quat": [
+        -0.0009512708911837152,
+        0.025954762574640994,
+        0.9687576387352059,
+        -0.24664566238954355
+      ],
+      "panorama": "panoramas/station_006.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_007",
+      "name": "7",
+      "index": 7,
+      "position": [
+        12.53137448565567,
+        10.81314143220846,
+        2.06486859527023
+      ],
+      "rotation_quat": [
+        -0.005522183547397652,
+        0.02508397387170807,
+        0.8900345087359469,
+        -0.4551690598039736
+      ],
+      "panorama": "panoramas/station_007.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_008",
+      "name": "8",
+      "index": 8,
+      "position": [
+        -4.56524445262278,
+        11.02161204167353,
+        9.83632911603
+      ],
+      "rotation_quat": [
+        0.01462030729588302,
+        0.025438333999853246,
+        0.8790509504697316,
+        -0.4758240896131139
+      ],
+      "panorama": "panoramas/station_008.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_009",
+      "name": "9",
+      "index": 9,
+      "position": [
+        -10.69632600932833,
+        7.11527826450326,
+        9.77805317540934
+      ],
+      "rotation_quat": [
+        0.010795963960120792,
+        0.021964400551423745,
+        0.8967080713482803,
+        -0.44194529870724686
+      ],
+      "panorama": "panoramas/station_009.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_010",
+      "name": "10",
+      "index": 10,
+      "position": [
+        -4.7081933327441,
+        1.93063274353984,
+        9.8698553143605
+      ],
+      "rotation_quat": [
+        0.01305624000954566,
+        -0.03130158730848101,
+        -0.004345159425013479,
+        0.9994152614495907
+      ],
+      "panorama": "panoramas/station_010.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_011",
+      "name": "11",
+      "index": 11,
+      "position": [
+        -4.02530750363747,
+        7.58239000390169,
+        5.61418362074453
+      ],
+      "rotation_quat": [
+        -0.0018579691837299064,
+        -0.024059983846668076,
+        0.06900273153683037,
+        0.9973245651082041
+      ],
+      "panorama": "panoramas/station_011.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_012",
+      "name": "12",
+      "index": 12,
+      "position": [
+        -4.86454054431008,
+        7.07598492361417,
+        6.39333893810366
+      ],
+      "rotation_quat": [
+        -0.008200960980219156,
+        -0.012103027159010071,
+        -0.5874046593883955,
+        0.8091613109271796
+      ],
+      "panorama": "panoramas/station_012.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    },
+    {
+      "id": "station_013",
+      "name": "13",
+      "index": 13,
+      "position": [
+        -4.01372401417278,
+        0.81301114528707,
+        5.60213336230442
+      ],
+      "rotation_quat": [
+        -0.0025231512719409302,
+        -0.023363323214398837,
+        0.1508672267833621,
+        0.9882746929466183
+      ],
+      "panorama": "panoramas/station_013.jpg",
+      "panorama_projection": "equirectangular",
+      "image_width": 12192,
+      "image_height": 6096,
+      "has_panorama": true,
+      "panorama_image_type": "4177"
+    }
+  ]
+}
