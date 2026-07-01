@@ -634,8 +634,78 @@
     return btn;
   }
 
+  // Full Potree BSD 2-Clause license — reproduced here (in an "other materials
+  // provided with the distribution") to satisfy clause 2 of the license. Lives in
+  // the About dialog off the top-right info button.
+  var POTREE_BSD_LICENSE =
+    'Copyright (c) 2011-2020, Markus Schutz\n' +
+    'All rights reserved.\n\n' +
+    'Redistribution and use in source and binary forms, with or without\n' +
+    'modification, are permitted provided that the following conditions are met:\n\n' +
+    '1. Redistributions of source code must retain the above copyright notice,\n' +
+    '   this list of conditions and the following disclaimer.\n' +
+    '2. Redistributions in binary form must reproduce the above copyright notice,\n' +
+    '   this list of conditions and the following disclaimer in the documentation\n' +
+    '   and/or other materials provided with the distribution.\n\n' +
+    'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"\n' +
+    'AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\n' +
+    'IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE\n' +
+    'ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE\n' +
+    'LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR\n' +
+    'CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF\n' +
+    'SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS\n' +
+    'INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN\n' +
+    'CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)\n' +
+    'ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE\n' +
+    'POSSIBILITY OF SUCH DAMAGE.';
+
   function openAboutModal() {
-    flashToast('Enable Point Cloud Viewer');
+    var existing = document.getElementById('enable-about-modal');
+    if (existing) { existing.remove(); return; }   // toggle closed if already open
+
+    var overlay = document.createElement('div');
+    overlay.id = 'enable-about-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,0.6);' +
+      'display:flex;align-items:center;justify-content:center;padding:16px;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;';
+
+    var card = document.createElement('div');
+    card.style.cssText = 'background:#262626;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;' +
+      'box-shadow:0 12px 40px rgba(0,0,0,0.5);max-width:560px;width:100%;max-height:85vh;' +
+      'display:flex;flex-direction:column;overflow:hidden;';
+
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #3a3a3a">' +
+        '<span style="font-size:15px;font-weight:600">About</span>' +
+        '<button id="enable-about-close" title="Close" style="background:transparent;border:0;color:#bbb;font-size:20px;line-height:1;cursor:pointer;padding:2px 6px">&times;</button>' +
+      '</div>' +
+      '<div style="padding:18px;overflow-y:auto">' +
+        '<div style="font-size:15px;font-weight:600;color:#fff">Enable Point Cloud Viewer</div>' +
+        '<div style="font-size:12px;color:#9a9a9a;margin-top:2px">&copy; Enable Engineering</div>' +
+        '<hr style="border:0;border-top:1px solid #3a3a3a;margin:14px 0">' +
+        '<div style="font-size:13px;line-height:1.5;color:#cfcfcf">' +
+          'This viewer is built on <a href="https://potree.org" target="_blank" rel="noopener" style="color:#5cc46a">Potree</a>, ' +
+          'an open-source WebGL point-cloud renderer, and <a href="https://threejs.org" target="_blank" rel="noopener" style="color:#5cc46a">three.js</a>.' +
+        '</div>' +
+        '<div style="font-size:12px;font-weight:600;color:#fff;margin:16px 0 6px">Potree &mdash; BSD 2-Clause License</div>' +
+        '<pre id="enable-about-license" style="margin:0;white-space:pre-wrap;font:11px/1.45 ui-monospace,Consolas,\'Courier New\',monospace;' +
+          'color:#b9b9b9;background:#1c1c1c;border:1px solid #333;border-radius:6px;padding:12px;max-height:280px;overflow:auto"></pre>' +
+        '<div style="font-size:11px;color:#8f8f8f;margin-top:12px">three.js is distributed under the MIT License &copy; 2010&ndash;present three.js authors.</div>' +
+      '</div>';
+
+    overlay.appendChild(card);
+    // Set the license text via textContent so it can never be interpreted as HTML.
+    card.querySelector('#enable-about-license').textContent = POTREE_BSD_LICENSE;
+    document.body.appendChild(overlay);
+
+    function close() {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) close(); });
+    card.querySelector('#enable-about-close').addEventListener('click', close);
+    document.addEventListener('keydown', onKey, true);
   }
 
   // ============================================================
