@@ -1,0 +1,252 @@
+==============================================================================
+ ENABLE POINT CLOUD VIEWER — AI HANDOFF BRIEF
+ Purpose: bring a fresh AI assistant fully up to speed on this system if the
+ original machine/assistant is lost. Written 2026-06-23.
+ Companion file: PUBLISHED_PROJECT_URLS.txt (list of live project links).
+==============================================================================
+
+#############################################################################
+# *** MAJOR UPDATE 2026-07-01 — READ THIS FIRST (supersedes parts of below) ***
+#############################################################################
+Big architectural shift over 2026-06-29..07-01. Sections below are still mostly
+right but predate these changes:
+
+1) DATA NOW ON CLOUDFLARE R2, NOT GIT (for the "new-viewer" clients).
+   Octrees + station panoramas + GLB models for demo, WJ Properties, Solar
+   Restoration, HRI, and BDA are served from a Cloudflare R2 bucket
+   'enable-pointclouds' (public URL
+   https://pub-3f436f87578a4223ae3a342484363f71.r2.dev), NOT committed to git.
+   Those clients' projects.js `folder` values are ABSOLUTE r2.dev URLs, e.g.
+   ".../hri/40larch1/pointclouds/scan". Local octree/stations copies are
+   GITIGNORED. This keeps the repo small (it was 2.5GB and choking Netlify/GitHub).
+   R2 keys mirror <client>/<project>/{pointclouds,stations,models}.
+   TO ADD/UPDATE A PROJECT on these clients: convert LAS->octree (DEDUPE first if
+   the convert slows exponentially — that's duplicate points), extract stations,
+   UPLOAD to R2 (boto3 scripts — R2 creds are NOT in the repo; ask the user or mint
+   a new R2 token), set projects.js folder = the R2 URL, gitignore + `git rm
+   --cached` the local data, push CODE ONLY (a few KB — no more 50MB-chunk dance).
+   viewer.html station-path derivation was made protocol-safe (grep
+   `manifestBase = meta.folder.replace`) so absolute https:// URLs work.
+
+2) MOST VIEWERS ARE NO-LOGIN NOW. demo, WJ, Solar, HRI, BDA all use the no-login
+   "HRI viewer stack" (Firebase login bypassed; scripts still load). BDA is no
+   longer the login portal (dropped login + saved-views). MurrayFranks may still
+   be the only requireAccess()-gated client.
+
+3) MOBILE SUPPORT. chrome.css has responsive media queries (2-row portrait
+   toolbar, bottom-docked panorama, landscape-compact, panels overlay). The shared
+   libs/potree/potree.js has a fix for a first-tap crash on phone GPUs lacking
+   GL_EXT_frag_depth (pick shape PARABOLOID->SQUARE fallback).
+
+4) NEW 'demo' CLIENT = public FAQ viewer (neutral names, no client/address shown).
+   Short slug viewer.enable-inc.com/demo1 via a netlify.toml 200-rewrite + a
+   <base href> in demo/viewer.html.
+
+5) The top-right INFO button now opens an About modal with the Potree BSD 2-Clause
+   license (was invisible after the old Potree sidebar UI got hidden).
+
+6) GITHUB PAGES DISABLED (was a forgotten leftover failing on the big repo; deploy
+   via Netlify ONLY). Don't re-enable it.
+
+STILL PENDING: attach a custom domain to the R2 bucket (the r2.dev URL is
+rate-limited — fine for testing, throttles under bulk uploads / wide traffic);
+rotate the R2 API token; one-time `.git` history rewrite to reclaim old blobs
+(checkouts/pushes are already small, but .git itself is still large).
+==============================================================================
+
+#############################################################################
+# 0. COPY-PASTE THIS TO A NEW AI ASSISTANT TO START
+#############################################################################
+"You are helping maintain the Enable Point Cloud Viewer: a customized Potree-
+based 3D point-cloud web viewer for structural/civil engineering inspections
+(slabs, GPR markings, steel canopies, bridges). It is a static site deployed on
+Netlify from the GitHub repo Enable-inc-git/enable_point_cloud_viewer (branch
+`main`). Each client has a folder under site/clients/<Client>/ with its own
+viewer.html (a large single-file app with inline JS), projects.js (registry of
+projects), and per-project point-cloud octrees + station panoramas. My machine
+is Windows; I have PowerShell and Git-Bash. Read AI_HANDOFF_BRIEF.txt and
+PUBLISHED_PROJECT_URLS.txt in the repo root, then ask me what I want to do."
+
+#############################################################################
+# 1. WHAT THE SYSTEM IS
+#############################################################################
+- Custom Potree viewer for inspecting laser-scan point clouds. Features built on
+  top of stock Potree: mark/measure/member-sketch tools, constraint planes &
+  axes, fit-plane, DXF export, save/load session, undo/redo, snap-to-endpoint,
+  elevation/heat-map (some clients), clip box + cut-out/exclusion volumes,
+  station panorama pins + modal, multi-scan (load several clouds, toggle in a
+  right-hand "Scans" panel), saved views, and a Firebase login portal (BDA).
+- Each CLIENT is a folder under site/clients/. The active development sandboxes
+  are Dev/ and Dev2/. Production clients: August, BDA, Conterra, Fida
+  Restoration, HRI, MurrayFranks, Pomerleau, Solar Restoration, WJ Properties.
+- A viewer instance is opened as:  <client>/viewer.html?p=<project_id>
+  where project_id is a key in that client's projects.js.
+
+#############################################################################
+# 2. REPO LAYOUT (per client)
+#############################################################################
+site/clients/<Client>/
+  viewer.html        # the app — ALL custom JS is inline in one <script> IIFE
+  chrome.js / chrome.css   # (newer clients) top toolbar, panels, point-size UI
+  custom.css         # theme overrides (Enable green #3EAD4A)
+  icons.js
+  projects.js        # window.PROJECTS = { "<id>": { name, folder, clouds:[...] } }
+  <Project Name>/
+    pointclouds/<cloudId>/      # PotreeConverter output: cloud.js + data/r/*.bin/.hrc + sources.json
+    stations/
+      stations.json            # station pins + 6-DOF pose
+      panoramas/station_NNN.jpg  # SERVED panoramas (committed)
+    HighResolution/            # raw-named pano staging dup (GITIGNORED, not served)
+    *.las / *.e57 / *.scan     # RAW SCANS (GITIGNORED — never committed)
+site/clients/libs/             # shared potree/ + firebase/ libraries
+
+Multi-scan projects.js shape:
+  "40larch1": {
+    name: "40 Larch 1",
+    folder: "40 Larch 1/pointclouds/scan",            // PRIMARY cloud (fit-to-screen base)
+    clouds: [                                          // each appears in Scans panel
+      { id:"scan",  name:"Scan",   folder:"40 Larch 1/pointclouds/scan",  visible:true },
+      { id:"gprhd", name:"GPR HD", folder:"40 Larch 1/pointclouds/gprhd", visible:true }
+    ]
+  }
+
+#############################################################################
+# 3. ENVIRONMENT / TOOLS (Windows)
+#############################################################################
+- Repo root: C:\enable_point_cloud_viewer   (a second working dir holds raw
+  scans: C:\enable_point_cloud_viewer_scans)
+- PotreeConverter: C:\PotreeTools\PotreeConverter_1.7_windows_x64\PotreeConverter.exe
+  IMPORTANT: v1.7 is the ONLY reliable build (2.1 does not work). Output format
+  is cloud.js "version 1.8".
+- Python (call it `python`, NOT `python3`) with laspy, numpy, scipy, PIL — used
+  for inspecting LAS and for the color despeckle.
+- Git-Bash AND PowerShell both available. NOTE: PotreeConverter SEGFAULTS when
+  launched from Git-Bash — ALWAYS run it from PowerShell (see §4).
+
+#############################################################################
+# 4. DATA PIPELINE: raw scan -> served octree
+#############################################################################
+A) Inspect the LAS first (python + laspy): point count, RGB range (16-bit:
+   0..65280 = 8-bit x256, so divide by 256 / >>8), native nearest-neighbor
+   spacing, and bounds (to confirm a new HD/sub-scan aligns with the main scan).
+
+B) Convert with PotreeConverter — RUN FROM POWERSHELL, from the converter dir,
+   input as a POSITIONAL arg, use --attributes (not -a):
+     cd 'C:\PotreeTools\PotreeConverter_1.7_windows_x64'
+     .\PotreeConverter.exe "C:\...\<scan>.las" -o "C:\...\pointclouds\<id>" `
+        -s 0.05 --scale 0.001 --attributes RGB INTENSITY --material RGB --overwrite
+   - `-s` = ROOT spacing in metres (coarsest LOD; halves each deeper level).
+     Conversion is LOSSLESS (octree cloud.js "points" == LAS point count — verify).
+     Use FINER spacing to resolve fine features (cm GPR marks): 0.05 for big
+     slabs (~30M pts), 0.01 for dense HD strips (~mm spacing). Default auto-
+     spacing (~0.2-0.4) is too coarse for reading marks.
+   - Convert to a *_v2 / temp dir, verify cloud.js, then swap folders; keep the
+     old one in a _stale/ dir until confirmed, then delete.
+
+C) (Optional but important for scanner color noise) COLOR-AWARE DESPECKLE.
+   Symptom: scan looks crystal-clear in CloudCompare but speckled/washed-out in
+   our viewer, white scan-line speckle burying colored (GPR) marks. CAUSE: the
+   SOURCE colorization is noisy (~18% near-white points scattered through
+   concrete); CloudCompare hides it by drawing ALL points dense, Potree shows a
+   sparse LOD subset so each noisy point shows. The PotreeConverter does NOT
+   average color — do not chase that. FIX = python despeckle that replaces only
+   salt-and-pepper outliers while PROTECTING mark colours:
+     - per point: 3D KNN median (k=12, scipy cKDTree, chunked query workers=-1)
+     - replace only if dev=sum|RGB-median|>~85 AND not a protected colour
+     - protect mask: (B>G+4) | (G>R+6) | (max-min>70)  [blue/green/saturated]
+     - write back as 16-bit (value*256) so PotreeConverter handles it identically
+   A PLAIN median (no protection) ERASES thin marks (they look like outliers vs
+   white neighbours) and posterizes into blotches — that was a wrong turn.
+   Helper scripts live (gitignored) at:
+     site/clients/HRI/40 Larch 1/_despeckle.py  and  _inspect.py
+
+D) Density when zoomed: native spacing may be ~1cm but the viewer can look
+   2-3cm because of LOD throttling (NOT data loss). Levers in viewer.html:
+   viewer.setPointBudget(...) and viewer.setMinNodeSize(20) (Potree default 30;
+   lower = denser/deeper nodes load). The +/- keys are bound to point BUDGET,
+   not size. When zoomed into a fully-loaded region you already see every point
+   (== CloudCompare); remaining "CC is crisper" gap is render STYLE (point size
+   slider / shape / EDL), and CC just draws all points always (no LOD).
+
+#############################################################################
+# 5. ADDING A PROJECT
+#############################################################################
+1. Convert the scan (§4) into <Project>/pointclouds/<cloudId>/.
+2. Put served panoramas in <Project>/stations/panoramas/ + stations.json.
+3. Register in the client's projects.js (add a "<id>": {...} entry, or add a
+   cloud to an existing project's clouds[] for a multi-scan toggle).
+4. Local test: cd site && python -m http.server 8080
+   then http://localhost:8080/clients/<Client>/viewer.html?p=<id>
+5. Push (§6), then UPDATE PUBLISHED_PROJECT_URLS.txt (§7).
+
+#############################################################################
+# 6. PUSHING TO GITHUB (large data — MUST chunk)  *critical recipe*
+#############################################################################
+Repo: Enable-inc-git/enable_point_cloud_viewer over HTTPS. Netlify deploys
+`main`. Convention here is to commit/push straight to main (that is the deploy).
+Two real failure modes and their fixes:
+  1. A single ~300MB push RESETS ("curl 55 Send failure: Connection was reset").
+     FIX: split into multiple commits of ~80MB (48-110MB proven safe) and
+     `git push` AFTER EACH — each push only uploads that commit's new objects.
+  2. `git add file1 ... file400` -> "Argument list too long" (Git-Bash ARG_MAX),
+     and it SILENTLY commits nothing. FIX: `git add` ONE file per call in a loop.
+Working loop (bash), tally bytes, commit+push every ~80MB, verify each push:
+  - first commit = code + manifests (cloud.js, sources.json, stations.json,
+    projects.js, .gitignore) -> push (validates auth/connectivity)
+  - then loop over `git ls-files -z --others --exclude-standard "<Project path>"`
+    adding one file each, commit+push at ~80MB, final commit for remainder.
+  - AFTER EACH PUSH verify `git rev-parse HEAD == git rev-parse origin/main`
+    (a reset push can still exit 0 in a pipe — exit code is NOT proof).
+  - End state: `git ls-files --others --exclude-standard "<path>" | wc -l` == 0.
+A known-good script template was used for HRI 40 Larch 1 and 30 Weston Rd; see
+the loop in §6 above — reproduce it as a .sh in the OS temp dir and run it in
+the background (pushes can take minutes).
+GITIGNORE already excludes: *.las, *.e57, *.scan, /potree/, each client's
+panorama staging (images/ or HighResolution/), and HRI _*.py / _stale/.
+NEVER commit: raw scans, *_project.bin scratch (can be many GB), tool checkouts.
+
+#############################################################################
+# 7. UPDATING PUBLISHED_PROJECT_URLS.txt  (do this on every push)
+#############################################################################
+After successfully pushing a new project/client, append its line to
+PUBLISHED_PROJECT_URLS.txt in this format (spaces -> %20):
+   https://viewer.enable-inc.com/clients/<Client>/viewer.html?p=<id>
+Commit that file too. (This is also recorded as a standing reminder/memory for
+the assistant.)
+
+#############################################################################
+# 8. LOCAL DEV SERVER
+#############################################################################
+cd site && python -m http.server 8080
+Open: http://localhost:8080/clients/<Client>/viewer.html?p=<id>
+Browser caching is aggressive — hard-refresh (Ctrl+Shift+R) after code/data
+changes. Point-size default may be pinned in localStorage (chrome.js
+dev2.point.size) overriding the code default.
+
+#############################################################################
+# 9. SELECTED GOTCHAS
+#############################################################################
+- viewer.html is huge; custom JS is inline in one IIFE. Separate THREE.Scenes
+  for markers/constraints/members/labels, rendered in render.pass.perspective_overlay.
+- Potree's scene.view (yaw/pitch/position/radius) drives the camera every frame;
+  setting camera transform directly gets overwritten — use scene.view.*.
+- Right-click is custom-intercepted to always pan (even during measurement).
+- Persistent clip box is grabbable by its WIREFRAME EDGE only (interior orbits).
+  A manual capture-phase OBB hit-test selects the OTHER managed boxes (elevation/
+  cut-out/exclusion) whose fill raycast is off; it uses an INFINITE ray, so it
+  must DEFER to Potree whenever Potree hovered ANY scene volume, else it hijacks
+  clip-box-edge clicks and they go unresponsive. (Keep edge-only; do NOT make the
+  interior clickable — that was explicitly rejected.)
+- Production URL (Netlify) is case-insensitive and works with/without ".html".
+
+#############################################################################
+# 10. WHERE DEEPER NOTES LIVED (may be lost in a folder-only backup!)
+#############################################################################
+The original assistant kept detailed per-feature memory files OUTSIDE this repo
+at  C:\Users\<user>\.claude\projects\C--enable-point-cloud-viewer\memory\
+(MEMORY.md index + many *.md). A backup of ONLY the repo folder will NOT include
+those — this brief is the self-contained substitute. If you still have that
+folder, read MEMORY.md first. Key references there: reference_large_data_git_push,
+reference_scanner_color_speckle_despeckle, reference_potree_tools, reference_
+netlify_url, feedback_clipbox_edge_unclickable, plus per-client project notes.
+==============================================================================

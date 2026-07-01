@@ -1,0 +1,53 @@
+==============================================================================
+ ENABLE POINT CLOUD VIEWER — PUBLISHED PROJECT URLS
+==============================================================================
+ Live site: https://viewer.enable-inc.com  (Netlify, auto-deploys from GitHub
+ branch `main` of Enable-inc-git/enable_point_cloud_viewer)
+
+ URL format:  https://viewer.enable-inc.com/clients/<Client>/viewer.html?p=<id>
+   - Spaces in the client folder name become %20
+   - Netlify is case-insensitive and works with or without ".html"
+
+ Last updated: 2026-07-01
+ AUTO-GENERATED from each client's projects.js by .claude/gen_published_urls.mjs
+ (runs after every `git push` via a PostToolUse hook). Dev/sandbox clients are
+ excluded. Do not hand-edit — change projects.js instead.
+==============================================================================
+
+------------------------------- CLIENT PROJECTS -------------------------------
+
+August
+  hydrovault             https://viewer.enable-inc.com/clients/August/viewer.html?p=hydrovault
+
+BDA
+  222 Jarvis Elevator 4  https://viewer.enable-inc.com/clients/BDA/viewer.html?p=jarvis
+  St. Joseph's Hamilton  https://viewer.enable-inc.com/clients/BDA/viewer.html?p=stjoseph
+
+Conterra
+  7 St Dennis - Rear Entrance  https://viewer.enable-inc.com/clients/Conterra/viewer.html?p=st_dennis_rear
+
+demo
+  Demo1                  https://viewer.enable-inc.com/clients/demo/viewer.html?p=demo1
+
+Fida Restoration
+  Hole 13                https://viewer.enable-inc.com/clients/Fida%20Restoration/viewer.html?p=hole13
+  Hole 1                 https://viewer.enable-inc.com/clients/Fida%20Restoration/viewer.html?p=hole1
+
+HRI
+  40 Larch 1             https://viewer.enable-inc.com/clients/HRI/viewer.html?p=40larch1
+  30 Weston Rd           https://viewer.enable-inc.com/clients/HRI/viewer.html?p=30weston
+
+MurrayFranks
+  1531 Dupont (Steel Canopy)  https://viewer.enable-inc.com/clients/MurrayFranks/viewer.html?p=dupont
+
+Pomerleau
+  Hart House             https://viewer.enable-inc.com/clients/Pomerleau/viewer.html?p=hart_house
+
+Solar Restoration
+  Seneca                 https://viewer.enable-inc.com/clients/Solar%20Restoration/viewer.html?p=seneca
+
+WJ Properties
+  7 St Dennis - South Garage Slab  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=southGarageSlab
+  PH8                    https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=ph8
+  2560 Kingston Rd - Sprinkler Room  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=sprinkler_room
+  7 St Dennis - South Garage Slab (original scan)  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=7_st_dennis_scan
