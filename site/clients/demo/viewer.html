@@ -2066,6 +2066,21 @@
 
       pop.appendChild(footer);
 
+      // Keep note editing self-contained. Enter in the single-line name field
+      // commits + closes; Enter in the textarea keeps its default (newline). In
+      // BOTH cases the key is stopped from reaching the global keydown handler,
+      // which would otherwise restart the last measurement tool and jump/zoom the
+      // camera. (Escape is left to bubble — the global handler closes the popover.)
+      pop.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter') return;
+        if (ev.target === nameInput) {
+          ev.preventDefault();
+          setNoteName(n.id, nameInput.value || ('N' + n.id));
+          _closeNotePopover();
+        }
+        ev.stopPropagation();
+      });
+
       document.body.appendChild(pop);
       _notePopoverEl = pop;
       _positionNotePopover();
@@ -10402,7 +10417,7 @@
       }
 
       // Check if clicking near an unlocked marker (for dragging)
-      if (e.button === 0 && markedPoints.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
+      if (e.button === 0 && markedPoints.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE && !notePickMode) {
         var rect = renderArea.getBoundingClientRect();
         var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         var markerHit = findNearestMarker(mousePixel);
@@ -10416,7 +10431,7 @@
         }
       }
       // Check if clicking near a member endpoint (for dragging) — check before constraints
-      if (e.button === 0 && members.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
+      if (e.button === 0 && members.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE && !notePickMode) {
         var rect = renderArea.getBoundingClientRect();
         var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         var memberHit = findNearestMemberEndpoint(mousePixel);
@@ -10430,7 +10445,7 @@
         }
       }
       // Check if clicking near a constraint definition point (for dragging)
-      if (e.button === 0 && constraints.length > 0 && !constraintPickMode && !MARK_MODE && !memberPickMode) {
+      if (e.button === 0 && constraints.length > 0 && !constraintPickMode && !MARK_MODE && !memberPickMode && !notePickMode) {
         var rect = renderArea.getBoundingClientRect();
         var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         var hit = findNearestDefinitionPoint(mousePixel);
@@ -10827,9 +10842,15 @@
         return;
       }
 
-      const pickResult = Potree.Utils.getMousePointCloudIntersection(
-        mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
-      );
+      // Notes land exactly where the yellow preview sphere sits: use the RAW
+      // (unpatched) picker so a note never snaps onto a nearby member / constraint /
+      // measurement node ("protected circle") and never projects onto an active
+      // constraint. Every other tool keeps the snapping picker.
+      const pickResult = notePickMode
+        ? _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true })
+        : Potree.Utils.getMousePointCloudIntersection(
+            mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
+          );
 
       if (pickResult && pickResult.location) {
         var pos = pickResult.location;
@@ -11008,10 +11029,16 @@
           // outline to orbit). Force a thin ~1.5%-of-box band so you grab right on
           // the wireframe and orbit everywhere else.
           if (clipBox.box && clipBox.frame) {
+            // Grab band for the crop-box wireframe, measured in unit-cube space
+            // (≈ fraction of box size). Was 0.015 (~1.5%) — too thin to hit without
+            // pixel-perfect aim. Widened, and much wider on coarse pointers (touch)
+            // where a fingertip can't land on a thin edge.
+            var _coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+            var _clipEdgeGrab = _coarsePointer ? 0.09 : 0.04;
             clipBox.box.raycast = function(raycaster, intersects) {
               var lp = raycaster.params && raycaster.params.Line;
               var saved = lp ? lp.threshold : null;
-              if (lp) lp.threshold = 0.015;   // unit-cube space → ~1.5% of box size in world units
+              if (lp) lp.threshold = _clipEdgeGrab;
               try { clipBox.frame.raycast(raycaster, intersects); }
               finally { if (lp) lp.threshold = saved; }
             };
@@ -11055,17 +11082,26 @@
 
     // ----- keyboard helpers -----
     window.addEventListener('keydown', (ev) => {
-      // Existing shortcuts
-      if (ev.key === 'e' || ev.key === 'E') viewer.setEDLEnabled(!viewer.getEDLEnabled()); // toggle EDL
-      if (ev.key === '+' || ev.key === '=') viewer.setPointBudget(viewer.getPointBudget() + 250000);
-      if (ev.key === '-' || ev.key === '_') viewer.setPointBudget(Math.max(250000, viewer.getPointBudget() - 250000));
-      if (ev.key === 'f' || ev.key === 'F') viewer.fitToScreen();
+      // Single-key tool shortcuts must NEVER fire while the user is typing in a form
+      // field (note text/name, sidebar inputs). Otherwise typing "m"/"x"/"z"/"f"/"e"
+      // into a note toggles tools — e.g. "m" starts member-pick mode, so the next
+      // click prompts for a member endpoint. See feedback_keyboard_guards.
+      var _sk = ev.target;
+      var _skTyping = _sk && (_sk.tagName === 'INPUT' || _sk.tagName === 'TEXTAREA' ||
+                              _sk.tagName === 'SELECT' || _sk.isContentEditable);
+      // Existing shortcuts (suppressed while typing)
+      if (!_skTyping) {
+        if (ev.key === 'e' || ev.key === 'E') viewer.setEDLEnabled(!viewer.getEDLEnabled()); // toggle EDL
+        if (ev.key === '+' || ev.key === '=') viewer.setPointBudget(viewer.getPointBudget() + 250000);
+        if (ev.key === '-' || ev.key === '_') viewer.setPointBudget(Math.max(250000, viewer.getPointBudget() - 250000));
+        if (ev.key === 'f' || ev.key === 'F') viewer.fitToScreen();
 
-      // Mark point shortcuts
-      if (ev.key === 'x' || ev.key === 'X') toggleMarkMode();
-      if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
-      // Member shortcut
-      if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+        // Mark point shortcuts
+        if (ev.key === 'x' || ev.key === 'X') toggleMarkMode();
+        if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
+        // Member shortcut
+        if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+      }
       // Ortho-measure toggle (requires an active plane with a basis)
       if (ev.key === 'o' || ev.key === 'O') {
         var _t = ev.target;
@@ -11127,7 +11163,10 @@
         } else {
           var t = ev.target;
           var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-          if (!typing && !constraintPickMode && !memberPickMode && !MARK_MODE && !pendingMeasurement) {
+          // Don't restart the measurement tool (which re-arms Potree's insertion and
+          // jumps the camera) while a note is being placed or its popover is open.
+          if (!typing && !notePickMode && _expandedNoteId == null &&
+              !constraintPickMode && !memberPickMode && !MARK_MODE && !pendingMeasurement) {
             if (restartLastMeasurementTool()) {
               ev.preventDefault();
             }
@@ -11146,6 +11185,9 @@
         // cancel_insertions, stops the InputHandler drag, and removes any
         // orphan measurement that has fewer than the required points.
         cancelPotreeInsertion();
+        // Also drop any current selection (e.g. the large clip box or a managed
+        // volume) — Esc should clear a highlighted/selected object, not just modes.
+        try { if (viewer.inputHandler && viewer.inputHandler.deselectAll) viewer.inputHandler.deselectAll(); } catch (e) {}
         // The user pressed Esc to stop a tool — they want to navigate next, not
         // grab whatever sphere/mark the cursor is resting on. Force the next
         // left-drag to orbit.
