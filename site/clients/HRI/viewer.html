@@ -6768,12 +6768,15 @@
     // Extract loaded-node positions, optionally filtered to nodes that
     // intersect a given AABB. Nodes outside the filter are skipped entirely
     // to avoid allocating a 300MB merged buffer for points we'll never use.
-    function extractPositions(pointCloud, filterAABB) {
+    function extractPositions(pointCloud, filterAABB, maxLevel) {
       var geo = pointCloud.pcoGeometry;
       var allPositions = [];
       var nodeMap = [];
       var totalCount = 0;
       var pcoOffset = geo.offset;
+      function nodeLevel(node) {
+        return (node.level != null) ? node.level : (node.name ? node.name.length - 1 : 0);
+      }
       function nodeIntersects(node) {
         if (!filterAABB) return true;
         if (!node.boundingBox) return true;
@@ -6787,6 +6790,10 @@
       }
       function traverse(node) {
         if (!node || !nodeIntersects(node)) return;
+        // Deterministic set: ignore nodes deeper than maxLevel. Potree also
+        // streams view-dependent deeper nodes that would otherwise leak in and
+        // make each recompute use a different point set (→ shifting contours).
+        if (maxLevel != null && nodeLevel(node) > maxLevel) return;
         if (node.loaded && node.geometry) {
           var posAttr = node.geometry.attributes.position;
           if (posAttr && posAttr.array) {
@@ -7223,6 +7230,34 @@
         }
       }
       rgba.needsUpdate = true;
+    }
+
+    // Re-color EVERY loaded node that was ever elevation-colored — not just the
+    // compute-time elevationNodeMap. Nodes coloured while the user navigates
+    // (via elevationFrameUpdate) are NOT in elevationNodeMap, so re-coloring
+    // through applyElevationColors(elevationPositions, elevationNodeMap) left
+    // their heat colours behind when a box was hidden/deactivated ("colouring of
+    // some points at some locations remains"). Walk the elevColored geometries
+    // and re-run colorNodeByElevation with the CURRENT active-box list — points
+    // no longer covered by any active box fall back to their originals.
+    function recolorElevatedNodes() {
+      var pc = viewer.scene.pointclouds[0];
+      if (!pc || !pc.pcoGeometry || !pc.pcoGeometry.root) return;
+      var cachedBoxes = buildActiveBoxDrawList();
+      var cachedExcl = buildExclusionInvMats();
+      elevationColoredNodes.clear();
+      (function walk(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry && node.geometry.attributes &&
+            node.geometry.attributes.rgba &&
+            node.geometry.userData && node.geometry.userData.elevColored) {
+          colorNodeByElevation(node, pc, cachedBoxes, cachedExcl);
+          elevationColoredNodes.add(node);
+        }
+        if (node.children) {
+          for (var k = 0; k < 8; k++) if (node.children[k]) walk(node.children[k]);
+        }
+      })(pc.pcoGeometry.root);
     }
 
     // Per-frame check: color any newly loaded nodes
@@ -8221,14 +8256,15 @@
           eyeBtn.style.cssText = iconBtnStyle + ';opacity:' + (cfg.heatmapHidden ? '0.45' : '1');
           eyeBtn.addEventListener('click', function() {
             cfg.heatmapHidden = !cfg.heatmapHidden;
-            if (cfg.contourGroup) cfg.contourGroup.visible = !cfg.heatmapHidden;
-            if (elevationActive && elevationPositions && elevationNodeMap) {
-              applyElevationColors(elevationPositions, elevationNodeMap);
-              elevationColoredNodes.clear();
-              for (var ni = 0; ni < elevationNodeMap.length; ni++) {
-                elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
-              }
+            // Keep contours in step with the heat map. If they were disposed
+            // while hidden, rebuild on show so they don't silently vanish (they
+            // used to need a manual recompute).
+            if (!cfg.heatmapHidden && cfg.active && cfg.contoursVisible && !cfg.contourGroup) {
+              buildBoxContours(vol);
+            } else if (cfg.contourGroup) {
+              cfg.contourGroup.visible = !cfg.heatmapHidden;
             }
+            if (elevationActive) recolorElevatedNodes();
             rebuildElevationBoxList();
           });
 
@@ -8561,11 +8597,7 @@
             cfg.contourStep = sp;
 
             if (cfg.active && elevationActive && elevationPositions) {
-              applyElevationColors(elevationPositions, elevationNodeMap);
-              elevationColoredNodes.clear();
-              for (var ni = 0; ni < elevationNodeMap.length; ni++) {
-                elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
-              }
+              recolorElevatedNodes();
               updateElevationLegend(cfg.zMin, cfg.zMax);
               if (cfg.contoursVisible) buildBoxContours(vol);
               showToast('Applied');
@@ -8586,17 +8618,22 @@
             var sp = parseFloat(stepInput.value);
             if (!isNaN(sp) && sp > 0) cfg.contourStep = sp;
             if (cfg.contoursVisible) {
-              if (cfg.contourGroup) {
-                disposeContourGroup(cfg.contourGroup);
-                cfg.contourGroup = null;
-              }
+              // Hide but KEEP the group so the eye toggle / re-show restores it
+              // without a recompute. It's disposed only on delete or recompute.
+              if (cfg.contourGroup) cfg.contourGroup.visible = false;
               cfg.contoursVisible = false;
               // Update global flag based on remaining visible boxes
               elevationContoursVisible = elevationCropVolumes.some(function(v2) {
                 return getBoxConfig(v2).contoursVisible;
               });
             } else {
-              buildBoxContours(vol);
+              if (cfg.contourGroup) {
+                cfg.contourGroup.visible = true;
+                cfg.contoursVisible = true;
+                elevationContoursVisible = true;
+              } else {
+                buildBoxContours(vol);
+              }
             }
             contoursBtn.textContent = cfg.contoursVisible ? 'Hide Contours' : 'Show Contours';
           });
@@ -8682,13 +8719,19 @@
       if (elevationOrigBudget === null) elevationOrigBudget = viewer.getPointBudget();
       viewer.setPointBudget(20000000);
 
+      // Fixed octree depth for both loading AND extraction. Using a fixed level
+      // (rather than a timing-dependent point cap) makes recompute deterministic:
+      // the same nodes load and are extracted every time, so the computed range
+      // and contours are identical across recomputes of the same box.
+      var ELEV_MAX_LEVEL = 6;
+
       forceLoadAllNodes(pc, loadAABB, {
-        // Depth 6 + 1.5M point soft cap keeps web load times bounded without
-        // visibly degrading the elevation grid (200×200 = 40K cells; ~10–40
-        // points per cell is plenty for stable top-surface detection). Bump
-        // these if a particular cloud needs finer resolution.
-        maxDepth: 6,
-        maxPoints: 1500000,
+        // Depth-bounded load. NOTE: we deliberately do NOT pass a points-based
+        // soft cap here — it stopped loading at a timing-dependent moment, so the
+        // loaded set (and thus the computed range + contours) varied run-to-run.
+        // Depth alone gives a fixed, reproducible node set (200×200 grid, ~10–40
+        // points per cell is plenty). Bump the depth if a cloud needs finer data.
+        maxDepth: ELEV_MAX_LEVEL,
         onProgress: function(p) {
           setComputeProgress('Loading octree nodes... ' + p.loaded.toLocaleString() + ' pts loaded'
             + (p.inFlight > 0 ? ' (' + p.inFlight + ' in flight)' : ''));
@@ -8697,7 +8740,7 @@
         setComputeProgress('Extracting positions...');
         return _yieldToPaint();
       }).then(function () {
-        var data = extractPositions(pc, loadAABB);
+        var data = extractPositions(pc, loadAABB, ELEV_MAX_LEVEL);
         elevationPositions = data.positions;
         elevationNodeMap = data.nodeMap;
         if (!elevationOrigRGBA) {
@@ -9002,7 +9045,14 @@
         rebuildElevationBoxList();
 
         // Rebuild contours for this box if they were visible
-        if (selCfg.contoursVisible) buildBoxContours(targetVol);
+        if (selCfg.contoursVisible) {
+          buildBoxContours(targetVol);
+        } else if (selCfg.contourGroup) {
+          // Not showing contours now — drop any stale group from a previous
+          // compute so a later "Show" rebuilds fresh against the new data.
+          disposeContourGroup(selCfg.contourGroup);
+          selCfg.contourGroup = null;
+        }
 
         _elevBoxTransformCache = '';
         for (var bi = 0; bi < elevationCropVolumes.length; bi++) {

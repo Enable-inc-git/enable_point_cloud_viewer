@@ -63590,7 +63590,22 @@ void main() {
 
 					const vnt = material.visibleNodesTexture;
 					const data = vnt.image.data;
-					data.set(visibilityTextureData.data);
+					// The visibleNodesTexture is a FIXED 2048-node buffer (see
+					// generateDataTexture(2048,1,...) and the "/ 2048.0" divisor baked into
+					// the point shaders). If more than 2048 octree nodes are visible at once
+					// — e.g. when a feature temporarily raises the point budget to load a
+					// region (the elevation-map compute sets 20M) — visibilityTextureData is
+					// larger than the texture and Uint8Array.set() throws
+					// "RangeError: offset is out of bounds", crashing the whole renderer.
+					// Clamp to the texture capacity: the surplus nodes render with slightly
+					// stale adaptive point sizing (self-corrects once the visible-node count
+					// drops back under 2048) instead of taking down the viewer.
+					const vntSrc = visibilityTextureData.data;
+					if (vntSrc.length > data.length) {
+						data.set(vntSrc.subarray(0, data.length));
+					} else {
+						data.set(vntSrc);
+					}
 					vnt.needsUpdate = true;
 
 				}
