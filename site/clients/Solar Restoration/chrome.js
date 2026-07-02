@@ -292,8 +292,7 @@
       {
         id: 'clip', label: 'Clip', iconName: 'scissors',
         items: [
-          { label: 'Toggle clip box outline', iconName: 'frame',  action: function () { clickLegacy('btn-toggle-clipbox-outline'); } },
-          { kind: 'sep' },
+          // Clip-box outline visibility moved to the top-right "eye" dropdown.
           { label: 'Add cut-out box',         iconName: 'plus',    action: function () { clickLegacy('btn-add-cutout'); } },
           { label: 'Clear all cut-outs',      iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-cutouts'); } }
         ]
@@ -582,7 +581,44 @@
     meta.appendChild(iconBtn('save',     'Save session',           function () { clickLegacy('btn-save-session'); }));
     meta.appendChild(iconBtn('upload',   'Load session',           function () { clickLegacy('btn-load-session'); }));
     meta.appendChild(iconBtn('download', 'Export distances',       function () { clickLegacy('btn-export-measurements'); }));
-    meta.appendChild(iconBtn('eye',      'Toggle annotations (stations + notes)', function () { clickLegacy('btn-toggle-stations'); }));
+    // ---- Visibility "eye" dropdown: clip box / panoramas / notes ----
+    var eyeMenu = el('div', { className: 'dev2-tb-menu', id: 'dev2-menu-visibility', dataset: { open: 'false' } });
+    document.body.appendChild(eyeMenu);
+    function rebuildEyeMenu() {
+      eyeMenu.innerHTML = '';
+      var d = window.__dev2 || {};
+      var rows = [
+        { label: 'Clip box',  avail: true,
+          on: d.getClipBoxVis ? d.getClipBoxVis() : true,
+          toggle: function () { if (d.toggleClipBoxVis) d.toggleClipBoxVis(); } },
+        { label: 'Panoramas', avail: d.hasStations ? d.hasStations() : false,
+          on: d.getStationsVis ? d.getStationsVis() : true,
+          toggle: function () { if (d.toggleStationsVis) d.toggleStationsVis(); } },
+        { label: 'Notes',     avail: d.hasNotes ? d.hasNotes() : false,
+          on: d.getNotesVis ? d.getNotesVis() : true,
+          toggle: function () { if (d.toggleNotesVis) d.toggleNotesVis(); } }
+      ];
+      rows.forEach(function (r) {
+        var mi = el('button', {
+          className: 'dev2-tb-menu-item',
+          type: 'button',
+          onClick: function () { if (r.avail) { r.toggle(); rebuildEyeMenu(); } }
+        }, [ svg(r.on ? 'eye' : 'eye-off', 16), el('span', { text: r.label + (r.avail ? '' : ' (none)') }) ]);
+        if (!r.avail) mi.style.opacity = '0.45';
+        eyeMenu.appendChild(mi);
+      });
+    }
+    var eyeTrigger = iconBtn('eye', 'Show / hide clip box, panoramas, notes', function () {
+      if (_openMenu && _openMenu.trigger === eyeTrigger) { closeOpenMenu(); return; }
+      rebuildEyeMenu();
+      openMenuFor(eyeTrigger, eyeMenu);
+      // Right-align under the eye if the menu would run off the right edge.
+      var mr = eyeMenu.getBoundingClientRect();
+      if (mr.right > window.innerWidth - 8) {
+        eyeMenu.style.left = Math.max(8, eyeTrigger.getBoundingClientRect().right - mr.width) + 'px';
+      }
+    });
+    meta.appendChild(eyeTrigger);
     meta.appendChild(iconBtn('undo',     'Undo (Ctrl+Z)',          function () {
       var d = window.__dev2; if (d && typeof d.performUndo === 'function') d.performUndo();
     }));

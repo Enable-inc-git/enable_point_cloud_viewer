@@ -11915,6 +11915,24 @@
     //      This is the only viewer.html JS edit Dev2 makes beyond the body
     //      wrapper divs and the script tags — none of the handlers above
     //      are touched.
+    // ---- Independent visibility toggles for the top-bar "eye" dropdown ----
+    // (clip box / panoramas / notes). Separate from the old combined
+    // stations+notes "annotations" switch and the "all dimensions" switch.
+    var _notesVisibleAll = true;
+    function _setStationsVisOnly(vis) {
+      _stationsVisible = vis;
+      for (var _svi = 0; _svi < stations.length; _svi++) {
+        stations[_svi].visible = vis;
+        if (stations[_svi].visual) stations[_svi].visual.visible = vis;
+      }
+    }
+    function _setNotesVisOnly(vis) {
+      _notesVisibleAll = vis;
+      for (var _nvi = 0; _nvi < notes.length; _nvi++) {
+        if (notes[_nvi].visual) notes[_nvi].visual.visible = vis && (notes[_nvi].visible !== false);
+      }
+      if (!vis && typeof _closeNotePopover === 'function') _closeNotePopover();
+    }
     window.__dev2 = {
       get viewer()              { return viewer;              },
       get stations()            { return stations;            },
@@ -11927,6 +11945,15 @@
       performRedo:              function () { return performRedo();   },
       setUnitMode:              function (m) { return setUnitMode(m); },
       getUnitMode:              function () { return getUnitMode();   },
+      // Visibility toggles for the top-bar eye dropdown.
+      getClipBoxVis:            function () { return !!(typeof initialClipBox !== 'undefined' && initialClipBox && !initialClipBox._outlineHidden); },
+      toggleClipBoxVis:         function () { var b = document.getElementById('btn-toggle-clipbox-outline'); if (b) b.click(); return this.getClipBoxVis(); },
+      hasStations:              function () { return stations.length > 0; },
+      getStationsVis:           function () { return _stationsVisible; },
+      toggleStationsVis:        function () { _setStationsVisOnly(!_stationsVisible); return _stationsVisible; },
+      hasNotes:                 function () { return notes.length > 0; },
+      getNotesVis:              function () { return _notesVisibleAll; },
+      toggleNotesVis:           function () { _setNotesVisOnly(!_notesVisibleAll); return _notesVisibleAll; },
       get undoStack()           { return undoStack;           },
       // Called from chrome.js after a clean 1-finger tap on touch. Exits any
       // single-action pick mode (Mark, Note, Constraint) so the user can
