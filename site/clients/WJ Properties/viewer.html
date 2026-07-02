@@ -6167,6 +6167,7 @@
 
       var lines = [];
       lines.push('Measurements Export');
+      lines.push('Units: ' + (UNIT_MODE === 'mm' ? 'metres (to the mm)' : UNIT_MODE === 'imp-dec' ? 'feet-inches (decimal, 0.05")' : 'feet-inches (fractional, 1/16")'));
       lines.push('Distances/Heights: ' + distMeasures.length + ' | Areas: ' + areaMeasures.length +
                  ' | Angles: ' + angleMeasures.length + ' | Volumes: ' + userVolumes.length);
       lines.push('');
@@ -6187,7 +6188,7 @@
         for (var pi = 0; pi < pts.length; pi++) {
           var p = pts[pi].position ? pts[pi].position : pts[pi];
           var pn = pi < nums.length ? 'D' + nums[pi] : 'D?';
-          lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
+          lines.push('  ' + pn + ': X=' + fmtLenVal(p.x) + ', Y=' + fmtLenVal(p.y) + ', Z=' + fmtLenVal(p.z));
         }
         lines.push('');
 
@@ -6205,16 +6206,16 @@
           var sn1 = si < nums.length ? 'D' + nums[si] : 'D?';
           var sn2 = (si + 1) < nums.length ? 'D' + nums[si + 1] : 'D?';
           if (isHeight) {
-            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  Vertical: ' + absZ.toFixed(3) + ' ' + zSign);
+            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  Vertical: ' + fmtLen(absZ) + ' ' + zSign);
           } else {
-            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + d3d.toFixed(3) + '  XY: ' + dxy.toFixed(3) + '  Z: ' + absZ.toFixed(3) + ' ' + zSign);
+            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + fmtLen(d3d) + '  XY: ' + fmtLen(dxy) + '  Z: ' + fmtLen(absZ) + ' ' + zSign);
           }
         }
         lines.push('');
         if (isHeight) {
-          lines.push('Totals:  Vertical: ' + totalZ.toFixed(3));
+          lines.push('Totals:  Vertical: ' + fmtLen(totalZ));
         } else {
-          lines.push('Totals:  3D: ' + total3D.toFixed(3) + '  XY: ' + totalXY.toFixed(3) + '  Z: ' + totalZ.toFixed(3));
+          lines.push('Totals:  3D: ' + fmtLen(total3D) + '  XY: ' + fmtLen(totalXY) + '  Z: ' + fmtLen(totalZ));
         }
         lines.push('');
       }
@@ -6232,7 +6233,7 @@
         for (var pi = 0; pi < pts.length; pi++) {
           var p = pts[pi].position ? pts[pi].position : pts[pi];
           var pn = pi < nums.length ? 'D' + nums[pi] : 'D?';
-          lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
+          lines.push('  ' + pn + ': X=' + fmtLenVal(p.x) + ', Y=' + fmtLenVal(p.y) + ', Z=' + fmtLenVal(p.z));
         }
         var area3D = compute3DPolygonArea(pts);
         var areaXY = (typeof measure.getArea === 'function') ? measure.getArea() : 0;
@@ -6243,9 +6244,9 @@
           perim += Math.sqrt((bp.x - ap.x) * (bp.x - ap.x) + (bp.y - ap.y) * (bp.y - ap.y) + (bp.z - ap.z) * (bp.z - ap.z));
         }
         lines.push('');
-        lines.push('Surface area (3D): ' + area3D.toFixed(3) + ' m^2');
-        lines.push('Plan area (XY):    ' + areaXY.toFixed(3) + ' m^2');
-        lines.push('Perimeter:         ' + perim.toFixed(3) + ' m');
+        lines.push('Surface area (3D): ' + fmtArea(area3D));
+        lines.push('Plan area (XY):    ' + fmtArea(areaXY));
+        lines.push('Perimeter:         ' + fmtLen(perim));
         lines.push('');
       }
 
@@ -6278,9 +6279,9 @@
         var sx = Math.abs(vol.scale.x), sy = Math.abs(vol.scale.y), sz = Math.abs(vol.scale.z);
         var v3 = (typeof vol.getVolume === 'function') ? vol.getVolume() : (sx * sy * sz);
         lines.push('=== Volume ' + (vi2 + 1) + ': ' + name + ' ===');
-        lines.push('  Volume: ' + v3.toFixed(3) + ' m^3');
-        lines.push('  Size:   ' + sx.toFixed(3) + ' x ' + sy.toFixed(3) + ' x ' + sz.toFixed(3) + ' m');
-        lines.push('  Center: X=' + vol.position.x.toFixed(4) + ', Y=' + vol.position.y.toFixed(4) + ', Z=' + vol.position.z.toFixed(4));
+        lines.push('  Volume: ' + fmtVol(v3));
+        lines.push('  Size:   ' + fmtLen(sx) + ' x ' + fmtLen(sy) + ' x ' + fmtLen(sz));
+        lines.push('  Center: X=' + fmtLenVal(vol.position.x) + ', Y=' + fmtLenVal(vol.position.y) + ', Z=' + fmtLenVal(vol.position.z));
         lines.push('');
       }
 
@@ -7894,7 +7895,7 @@
         if (segs.length === 0) continue;
         var raw = stitchSegments2D(segs), pls = [];
         for (var r = 0; r < raw.length; r++) pls.push(simplifyPolyline2D(raw[r], simpTol));
-        contours.push({ text: lv.toFixed(decimals), polylines: pls });
+        contours.push({ text: fmtLenVal(lv), polylines: pls });
       }
 
       // --- Boundary: EXACT box footprint MINUS exclusion footprints (plan) ---
@@ -7960,6 +7961,10 @@
     // Assemble R12-style DXF (POLYLINE/VERTEX + TEXT) for a set of contour maps.
     function contourMapsToDXF(maps) {
       function san(s) { return String(s).replace(/[^A-Za-z0-9_]/g, '_'); }
+      // Export geometry in the selected unit so the drawing is self-consistent:
+      // metres for metric, feet for either imperial mode (labels are feet-inches).
+      var k = (typeof UNIT_MODE !== 'undefined' && UNIT_MODE !== 'mm') ? 3.280839895013123 : 1;
+      var insUnits = (k === 1) ? 6 : 2; // DXF $INSUNITS: 6=metres, 2=feet
       var lines = [];
       var layerSet = {}, layers = [];
       function addLayer(n, color) { if (!layerSet[n]) { layerSet[n] = 1; layers.push({ n: n, c: color }); } }
@@ -7967,6 +7972,7 @@
         var b = san(maps[m].name);
         addLayer(b + '_CONTOURS', 7); addLayer(b + '_LABELS', 3); addLayer(b + '_BOUNDARY', 1);
       }
+      lines.push('0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '' + insUnits, '0', 'ENDSEC');
       lines.push('0', 'SECTION', '2', 'TABLES');
       lines.push('0', 'TABLE', '2', 'LAYER', '70', '' + layers.length);
       for (var L = 0; L < layers.length; L++) lines.push('0', 'LAYER', '2', layers[L].n, '70', '0', '62', '' + layers[L].c, '6', 'CONTINUOUS');
@@ -7977,7 +7983,7 @@
         if (closed && p.length > 2 && Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < 1e-6) p = p.slice(0, p.length - 1);
         if (p.length < 2) return;
         lines.push('0', 'POLYLINE', '8', layer, '66', '1', '70', closed ? '1' : '0');
-        for (var i = 0; i < p.length; i++) lines.push('0', 'VERTEX', '8', layer, '10', '' + p[i][0], '20', '' + p[i][1], '30', '0');
+        for (var i = 0; i < p.length; i++) lines.push('0', 'VERTEX', '8', layer, '10', '' + (p[i][0] * k), '20', '' + (p[i][1] * k), '30', '0');
         lines.push('0', 'SEQEND');
       }
       for (var mi = 0; mi < maps.length; mi++) {
@@ -7992,7 +7998,7 @@
         }
         for (var li = 0; li < map.labels.length; li++) {
           var lb = map.labels[li];
-          lines.push('0', 'TEXT', '8', base + '_LABELS', '10', '' + lb.x, '20', '' + lb.y, '30', '0', '40', '' + map.labelH, '1', lb.text);
+          lines.push('0', 'TEXT', '8', base + '_LABELS', '10', '' + (lb.x * k), '20', '' + (lb.y * k), '30', '0', '40', '' + (map.labelH * k), '1', lb.text);
         }
         for (var bi = 0; bi < map.boundary.length; bi++) emitPolyline(base + '_BOUNDARY', map.boundary[bi], true);
       }
