@@ -552,6 +552,33 @@
     // ---- Meta actions on the right (save / load / export / vis / undo / redo / about) ----
     topbar.appendChild(el('div', { className: 'dev2-tb-flex-spacer' }));
     var meta = el('div', { className: 'dev2-tb-right' });
+
+    // ---- Units switch: mm / imperial-fractional (1/16") / imperial-decimal (0.05"). Default mm. ----
+    var _unitDefs = [
+      { mode: 'mm',       label: 'm',     title: 'Metres (to the millimetre)' },
+      { mode: 'imp-frac', label: '1/16"', title: 'Feet-inches, fractional to 1/16"' },
+      { mode: 'imp-dec',  label: '0.05"', title: 'Feet-inches, decimal to 0.05"' }
+    ];
+    var _unitBtns = {};
+    var _unitSeg = el('div', { className: 'dev2-tb-units', title: 'Measurement units' });
+    _unitDefs.forEach(function (u) {
+      var b = el('button', { className: 'dev2-tb-unit-btn', type: 'button', title: u.title, text: u.label });
+      b.addEventListener('click', function () { _setUnit(u.mode); });
+      _unitBtns[u.mode] = b;
+      _unitSeg.appendChild(b);
+    });
+    function _setUnit(mode) {
+      var d = window.__dev2;
+      if (d && typeof d.setUnitMode === 'function') d.setUnitMode(mode);
+      for (var m in _unitBtns) _unitBtns[m].classList.toggle('active', m === mode);
+    }
+    (function initUnits() {
+      var d = window.__dev2;
+      var cur = (d && d.getUnitMode) ? d.getUnitMode() : 'mm';
+      for (var m in _unitBtns) _unitBtns[m].classList.toggle('active', m === cur);
+    })();
+    meta.appendChild(_unitSeg);
+
     meta.appendChild(iconBtn('save',     'Save session',           function () { clickLegacy('btn-save-session'); }));
     meta.appendChild(iconBtn('upload',   'Load session',           function () { clickLegacy('btn-load-session'); }));
     meta.appendChild(iconBtn('download', 'Export distances',       function () { clickLegacy('btn-export-measurements'); }));

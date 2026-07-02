@@ -54305,11 +54305,21 @@
 						unitCode = this.lengthUnitDisplay.code;
 					}
 
-					const fmt = v => Utils.addCommas(v.toFixed(3));
-					const text =
-						`3D: ${fmt(len3D)} ${unitCode}\n` +
-						`XY: ${fmt(lenXY)} ${unitCode}\n` +
-						`Z : ${fmt(lenZ)} ${unitCode} (${signZ})`;
+					let text;
+					if (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.len) {
+						// Custom app unit formatter (mm / feet-inches). len* are in metres
+						// here because lengthUnit/lengthUnitDisplay are left at METER.
+						text =
+							`3D: ${window.__unitFmt.len(len3D)}\n` +
+							`XY: ${window.__unitFmt.len(lenXY)}\n` +
+							`Z : ${window.__unitFmt.len(lenZ)} (${signZ})`;
+					} else {
+						const fmt = v => Utils.addCommas(v.toFixed(3));
+						text =
+							`3D: ${fmt(len3D)} ${unitCode}\n` +
+							`XY: ${fmt(lenXY)} ${unitCode}\n` +
+							`Z : ${fmt(lenZ)} ${unitCode} (${signZ})`;
+					}
 
 					edgeLabel.setText(text);
 
@@ -54382,8 +54392,13 @@
 						suffix = this.lengthUnitDisplay.code;
 					}
 
-					let txtHeight = Utils.addCommas(height.toFixed(2));
-					let msg = `${txtHeight} ${suffix}`;
+					let msg;
+					if (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.len) {
+						msg = window.__unitFmt.len(height);
+					} else {
+						let txtHeight = Utils.addCommas(height.toFixed(2));
+						msg = `${txtHeight} ${suffix}`;
+					}
 					this.heightLabel.setText(msg);
 				}
 			}
@@ -54454,8 +54469,13 @@
 					suffix = this.lengthUnitDisplay.code;
 				}
 
-				let txtArea = Utils.addCommas(area.toFixed(1));
-				let msg =  `${txtArea} ${suffix}\u00B2`;
+				let msg;
+				if (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.area) {
+					msg = window.__unitFmt.area(area);
+				} else {
+					let txtArea = Utils.addCommas(area.toFixed(1));
+					msg =  `${txtArea} ${suffix}\u00B2`;
+				}
 				this.areaLabel.setText(msg);
 			}
 			{ // totals for external use (e.g., Properties panel)
@@ -70382,9 +70402,14 @@ void main() {
 					label.scale.set(scale, scale, scale);
 				}
 
-				let calculatedVolume = volume.getVolume();
-				calculatedVolume = calculatedVolume / Math.pow(this.viewer.lengthUnit.unitspermeter, 3) * Math.pow(this.viewer.lengthUnitDisplay.unitspermeter, 3);  //convert to cubic meters then to the cubic display unit
-				let text = Utils.addCommas(calculatedVolume.toFixed(3)) + ' ' + this.viewer.lengthUnitDisplay.code + '\u00B3';
+				let calculatedVolume = volume.getVolume();  // m\u00B3 (lengthUnit left at METER)
+				let text;
+				if (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.vol) {
+					text = window.__unitFmt.vol(calculatedVolume);
+				} else {
+					let cv = calculatedVolume / Math.pow(this.viewer.lengthUnit.unitspermeter, 3) * Math.pow(this.viewer.lengthUnitDisplay.unitspermeter, 3);
+					text = Utils.addCommas(cv.toFixed(3)) + ' ' + this.viewer.lengthUnitDisplay.code + '\u00B3';
+				}
 				label.setText(text);
 			}
 		}
