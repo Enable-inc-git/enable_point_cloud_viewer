@@ -3438,18 +3438,26 @@
     }
     function _applyVisibility(vis) {
       if (!vis) return;
+      // A view shows ONLY the annotations it captured. Anything NOT in the
+      // snapshot was created AFTER this view was saved, so it must be HIDDEN
+      // (new items never appear in an older view). To add it, the user shows it
+      // then "Update view". Guarded per-map so old-format views aren't wiped.
       if (vis.marks) markedPoints.forEach(function(m) {
-        if (vis.marks[m.id] !== undefined) { m.visible = !!vis.marks[m.id]; if (m.visual) m.visual.visible = m.visible; }
+        var on = vis.marks[m.id] !== undefined ? !!vis.marks[m.id] : false;
+        m.visible = on; if (m.visual) m.visual.visible = on;
       });
       if (vis.members) members.forEach(function(m) {
-        if (vis.members[m.id] !== undefined) { m.visible = !!vis.members[m.id]; if (m.visual) m.visual.visible = m.visible; }
+        var on = vis.members[m.id] !== undefined ? !!vis.members[m.id] : false;
+        m.visible = on; if (m.visual) m.visual.visible = on;
       });
       if (vis.notes) notes.forEach(function(n) {
-        if (vis.notes[n.id] !== undefined) { n.visible = !!vis.notes[n.id]; if (n.visual) n.visual.visible = n.visible; }
+        var on = vis.notes[n.id] !== undefined ? !!vis.notes[n.id] : false;
+        n.visible = on; if (n.visual) n.visual.visible = on;
       });
       if (vis.measures) (viewer.scene.measurements || []).forEach(function(m) {
         var mid = _ensureMid(m);
-        if (vis.measures[mid] !== undefined) _setMeasureVisible(m, !!vis.measures[mid]);
+        var on = vis.measures[mid] !== undefined ? !!vis.measures[mid] : false;
+        _setMeasureVisible(m, on);
       });
       _refreshAnnotationLists();
     }
