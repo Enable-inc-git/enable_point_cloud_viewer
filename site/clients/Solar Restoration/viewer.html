@@ -10889,24 +10889,6 @@
     }
     var _coarsePointerDev = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
-    // ---- Temporary on-screen touch/clip-box diagnostics (add ?dbg=1 to URL) ----
-    var _DBG = /[?&]dbg\b/i.test(location.search);
-    var _dbgEl = null;
-    function _touchDbg(msg) {
-      if (!_DBG) return;
-      if (!_dbgEl) {
-        _dbgEl = document.createElement('div');
-        _dbgEl.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:200000;max-width:78vw;' +
-          'background:rgba(0,0,0,0.82);color:#3dff6a;font:11px/1.35 monospace;padding:6px 8px;' +
-          'border-radius:4px;white-space:pre-wrap;pointer-events:none';
-        document.body.appendChild(_dbgEl);
-        _dbgEl._lines = [];
-      }
-      _dbgEl._lines.unshift(msg);
-      if (_dbgEl._lines.length > 14) _dbgEl._lines.length = 14;
-      _dbgEl.textContent = _dbgEl._lines.join('\n');
-    }
-
     renderArea.addEventListener('mousedown', function(e) {
       // Right after Esc (e.g. finishing the distance tool), the cursor is sitting
       // on the trailing measurement sphere, so the next drag grabs it instead of
@@ -10976,13 +10958,10 @@
         // (touch-safe) — independent of Potree's hover, which doesn't settle on
         // touch (why the box was un-selectable on some phones). Orbit-first, and
         // a clean click selects/activates it (mouseup handler below).
-        if (!_arm && typeof initialClipBox !== 'undefined' && initialClipBox) {
-          var _cropHit = _pointNearBoxEdges(mpG.x, mpG.y, initialClipBox, _coarsePointerDev ? 30 : 12);
-          _touchDbg('down (' + Math.round(mpG.x) + ',' + Math.round(mpG.y) + ') coarse=' + _coarsePointerDev + ' edgeHit=' + _cropHit);
-          if (_cropHit) {
-            _clearHover = true;
-            _cropClickCandidate = { vol: initialClipBox, downX: e.clientX, downY: e.clientY };
-          }
+        if (!_arm && typeof initialClipBox !== 'undefined' && initialClipBox &&
+            _pointNearBoxEdges(mpG.x, mpG.y, initialClipBox, _coarsePointerDev ? 30 : 12)) {
+          _clearHover = true;
+          _cropClickCandidate = { vol: initialClipBox, downX: e.clientX, downY: e.clientY };
         }
         // Any Potree-hovered draggable our findNearest didn't catch — box
         // resize/move handles AND the crop-box frame. Persistent volumes (locked
@@ -11317,29 +11296,7 @@
               var alreadySel = viewer.inputHandler.selection && viewer.inputHandler.selection.indexOf(cc2.vol) >= 0;
               viewer.inputHandler.deselectAll();
               if (!alreadySel) viewer.inputHandler.toggleSelection(cc2.vol);
-            } catch (e3) { _touchDbg('cropSel ERR ' + e3); }
-            var _tt = viewer.transformationTool;
-            var _hv = 0;
-            try { if (_tt && _tt.handles) { for (var _hk in _tt.handles) { var _hn = _tt.handles[_hk].node; if (_hn && _hn.visible) _hv++; } } } catch (e4) {}
-            _touchDbg('cropSel OK sel=' + (viewer.inputHandler.selection ? viewer.inputHandler.selection.length : '?') +
-                      ' ttSel=' + (_tt && _tt.selection ? _tt.selection.length : '?') + ' visHandles=' + _hv +
-                      ' edit=' + (cc2.vol && typeof cc2.vol.setEditable === 'function' ? 'fn' : 'none'));
-            try {
-              var _cam5 = viewer.scene.getActiveCamera();
-              var _r5 = renderArea.getBoundingClientRect();
-              var _onScr = 0, _first = '';
-              if (_tt && _tt.handles) {
-                for (var _hk2 in _tt.handles) {
-                  var _nd = _tt.handles[_hk2].node;
-                  if (!_nd || !_nd.visible) continue;
-                  var _wp = _nd.getWorldPosition(new THREE.Vector3()).project(_cam5);
-                  var _sx = (_wp.x + 1) * 0.5 * _r5.width, _sy = (1 - (_wp.y + 1) * 0.5) * _r5.height;
-                  if (_wp.z > -1 && _wp.z < 1 && _sx >= 0 && _sx <= _r5.width && _sy >= 0 && _sy <= _r5.height) _onScr++;
-                  if (!_first) _first = Math.round(_sx) + ',' + Math.round(_sy) + ' z' + _wp.z.toFixed(2);
-                }
-              }
-              _touchDbg('handles onScreen=' + _onScr + ' first=' + _first + ' vp=' + Math.round(_r5.width) + 'x' + Math.round(_r5.height) + ' dpr=' + (window.devicePixelRatio || 1));
-            } catch (e5) { _touchDbg('handleProj ERR ' + e5); }
+            } catch (e3) { /* ignore */ }
             // Block Potree's bubble-phase onMouseUp — with hover cleared it would
             // otherwise deselectAll() and wipe the selection we just made.
             e.stopPropagation();
