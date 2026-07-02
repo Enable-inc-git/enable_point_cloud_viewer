@@ -804,6 +804,11 @@
           return false;
         });
         if (hoveredHasVol) return;
+        // Orbit-first clears hoveredElements on mousedown, so hoveredHasVol can't
+        // see the crop box. If the crop box is the intended click target, defer
+        // to the crop-click handler (main mouseup) so a managed box lying along
+        // the infinite pick ray doesn't hijack the crop-box click.
+        if (_cropClickCandidate) return;
         try {
           var alreadySelected = ih.selection && ih.selection.indexOf(vol) >= 0;
           ih.deselectAll();
@@ -10938,14 +10943,23 @@
             return o && o._listeners && o._listeners['drag'] && o._listeners['drag'].length > 0;
           });
           if (_hEl) {
-            _clearHover = true; // orbit during the hold regardless of persistence
             var _persist = false, _persistVol = null, _p = _hEl.object;
             while (_p) { if (_p.userData && _p.userData.persistent) { _persist = true; _persistVol = _p; break; } _p = _p.parent; }
+            var _hasSel = !!(viewer.inputHandler.selection && viewer.inputHandler.selection.length > 0);
             if (_persist) {
-              // Locked box (crop box): never grab/drag it, but a clean CLICK
-              // should still select/activate it (restored on mouseup below).
+              // Locked box (crop box): never grab/drag it. Orbit-first, and a
+              // clean CLICK selects/activates it (handled on mouseup below).
+              _clearHover = true;
               _cropClickCandidate = { vol: _persistVol, downX: e.clientX, downY: e.clientY };
+            } else if (_hasSel) {
+              // A box is already highlighted (handles showing) → grabbing a handle
+              // is the likely intent: let Potree grab it IMMEDIATELY (no hold, no
+              // orbit-defer). Leave hoveredElements intact so Potree's own
+              // mousedown grabs the handle this frame.
+              /* intentional no-op: do not defer, do not clear hover */
             } else {
+              // Nothing selected → orbit-first: defer the grab to a brief hold.
+              _clearHover = true;
               var _hObj = _hEl.object, _hPt = _hEl.point;
               _arm = function () { viewer.inputHandler.mouse.set(mpG.x, mpG.y); viewer.inputHandler.startDragging(_hObj, { location: _hPt }); };
             }
@@ -11253,6 +11267,10 @@
               viewer.inputHandler.deselectAll();
               if (!alreadySel) viewer.inputHandler.toggleSelection(cc2.vol);
             } catch (e3) { /* ignore */ }
+            // Block Potree's bubble-phase onMouseUp — with hover cleared it would
+            // otherwise deselectAll() and wipe the selection we just made.
+            e.stopPropagation();
+            return;
           }
         }
       }
