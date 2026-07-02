@@ -778,6 +778,11 @@ html, body {
   outline-offset: -1px;
   background: var(--accent-dim) !important;
 }
+/* Boxes picked for contour-map export (click to select, Ctrl/Cmd+click to add). */
+#enable-elevation-box-list > .dev2-elev-selected {
+  background: var(--accent-dim) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 /* Strip the legacy "border-top dashed" off the moved panel since we own the
    chrome now. The panel was styled inline so we use a wildcard descendant
    selector to defeat the inline border-top. */

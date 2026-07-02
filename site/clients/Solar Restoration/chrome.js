@@ -306,7 +306,9 @@
           { kind: 'sep' },
           { label: 'Add exclusion zone',      iconName: 'plus',    action: function () { clickLegacy('btn-add-exclusion'); } },
           { label: 'Clear exclusion zones',   iconName: 'trash-2', action: function () { clickLegacy('btn-clear-exclusions'); } },
-          { label: 'Hide exclusion outlines', iconName: 'eye-off', action: function () { clickLegacy('btn-hide-exclusion-outlines'); } }
+          { label: 'Hide exclusion outlines', iconName: 'eye-off', action: function () { clickLegacy('btn-hide-exclusion-outlines'); } },
+          { kind: 'sep' },
+          { label: 'Export contour maps (DXF)', iconName: 'download', action: function () { clickLegacy('btn-export-contours'); } }
         ]
       },
       {
@@ -932,6 +934,7 @@
   var _elevPanelCache = {};       // boxName -> { wrapper, panels, accent }
   var _focusedElevBoxName = null;
   var _lastSeenBoxNames = [];
+  var _elevSel = new Set();        // box names selected for contour-map export
 
   function getElevHost() {
     var body = getContextBody();
@@ -983,11 +986,20 @@
         (function (name) {
           topRow.addEventListener('click', function (e) {
             if (e.target.closest('button')) return;
-            var wasFocused = _focusedElevBoxName === name;
-            _focusedElevBoxName = wasFocused ? null : name;
-            // Switching focus to a different box is a fresh "active tool"
-            // event — clear the user's manual-hide override.
-            if (!wasFocused) clearContextHiddenIfActive();
+            if (e.ctrlKey || e.metaKey) {
+              // Ctrl/Cmd+click → add/remove this box from the export selection
+              // (leaves the settings focus on it so its panel is still shown).
+              if (_elevSel.has(name)) _elevSel.delete(name); else _elevSel.add(name);
+              _focusedElevBoxName = name;
+              clearContextHiddenIfActive();
+            } else {
+              // Plain click → focus + single-select for export.
+              var wasFocused = _focusedElevBoxName === name;
+              _focusedElevBoxName = wasFocused ? null : name;
+              _elevSel = new Set(wasFocused ? [] : [name]);
+              if (!wasFocused) clearContextHiddenIfActive();
+            }
+            window.__elevExportSel = Array.from(_elevSel);
             renderFocusedElevSection();
           });
         })(boxName);
@@ -1015,6 +1027,10 @@
       _focusedElevBoxName = null; // focused box was deleted
     }
     _lastSeenBoxNames = currentNames;
+
+    // Drop deleted boxes from the export selection + publish for viewer.html.
+    Array.from(_elevSel).forEach(function (n) { if (currentNames.indexOf(n) === -1) _elevSel.delete(n); });
+    window.__elevExportSel = Array.from(_elevSel);
 
     renderFocusedElevSection();
   }
@@ -1054,6 +1070,8 @@
         var bn = readBoxName(w, i);
         if (bn === name) w.classList.add('dev2-elev-focused');
         else w.classList.remove('dev2-elev-focused');
+        if (_elevSel.has(bn)) w.classList.add('dev2-elev-selected');
+        else w.classList.remove('dev2-elev-selected');
       }
     }
 

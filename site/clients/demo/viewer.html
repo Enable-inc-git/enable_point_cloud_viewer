@@ -300,6 +300,15 @@
       transition: outline 0.15s;
     }
     #enable-elevation-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-elevation-export { margin: 8px 0 2px; }
+    #enable-elevation-export button {
+      width: 100%; padding: 6px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-elevation-export button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    body.hold-grabbing, body.hold-grabbing * { cursor: grabbing !important; }
     #enable-elevation-buttons button.clip-btn.active {
       background: #555; outline: 2px solid var(--accent, #3EAD4A);
       pointer-events: none; opacity: 0.7;
@@ -7555,6 +7564,398 @@
       elevationScene.remove(group);
     }
 
+    // ===== Contour-map DXF export =====================================
+    // Join marching-squares segments ([x1,y1,x2,y2] in world XY) into
+    // continuous polylines by chaining shared endpoints.
+    function stitchSegments2D(segs) {
+      var q = 1e-4;
+      function key(x, y) { return Math.round(x / q) + '_' + Math.round(y / q); }
+      var ends = new Map();
+      for (var i = 0; i < segs.length; i++) {
+        var s = segs[i];
+        var ka = key(s[0], s[1]), kb = key(s[2], s[3]);
+        if (!ends.has(ka)) ends.set(ka, []); ends.get(ka).push(i);
+        if (!ends.has(kb)) ends.set(kb, []); ends.get(kb).push(i);
+      }
+      var used = new Array(segs.length).fill(false);
+      var polylines = [];
+      function endpoints(i) { var s = segs[i]; return [[s[0], s[1]], [s[2], s[3]]]; }
+      for (var i = 0; i < segs.length; i++) {
+        if (used[i]) continue;
+        used[i] = true;
+        var e = endpoints(i);
+        var pl = [e[0].slice(), e[1].slice()];
+        // grow from each end
+        for (var dir = 0; dir < 2; dir++) {
+          var grow = true;
+          while (grow) {
+            grow = false;
+            var tip = dir === 0 ? pl[pl.length - 1] : pl[0];
+            var cand = ends.get(key(tip[0], tip[1])) || [];
+            for (var c = 0; c < cand.length; c++) {
+              var ci = cand[c];
+              if (used[ci]) continue;
+              var ce = endpoints(ci), a = ce[0], b = ce[1];
+              var next = null;
+              if (key(a[0], a[1]) === key(tip[0], tip[1])) next = b;
+              else if (key(b[0], b[1]) === key(tip[0], tip[1])) next = a;
+              if (next) {
+                used[ci] = true;
+                if (dir === 0) pl.push(next.slice()); else pl.unshift(next.slice());
+                grow = true;
+                break;
+              }
+            }
+          }
+        }
+        polylines.push(pl);
+      }
+      return polylines;
+    }
+
+    // Drop points that are collinear with their neighbours (cleans up the
+    // fine marching-squares stair-steps on straight runs).
+    function simplifyPolyline2D(pl, tol) {
+      if (pl.length < 3) return pl;
+      var out = [pl[0]];
+      for (var i = 1; i < pl.length - 1; i++) {
+        var a = out[out.length - 1], b = pl[i], c = pl[i + 1];
+        var cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        var len = Math.hypot(c[0] - a[0], c[1] - a[1]) || 1;
+        if (Math.abs(cross) / len > tol) out.push(b);
+      }
+      out.push(pl[pl.length - 1]);
+      return out;
+    }
+
+    // Andrew's monotone-chain convex hull of 2D points → CCW loop.
+    function convexHull2D(pts) {
+      var p = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+      var uniq = [];
+      for (var i = 0; i < p.length; i++) {
+        if (!uniq.length || Math.abs(uniq[uniq.length - 1][0] - p[i][0]) > 1e-9 || Math.abs(uniq[uniq.length - 1][1] - p[i][1]) > 1e-9) uniq.push(p[i]);
+      }
+      p = uniq;
+      if (p.length < 3) return p.slice();
+      function cross(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+      var lower = [];
+      for (var i = 0; i < p.length; i++) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p[i]) <= 0) lower.pop(); lower.push(p[i]); }
+      var upper = [];
+      for (var i = p.length - 1; i >= 0; i--) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p[i]) <= 0) upper.pop(); upper.push(p[i]); }
+      lower.pop(); upper.pop();
+      return lower.concat(upper);
+    }
+
+    // Sutherland–Hodgman: clip convex SUBJECT by convex CCW CLIP polygon.
+    // Returns the exact intersection polygon (empty if disjoint).
+    function clipPolygonConvex(subject, clip) {
+      if (!subject || subject.length < 3 || !clip || clip.length < 3) return [];
+      var output = subject.slice();
+      for (var i = 0; i < clip.length; i++) {
+        var A = clip[i], B = clip[(i + 1) % clip.length];
+        var inside = function (pt) { return (B[0] - A[0]) * (pt[1] - A[1]) - (B[1] - A[1]) * (pt[0] - A[0]) >= -1e-9; };
+        var inter = function (p, q) {
+          var dx = q[0] - p[0], dy = q[1] - p[1];
+          var num = (B[0] - A[0]) * (A[1] - p[1]) - (B[1] - A[1]) * (A[0] - p[0]);
+          var den = (B[0] - A[0]) * dy - (B[1] - A[1]) * dx;
+          var t = den !== 0 ? num / den : 0;
+          return [p[0] + t * dx, p[1] + t * dy];
+        };
+        var input = output; output = [];
+        if (input.length === 0) break;
+        for (var j = 0; j < input.length; j++) {
+          var cur = input[j], prev = input[(j + input.length - 1) % input.length];
+          var curIn = inside(cur), prevIn = inside(prev);
+          if (curIn) { if (!prevIn) output.push(inter(prev, cur)); output.push(cur); }
+          else if (prevIn) output.push(inter(prev, cur));
+        }
+      }
+      return output;
+    }
+
+    // Union a set of convex polygons (CCW loops, no closing dup) into merged
+    // boundary loops — so OVERLAPPING exclusion footprints become a single hole
+    // instead of double-cutting the overlap under even-odd fill. Robust to
+    // degeneracies (shared/parallel edges of axis-aligned boxes) via a sub-micron
+    // per-polygon perturbation. Method: split every edge at cross-polygon
+    // intersections, keep sub-edges whose midpoint is inside no OTHER polygon,
+    // then chain the survivors into loops.
+    function unionConvexPolys(polys) {
+      if (polys.length <= 1) return polys.map(function (p) { return p.slice(); });
+      var P = polys.map(function (poly, k) {
+        var cx = 0, cy = 0; poly.forEach(function (p) { cx += p[0]; cy += p[1]; }); cx /= poly.length; cy /= poly.length;
+        var ang = 1e-6 * (k + 1), ca = Math.cos(ang), sa = Math.sin(ang), sc = 1 + 1e-7 * (k + 1);
+        return poly.map(function (p) { var dx = (p[0] - cx) * sc, dy = (p[1] - cy) * sc; return [cx + dx * ca - dy * sa, cy + dx * sa + dy * ca]; });
+      });
+      function inside(poly, x, y) {
+        for (var i = 0; i < poly.length; i++) { var a = poly[i], b = poly[(i + 1) % poly.length]; if ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]) <= 1e-9) return false; }
+        return true;
+      }
+      function segInt(p1, p2, p3, p4) {
+        var d1x = p2[0] - p1[0], d1y = p2[1] - p1[1], d2x = p4[0] - p3[0], d2y = p4[1] - p3[1];
+        var den = d1x * d2y - d1y * d2x; if (Math.abs(den) < 1e-12) return null;
+        var t = ((p3[0] - p1[0]) * d2y - (p3[1] - p1[1]) * d2x) / den;
+        var u = ((p3[0] - p1[0]) * d1y - (p3[1] - p1[1]) * d1x) / den;
+        if (t > -1e-9 && t < 1 + 1e-9 && u > -1e-9 && u < 1 + 1e-9) return Math.max(0, Math.min(1, t));
+        return null;
+      }
+      var edges = [];
+      P.forEach(function (poly, k) { for (var i = 0; i < poly.length; i++) edges.push({ a: poly[i], b: poly[(i + 1) % poly.length], owner: k }); });
+      var kept = [];
+      edges.forEach(function (e) {
+        var ts = [0, 1];
+        edges.forEach(function (f) { if (f.owner === e.owner) return; var t = segInt(e.a, e.b, f.a, f.b); if (t !== null) ts.push(t); });
+        ts.sort(function (x, y) { return x - y; });
+        for (var i = 0; i < ts.length - 1; i++) {
+          var t0 = ts[i], t1 = ts[i + 1]; if (t1 - t0 < 1e-9) continue;
+          var mt = (t0 + t1) / 2, mx = e.a[0] + (e.b[0] - e.a[0]) * mt, my = e.a[1] + (e.b[1] - e.a[1]) * mt, io = false;
+          for (var k = 0; k < P.length; k++) { if (k === e.owner) continue; if (inside(P[k], mx, my)) { io = true; break; } }
+          if (!io) kept.push([[e.a[0] + (e.b[0] - e.a[0]) * t0, e.a[1] + (e.b[1] - e.a[1]) * t0], [e.a[0] + (e.b[0] - e.a[0]) * t1, e.a[1] + (e.b[1] - e.a[1]) * t1]]);
+        }
+      });
+      var q = 1e-6; function key(p) { return Math.round(p[0] / q) + '_' + Math.round(p[1] / q); }
+      var byStart = new Map(); kept.forEach(function (e, i) { var k = key(e[0]); if (!byStart.has(k)) byStart.set(k, []); byStart.get(k).push(i); });
+      var used = new Array(kept.length).fill(false), loops = [];
+      for (var s = 0; s < kept.length; s++) {
+        if (used[s]) continue;
+        var loop = [], cur = s, startKey = key(kept[s][0]), guard = 0;
+        while (cur !== -1 && !used[cur] && guard++ < kept.length + 5) {
+          used[cur] = true; loop.push(kept[cur][0]);
+          var endK = key(kept[cur][1]); if (endK === startKey) break;
+          var cand = byStart.get(endK) || [], nxt = -1;
+          for (var c = 0; c < cand.length; c++) { if (!used[cand[c]]) { nxt = cand[c]; break; } }
+          cur = nxt;
+        }
+        if (loop.length >= 3) loops.push(loop);
+      }
+      return loops;
+    }
+
+    // Build the 2D-plan contour-map export data for one elevation box:
+    // { name, labelH, contours:[{text, polylines}], labels:[{x,y,text}], boundary:[polylines] }
+    // All coordinates are world XY (flattened plan). Returns null if the box
+    // isn't computed or has too few points.
+    function computeContourMapExport(vol, cfg) {
+      if (!elevationPositions || !cfg || !cfg.active) return null;
+      var zMin = cfg.zMin, zMax = cfg.zMax;
+      if (zMin == null || zMax == null || zMin >= zMax) return null;
+      var mode = cfg.mode || 'z';
+      var tol = (mode === 'thickness') ? 0.10 : (zMax - zMin) * 0.10;
+      var refPlane = cfg.refPlane, refSide = cfg.refSide || 1;
+      vol.updateMatrixWorld(true);
+      var boxInv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
+      var exclInvMats = buildExclusionInvMats();
+      var hasExcl = exclInvMats.length > 0;
+      var _v = new THREE.Vector3();
+
+      // Footprint bounds from the box's 8 world corners, padded so the mask
+      // has a ring of "outside" cells for the outer boundary to trace.
+      var xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+      for (var sx = -1; sx <= 1; sx += 2) for (var sy = -1; sy <= 1; sy += 2) for (var sz = -1; sz <= 1; sz += 2) {
+        _v.set(sx * 0.5, sy * 0.5, sz * 0.5).applyMatrix4(vol.matrixWorld);
+        if (_v.x < xMin) xMin = _v.x; if (_v.x > xMax) xMax = _v.x;
+        if (_v.y < yMin) yMin = _v.y; if (_v.y > yMax) yMax = _v.y;
+      }
+      var pad = Math.max(xMax - xMin, yMax - yMin) * 0.03;
+      xMin -= pad; xMax += pad; yMin -= pad; yMax += pad;
+      var gridRes = 260;
+      var cellX = (xMax - xMin) / gridRes, cellY = (yMax - yMin) / gridRes;
+      if (cellX < 1e-9 || cellY < 1e-9) return null;
+
+      // --- Bin top-surface points inside this box into an elevation grid ---
+      var eSum = new Float32Array(gridRes * gridRes);
+      var eCnt = new Uint32Array(gridRes * gridRes);
+      var pos = elevationPositions, cnt = pos.length / 3, kept = 0;
+      for (var i = 0; i < cnt; i++) {
+        var px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+        _v.set(px, py, pz).applyMatrix4(boxInv);
+        if (_v.x < -0.5 || _v.x > 0.5 || _v.y < -0.5 || _v.y > 0.5 || _v.z < -0.5 || _v.z > 0.5) continue;
+        if (cfg.planeSurfGrid) { if (!isPlaneTopSurface(px, py, pz, cfg.planeSurfGrid, tol)) continue; }
+        else if (cfg.surfaceGrid) { if (!isTopSurface(px, py, pz, cfg.surfaceGrid, tol)) continue; }
+        if (hasExcl && isPointExcluded(px, py, pz, exclInvMats)) continue;
+        var elev;
+        if (mode === 'plane' && refPlane) {
+          var nn = refPlane.normal, cc = refPlane.centroid;
+          elev = ((px - cc.x) * nn.x + (py - cc.y) * nn.y + (pz - cc.z) * nn.z) * refSide;
+        } else if (mode === 'thickness' && cfg.thicknessGrid) {
+          elev = getThicknessForPoint(px, py, pz, cfg.thicknessGrid);
+          if (elev === null) continue;
+        } else {
+          elev = pz - getZBaseZ(cfg);
+        }
+        var ix = Math.floor((px - xMin) / cellX), iy = Math.floor((py - yMin) / cellY);
+        if (ix < 0 || ix >= gridRes || iy < 0 || iy >= gridRes) continue;
+        var gi = iy * gridRes + ix;
+        eSum[gi] += elev; eCnt[gi]++; kept++;
+      }
+      if (kept < 30) return null;
+      var eGrid = new Float32Array(gridRes * gridRes);
+      for (var g = 0; g < eGrid.length; g++) eGrid[g] = eCnt[g] > 0 ? eSum[g] / eCnt[g] : NaN;
+
+      function toWorld(segs) {
+        var w = [];
+        for (var s = 0; s < segs.length; s++) {
+          var sg = segs[s];
+          w.push([xMin + sg[0] * cellX, yMin + sg[1] * cellY, xMin + sg[2] * cellX, yMin + sg[3] * cellY]);
+        }
+        return w;
+      }
+      var simpTol = Math.min(cellX, cellY) * 0.25;
+
+      // --- Contour polylines per level ---
+      var step = cfg.contourStep != null ? cfg.contourStep : 0.05;
+      var decimals = step < 0.01 ? 3 : step < 0.1 ? 2 : step < 1 ? 1 : 0;
+      var contours = [];
+      var first = Math.ceil(zMin / step) * step;
+      for (var lv = first; lv <= zMax + step * 0.01; lv += step) {
+        if (lv < zMin || lv > zMax) continue;
+        var segs = toWorld(marchingSquares(eGrid, gridRes, gridRes, lv));
+        if (segs.length === 0) continue;
+        var raw = stitchSegments2D(segs), pls = [];
+        for (var r = 0; r < raw.length; r++) pls.push(simplifyPolyline2D(raw[r], simpTol));
+        contours.push({ text: lv.toFixed(decimals), polylines: pls });
+      }
+
+      // --- Boundary: EXACT box footprint MINUS exclusion footprints (plan) ---
+      // Each footprint = convex hull of the box's 8 world corners projected to
+      // XY, so rotated boxes give exact rotated rectangles (no discretization).
+      // Outer loop = the elev box; each exclusion clipped to the box = a hole
+      // loop. Under even-odd fill this is the true box-minus-exclusions region,
+      // incl. edge-crossing notches. (Heavily OVERLAPPING exclusions aren't
+      // merged — a rare case; each still exports as its own clipped loop.)
+      function planHull(v) {
+        v.updateMatrixWorld(true);
+        var cp = [];
+        for (var a = -1; a <= 1; a += 2) for (var b2 = -1; b2 <= 1; b2 += 2) for (var c3 = -1; c3 <= 1; c3 += 2) {
+          _v.set(a * 0.5, b2 * 0.5, c3 * 0.5).applyMatrix4(v.matrixWorld);
+          cp.push([_v.x, _v.y]);
+        }
+        return convexHull2D(cp);
+      }
+      var boxHull = planHull(vol);
+      var boundary = [];
+      if (boxHull.length >= 3) {
+        boundary.push(boxHull.concat([boxHull[0].slice()]));
+        var holes = [];
+        for (var ei = 0; ei < exclusionBoxes.length; ei++) {
+          var ex = exclusionBoxes[ei];
+          if (ex._disabled) continue;
+          var hole = clipPolygonConvex(planHull(ex), boxHull);
+          if (hole && hole.length >= 3) holes.push(hole);
+        }
+        // Merge overlapping exclusion footprints into single loops so an overlap
+        // isn't double-cut (even-odd would otherwise re-fill the shared sliver).
+        var merged = unionConvexPolys(holes);
+        for (var hi = 0; hi < merged.length; hi++) {
+          if (merged[hi].length >= 3) boundary.push(merged[hi].concat([merged[hi][0].slice()]));
+        }
+      }
+
+      // --- Labels: greedy min-spacing across all levels ---
+      var mapDiag = Math.hypot(xMax - xMin, yMax - yMin);
+      var minSpSq = (mapDiag * 0.10) * (mapDiag * 0.10);
+      var placed = [], labels = [];
+      for (var ci = 0; ci < contours.length; ci++) {
+        var cpls = contours[ci].polylines;
+        for (var pi = 0; pi < cpls.length; pi++) {
+          var pl = cpls[pi];
+          if (pl.length < 4) continue;
+          var mid = pl[Math.floor(pl.length / 2)], ok = true;
+          for (var q2 = 0; q2 < placed.length; q2++) {
+            var dx = mid[0] - placed[q2][0], dy = mid[1] - placed[q2][1];
+            if (dx * dx + dy * dy < minSpSq) { ok = false; break; }
+          }
+          if (ok) { placed.push(mid); labels.push({ x: mid[0], y: mid[1], text: contours[ci].text }); }
+        }
+      }
+
+      return {
+        name: vol.name || 'Elev Box',
+        labelH: Math.max(0.05, mapDiag * 0.012),
+        contours: contours, labels: labels, boundary: boundary
+      };
+    }
+
+    // Assemble R12-style DXF (POLYLINE/VERTEX + TEXT) for a set of contour maps.
+    function contourMapsToDXF(maps) {
+      function san(s) { return String(s).replace(/[^A-Za-z0-9_]/g, '_'); }
+      var lines = [];
+      var layerSet = {}, layers = [];
+      function addLayer(n, color) { if (!layerSet[n]) { layerSet[n] = 1; layers.push({ n: n, c: color }); } }
+      for (var m = 0; m < maps.length; m++) {
+        var b = san(maps[m].name);
+        addLayer(b + '_CONTOURS', 7); addLayer(b + '_LABELS', 3); addLayer(b + '_BOUNDARY', 1);
+      }
+      lines.push('0', 'SECTION', '2', 'TABLES');
+      lines.push('0', 'TABLE', '2', 'LAYER', '70', '' + layers.length);
+      for (var L = 0; L < layers.length; L++) lines.push('0', 'LAYER', '2', layers[L].n, '70', '0', '62', '' + layers[L].c, '6', 'CONTINUOUS');
+      lines.push('0', 'ENDTAB', '0', 'ENDSEC');
+      lines.push('0', 'SECTION', '2', 'ENTITIES');
+      function emitPolyline(layer, pts, closed) {
+        var p = pts.slice();
+        if (closed && p.length > 2 && Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < 1e-6) p = p.slice(0, p.length - 1);
+        if (p.length < 2) return;
+        lines.push('0', 'POLYLINE', '8', layer, '66', '1', '70', closed ? '1' : '0');
+        for (var i = 0; i < p.length; i++) lines.push('0', 'VERTEX', '8', layer, '10', '' + p[i][0], '20', '' + p[i][1], '30', '0');
+        lines.push('0', 'SEQEND');
+      }
+      for (var mi = 0; mi < maps.length; mi++) {
+        var map = maps[mi], base = san(map.name);
+        for (var ci = 0; ci < map.contours.length; ci++) {
+          var pls = map.contours[ci].polylines;
+          for (var pj = 0; pj < pls.length; pj++) {
+            var pl = pls[pj];
+            var closed = pl.length > 2 && Math.hypot(pl[0][0] - pl[pl.length - 1][0], pl[0][1] - pl[pl.length - 1][1]) < 1e-6;
+            emitPolyline(base + '_CONTOURS', pl, closed);
+          }
+        }
+        for (var li = 0; li < map.labels.length; li++) {
+          var lb = map.labels[li];
+          lines.push('0', 'TEXT', '8', base + '_LABELS', '10', '' + lb.x, '20', '' + lb.y, '30', '0', '40', '' + map.labelH, '1', lb.text);
+        }
+        for (var bi = 0; bi < map.boundary.length; bi++) emitPolyline(base + '_BOUNDARY', map.boundary[bi], true);
+      }
+      lines.push('0', 'ENDSEC', '0', 'EOF');
+      return lines.join('\n');
+    }
+
+    // Export contour maps for the checked boxes (or all active boxes if none
+    // checked) to a single DXF. Each box becomes its own layer group named
+    // after the box (e.g. "Elev Box 1" -> Elev_Box_1_CONTOURS/_LABELS/_BOUNDARY).
+    function exportContourMapsDXF() {
+      if (!elevationActive || !elevationPositions) { showToast('Compute an elevation map first'); return; }
+      // Selection comes from chrome.js (click a box row to select, Ctrl/Cmd+click
+      // to add more). Falls back to ALL computed boxes when nothing is selected.
+      var selNames = (window.__elevExportSel && window.__elevExportSel.length) ? window.__elevExportSel : null;
+      var selected = [], active = [];
+      for (var i = 0; i < elevationCropVolumes.length; i++) {
+        var vol = elevationCropVolumes[i], cfg = getBoxConfig(vol);
+        if (!cfg.active || cfg.zMin == null || cfg.zMax == null) continue;
+        active.push(vol);
+        if (selNames && selNames.indexOf(vol.name) !== -1) selected.push(vol);
+      }
+      var targets = selected.length ? selected : active;
+      if (targets.length === 0) { showToast('No computed elevation boxes to export'); return; }
+      showToast('Building contour map' + (targets.length > 1 ? 's' : '') + '…');
+      var maps = [];
+      for (var t = 0; t < targets.length; t++) {
+        var data = computeContourMapExport(targets[t], getBoxConfig(targets[t]));
+        if (data) maps.push(data);
+      }
+      if (maps.length === 0) { showToast('Nothing to export (boxes had too few points)'); return; }
+      var content = contourMapsToDXF(maps);
+      var blob = new Blob([content], { type: 'application/dxf' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = maps.length === 1 ? (String(maps[0].name).replace(/[^A-Za-z0-9_]/g, '_') + '_contours.dxf') : 'contour_maps.dxf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Exported ' + maps.length + ' contour map' + (maps.length > 1 ? 's' : ''));
+    }
+
     function clearElevationContours() {
       // Clear all per-box contour groups
       for (var i = 0; i < elevationCropVolumes.length; i++) {
@@ -10205,6 +10606,9 @@
           '<div id="exclusion-list"></div>' +
           '<div id="enable-elevation-status"></div>' +
           '<div id="enable-elevation-box-list"></div>' +
+          '<div id="enable-elevation-export">' +
+            '<button id="btn-export-contours" title="Export contour maps (contours + elevation labels + boundary polygon) for the checked boxes — or all computed boxes if none are checked — to a DXF">Export Contour Maps (.dxf)</button>' +
+          '</div>' +
         closeGroup() +
 
         // === 7. STRUCTURAL FRAMING (collapsed) ===
@@ -10349,6 +10753,8 @@
 
       // Elevation map buttons
       document.getElementById('btn-add-elev-box').addEventListener('click', function() { addElevationBox(); });
+      var _expContoursBtn = document.getElementById('btn-export-contours');
+      if (_expContoursBtn) _expContoursBtn.addEventListener('click', function() { exportContourMapsDXF(); });
       document.getElementById('btn-clear-all-elev-boxes').addEventListener('click', function() { clearAllElevationBoxes(); });
       document.getElementById('btn-hide-exclusion-outlines').addEventListener('click', function() { onToggleExclusionOutlines(); });
       document.getElementById('btn-add-exclusion').addEventListener('click', function() { onAddExclusion(); });
@@ -10431,6 +10837,32 @@
     }, true);
     let _stationCandidate = null;  // { station, downX, downY } set in mousedown if a pin is under cursor
     let _noteCandidate    = null;  // { note,    downX, downY } same pattern for note icons
+    let _cropClickCandidate = null; // persistent box (crop box) under cursor at mousedown → click selects it on mouseup
+
+    // ===== Orbit-first "hold to grab" (model A) =====
+    // A left-drag ORBITS by default, even when it starts on a draggable item.
+    // Grabbing an item — marker / member / constraint / measurement node, or a
+    // crop / exclusion / elevation box resize+move handle — requires a brief
+    // press-and-hold (held still). ANY movement before the hold fires cancels
+    // the pending grab so the drag orbits instead.
+    var HOLD_GRAB_MS = 180;
+    var HOLD_GRAB_MOVE = 4;      // px of motion before the hold fires → orbit
+    var _pgTimer = null;
+    var _pgPending = null;       // { downX, downY, arm } while a hold is pending
+    var _pgArmed = false;        // a grab is armed and the item is being dragged
+    function _pgClear() {
+      if (_pgTimer) { clearTimeout(_pgTimer); _pgTimer = null; }
+      _pgPending = null;
+    }
+    function _pgArm() {
+      if (!_pgPending) return;
+      var arm = _pgPending.arm;
+      _pgTimer = null; _pgPending = null; _pgArmed = true;
+      // Cancel any orbit Potree armed on mousedown so the drag moves the item.
+      if (viewer.inputHandler && viewer.inputHandler.drag) viewer.inputHandler.drag = null;
+      document.body.classList.add('hold-grabbing');
+      try { arm(); } catch (e) { /* ignore */ }
+    }
 
     renderArea.addEventListener('mousedown', function(e) {
       // Right after Esc (e.g. finishing the distance tool), the cursor is sitting
@@ -10451,6 +10883,7 @@
       // if the user drags. mouseup decides click vs drag with a 5px threshold.
       _stationCandidate = null;
       _noteCandidate = null;
+      _cropClickCandidate = null;
       if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode) {
         var rectS = renderArea.getBoundingClientRect();
         var mousePixelS = { x: e.clientX - rectS.left, y: e.clientY - rectS.top };
@@ -10466,46 +10899,67 @@
         }
       }
 
-      // Check if clicking near an unlocked marker (for dragging)
-      if (e.button === 0 && markedPoints.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE && !notePickMode) {
-        var rect = renderArea.getBoundingClientRect();
-        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        var markerHit = findNearestMarker(mousePixel);
-        if (markerHit) {
-          markerDragActive = true;
-          markerDragInfo = markerHit;
-          document.body.classList.add('marker-drag');
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
+      // ===== Orbit-first hold-to-grab: find a grab CANDIDATE but don't grab yet.
+      // Record what could be grabbed + start the hold timer; the drag orbits
+      // unless the user holds still (see mousemove/_pgArm). Locked items return
+      // null from the findNearest* helpers, so they never block orbit.
+      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode) {
+        var rectG = renderArea.getBoundingClientRect();
+        var mpG = { x: e.clientX - rectG.left, y: e.clientY - rectG.top };
+        var _arm = null;
+        // _clearHover: whenever we defer a grab we must ALSO stop Potree from
+        // grabbing the same (or a nearby) hovered draggable on THIS mousedown —
+        // else it drags the item / grabs the locked crop box and orbit is
+        // blocked. We wipe inputHandler.hoveredElements so Potree's bubble-phase
+        // onMouseDown finds nothing grabbable and arms a scene-drag (orbit).
+        var _clearHover = false;
+        var _mk = markedPoints.length ? findNearestMarker(mpG) : null;
+        if (_mk) _arm = function () { markerDragActive = true; markerDragInfo = _mk; document.body.classList.add('marker-drag'); };
+        if (!_arm && members.length) {
+          var _mb = findNearestMemberEndpoint(mpG);
+          if (_mb) _arm = function () { memberDragActive = true; memberDragInfo = _mb; document.body.classList.add('member-drag'); };
         }
-      }
-      // Check if clicking near a member endpoint (for dragging) — check before constraints
-      if (e.button === 0 && members.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE && !notePickMode) {
-        var rect = renderArea.getBoundingClientRect();
-        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        var memberHit = findNearestMemberEndpoint(mousePixel);
-        if (memberHit) {
-          memberDragActive = true;
-          memberDragInfo = memberHit;
-          document.body.classList.add('member-drag');
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
+        if (!_arm && constraints.length) {
+          var _cn = findNearestDefinitionPoint(mpG);
+          if (_cn) _arm = function () { constraintDragActive = true; constraintDragInfo = _cn; document.body.classList.add('constraint-drag'); };
         }
-      }
-      // Check if clicking near a constraint definition point (for dragging)
-      if (e.button === 0 && constraints.length > 0 && !constraintPickMode && !MARK_MODE && !memberPickMode && !notePickMode) {
-        var rect = renderArea.getBoundingClientRect();
-        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        var hit = findNearestDefinitionPoint(mousePixel);
-        if (hit) {
-          constraintDragActive = true;
-          constraintDragInfo = hit;
-          document.body.classList.add('constraint-drag');
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
+        if (!_arm && viewer.inputHandler) {
+          var _sph = findNearestMeasurementSphere(mpG);
+          // Measurement spheres ARE Potree-hovered draggables, so clearing hover
+          // is what makes them orbit-first (this was the missing piece).
+          if (_sph) _arm = function () { viewer.inputHandler.mouse.set(mpG.x, mpG.y); viewer.inputHandler.startDragging(_sph); _draggingMeasureSphere = true; };
+        }
+        // Any Potree-hovered draggable our findNearest didn't catch — box
+        // resize/move handles AND the crop-box frame. Persistent volumes (locked
+        // crop box) get cleared-but-not-armed: orbit yes, grab no.
+        if (!_arm && viewer.inputHandler && viewer.inputHandler.hoveredElements && viewer.inputHandler.hoveredElements.length) {
+          var _hEl = viewer.inputHandler.hoveredElements.find(function (el) {
+            var o = el.object;
+            return o && o._listeners && o._listeners['drag'] && o._listeners['drag'].length > 0;
+          });
+          if (_hEl) {
+            _clearHover = true; // orbit during the hold regardless of persistence
+            var _persist = false, _persistVol = null, _p = _hEl.object;
+            while (_p) { if (_p.userData && _p.userData.persistent) { _persist = true; _persistVol = _p; break; } _p = _p.parent; }
+            if (_persist) {
+              // Locked box (crop box): never grab/drag it, but a clean CLICK
+              // should still select/activate it (restored on mouseup below).
+              _cropClickCandidate = { vol: _persistVol, downX: e.clientX, downY: e.clientY };
+            } else {
+              var _hObj = _hEl.object, _hPt = _hEl.point;
+              _arm = function () { viewer.inputHandler.mouse.set(mpG.x, mpG.y); viewer.inputHandler.startDragging(_hObj, { location: _hPt }); };
+            }
+          }
+        }
+        // Suppress Potree's own grab whenever we're deferring one (markers don't
+        // register with Potree, but a stray hovered sphere/box under the cursor
+        // still would — clear unconditionally when we set up a pending grab).
+        if (_arm) _clearHover = true;
+        if (_clearHover && viewer.inputHandler) viewer.inputHandler.hoveredElements = [];
+        if (_arm) {
+          _pgPending = { downX: e.clientX, downY: e.clientY, arm: _arm };
+          _pgTimer = setTimeout(_pgArm, HOLD_GRAB_MS);
+          // Deliberately do NOT stopPropagation: Potree arms orbit for a quick drag.
         }
       }
       // X-axis pick marker dragging (only during plane-x-axis pick mode)
@@ -10522,27 +10976,8 @@
           return;
         }
       }
-      // Distance/area/angle measurement sphere drag (Potree-managed) — runs
-      // last so marker/member/constraint custom drags take priority. This
-      // uses Potree's own InputHandler.startDragging so the existing drag /
-      // drop / marker_moved event flow handles position updates and sidebar
-      // refresh. Mirrors the touch sphere-grab in chrome.js so mouse and
-      // touch reach measurement spheres with the same 18 px tolerance.
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode
-          && !zBasePickMode && !notePickMode
-          && viewer.inputHandler) {
-        var rectMS = renderArea.getBoundingClientRect();
-        var mousePixelMS = { x: e.clientX - rectMS.left, y: e.clientY - rectMS.top };
-        var sphHit = findNearestMeasurementSphere(mousePixelMS);
-        if (sphHit) {
-          viewer.inputHandler.mouse.set(mousePixelMS.x, mousePixelMS.y);
-          viewer.inputHandler.startDragging(sphHit);
-          _draggingMeasureSphere = true;   // on release, force next drag to orbit (see mouseup above)
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
-        }
-      }
+      // (Measurement-sphere + box-handle grabs are handled by the orbit-first
+      // candidate block above — no immediate grab here.)
       if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) {
         // Not grabbing anything and not in a pick mode → this left-drag should
         // ORBIT. Potree only starts a fresh scene-drag (orbit) when
@@ -10566,6 +11001,12 @@
     var HOVER_THRESHOLD = 12; // pixels
 
     renderArea.addEventListener('mousemove', function(e) {
+      // Orbit-first: any movement before the hold fires cancels the pending grab
+      // so this drag orbits instead of grabbing the item under the cursor.
+      if (_pgPending) {
+        var _pdx = e.clientX - _pgPending.downX, _pdy = e.clientY - _pgPending.downY;
+        if (_pdx * _pdx + _pdy * _pdy > HOLD_GRAB_MOVE * HOLD_GRAB_MOVE) _pgClear();
+      }
       // Member rubber-band: orange cursor sphere + line from the first endpoint.
       if (memberPickMode) _updateMemberPreview(e);
       // Hover-preview spheres — Mark (red), Note (yellow), Constraint (green).
@@ -10776,6 +11217,11 @@
     }, true);
 
     renderArea.addEventListener('mouseup', function(e) {
+      // Orbit-first hold-to-grab cleanup. If a grab was armed, the finalize
+      // blocks below (markerDrag/memberDrag/…) still run — _pgArm set those
+      // flags. A press+release with no hold just clears the pending timer.
+      if (_pgArmed) { _pgArmed = false; document.body.classList.remove('hold-grabbing'); }
+      _pgClear();
       // Note icon click — toggle the popover if the mouse barely moved.
       if (_noteCandidate) {
         var nc = _noteCandidate;
@@ -10789,6 +11235,24 @@
             else _openNotePopover(nc.note.id);
             e.stopPropagation();
             return;
+          }
+        }
+      }
+      // Crop-box (persistent) click — a clean click selects/activates it. We
+      // cleared Potree's hover on mousedown to allow orbit, so Potree's own
+      // click-select won't fire; do it here instead.
+      if (_cropClickCandidate) {
+        var cc2 = _cropClickCandidate;
+        _cropClickCandidate = null;
+        var noDragCrop = !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive && !_pgArmed;
+        if (noDragCrop && e.button === 0 && viewer.inputHandler) {
+          var cdx = e.clientX - cc2.downX, cdy = e.clientY - cc2.downY;
+          if (Math.sqrt(cdx * cdx + cdy * cdy) < 5) {
+            try {
+              var alreadySel = viewer.inputHandler.selection && viewer.inputHandler.selection.indexOf(cc2.vol) >= 0;
+              viewer.inputHandler.deselectAll();
+              if (!alreadySel) viewer.inputHandler.toggleSelection(cc2.vol);
+            } catch (e3) { /* ignore */ }
           }
         }
       }
