@@ -115,6 +115,12 @@ site/clients/Pomerleau/pointclouds/
 site/clients/Pomerleau/stations/
 site/clients/Pomerleau/Hart House/
 
+# ---------- MurrayFranks 1531 Dupont: octree + panoramas + Tekla model served from R2 (2026-07-06) ----------
+# All data (pointclouds/stations/models) now in R2 bucket 'enable-pointclouds'
+# (murrayfranks/1531dupont/...); projects.js folder points at the r2.dev URL.
+# MurrayFranks also went no-login (latest HRI stack) at this point.
+site/clients/MurrayFranks/1531 Dupont (steel canopy)/
+
 # ---------- SECRETS — never commit ----------
 # Cloudflare R2 upload credentials (Object Read & Write). Plaintext on this machine
 # only; NEVER pushed. Agents read this file for R2 uploads. See reference_r2_migration.

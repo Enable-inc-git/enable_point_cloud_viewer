@@ -246,6 +246,30 @@ html, body {
   gap: 0;
 }
 
+/* Units switch (mm / imperial-fractional / imperial-decimal) */
+.dev2-tb-units {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  margin: 0 8px;
+  border: 1px solid var(--tb-divider, #3a3a3a);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.dev2-tb-unit-btn {
+  background: transparent;
+  color: var(--sidebar-text, #ddd);
+  border: 0;
+  border-right: 1px solid var(--tb-divider, #3a3a3a);
+  cursor: pointer;
+  font: 11px/1 sans-serif;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.dev2-tb-unit-btn:last-child { border-right: 0; }
+.dev2-tb-unit-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.dev2-tb-unit-btn.active { background: var(--accent, #3EAD4A); color: #fff; }
+
 /* Generic toolbar button — chrome for both labeled-group buttons and icon-only */
 .dev2-tb-btn,
 .dev2-tb-btn-icon {
@@ -778,6 +802,11 @@ html, body {
   outline-offset: -1px;
   background: var(--accent-dim) !important;
 }
+/* Boxes picked for contour-map export (click to select, Ctrl/Cmd+click to add). */
+#enable-elevation-box-list > .dev2-elev-selected {
+  background: var(--accent-dim) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 /* Strip the legacy "border-top dashed" off the moved panel since we own the
    chrome now. The panel was styled inline so we use a wildcard descendant
    selector to defeat the inline border-top. */
@@ -1034,4 +1063,103 @@ html, body {
 :root[data-theme="light"] #potree_render_area {
   /* Soft drop shadow at top to detach canvas from white topbar */
   box-shadow: inset 0 1px 0 rgba(0,0,0,0.04);
+}
+
+/* ---------- Hide Potree's WebXR "Enter VR" button (none of these viewers use VR;
+   it auto-appears on devices that report XR support, e.g. phones) ---------- */
+#VRButton { display: none !important; }
+
+/* ============================================================
+   PHONE / SMALL-SCREEN BASE — narrow (portrait phones) OR short (landscape phones).
+   Landscape phones are ~840px WIDE but only ~400px TALL, so a width-only breakpoint
+   misses them; we also trigger on short height. The desktop chrome assumes ~1000px+
+   (280px sidebar + a 281px brand block with contact lines + tools), which on a phone
+   swallows the bar and pushes every tool off-screen and leaves no canvas. Here we:
+   drop the contact lines, shrink the brand to a small logo so the tool row gets the
+   width (it already scrolls), make the sidebar + context panel OVERLAY the canvas
+   (canvas stays full-bleed), and trim the bar. Sidebar also starts collapsed on
+   phones (see chrome.js).
+   ============================================================ */
+@media (max-width: 768px), (orientation: landscape) and (max-height: 600px) {
+  :root {
+    --topbar-height: 50px;
+    --context-panel-width: min(86vw, 340px);
+    --panorama-width: min(96vw, 400px);
+  }
+
+  /* Canvas is always full-bleed on phones; the side panels float over it. */
+  .potree_container,
+  #dev2-context-panel[data-open="true"] ~ .potree_container,
+  :root[data-panorama-mode="docked"] .potree_container,
+  :root[data-panorama-mode="docked"] #dev2-context-panel[data-open="true"] ~ .potree_container {
+    left: 0 !important;
+    right: 0 !important;
+  }
+
+  /* Top toolbar: reclaim horizontal space for the tools. */
+  .dev2-tb-contact { display: none !important; }          /* drop www / email lines */
+  .dev2-tb-brand-area {
+    width: auto !important;                                /* was sidebar-width (281px) */
+    min-width: 0;
+    padding: 4px 8px;
+    gap: 8px;
+  }
+  .dev2-tb-logo { height: 20px; }
+  .dev2-tb-project-name { max-width: 88px; }              /* keep the short name, capped */
+  .dev2-tb-btn, .dev2-tb-btn-icon { padding: 0 8px; }     /* slightly tighter tool buttons */
+
+  /* Sidebar + context panel become comfortable touch-width overlay drawers. */
+  #dev2-sidebar { width: min(86vw, 320px); box-shadow: var(--shadow); }
+  /* Raise the panels ABOVE the docked panorama (z 940) so an expanded sidebar /
+     Tool Settings panel sits on top of the image instead of behind it. Stays
+     below the edge toggles (z 950). */
+  #dev2-sidebar, #dev2-context-panel { z-index: 945; }
+}
+
+/* ============================================================
+   PORTRAIT PHONE — two-row toolbar + bottom-docked (vertical) panorama.
+   Row 1 = logo/brand + file tools (save/load/undo/…); row 2 = the tool ribbon,
+   full width (scrolls). Uses flex-wrap + `order`; --topbar-height grows to the
+   two-row height so the sidebar/canvas/panorama offsets stay aligned.
+   ============================================================ */
+@media (max-width: 768px) and (orientation: portrait) {
+  :root { --topbar-height: 92px; --panorama-height: 48vh; }
+
+  /* Row 1 = brand/logo (order 0) + file tools (order 2), kept on ONE line; the
+     tool ribbon (order 3, basis 100%) wraps to row 2. The logo + 7 file icons
+     must fit row 1 or the file tools spill to a 3rd row, so we hide the project
+     name and compact the icons. */
+  #dev2-topbar { flex-wrap: wrap; height: var(--topbar-height); align-content: flex-start; }
+  .dev2-tb-brand-area   { order: 0; height: 46px; border-right: 0; flex: 0 1 auto; padding: 4px 6px; min-width: 0; }
+  .dev2-tb-flex-spacer  { order: 1; flex: 1 1 auto; }
+  .dev2-tb-right        { order: 2; height: 46px; border-left: 0; padding: 0 4px; flex: 0 0 auto; }
+  .dev2-tb-groups-wrap  { order: 3; flex-basis: 100%; width: 100%; height: 46px;
+                          border-top: 1px solid var(--tb-divider); }
+  .dev2-tb-project-name { display: none; }                /* logo + file tools share row 1 */
+  .dev2-tb-logo         { height: 18px; }
+  .dev2-tb-right .dev2-tb-btn-icon { padding: 0 5px; margin: 7px 1px; height: 32px; }  /* compact so all fit */
+  .dev2-tb-groups .dev2-tb-btn, .dev2-tb-groups .dev2-tb-btn-icon { height: 32px; }
+
+  /* Station panorama docks to the BOTTOM (vertical stack) instead of the right. */
+  #station-panorama-modal.dev2-pano-docked,
+  #dev2-context-panel[data-open="true"] ~ #station-panorama-modal.dev2-pano-docked {
+    top: auto !important; bottom: 0 !important; left: 0 !important; right: 0 !important;
+    width: auto !important; height: var(--panorama-height) !important;
+    border-left: 0; border-top: 1px solid var(--panel-border);
+  }
+  .dev2-cp-resize-pano { display: none !important; }      /* side handle N/A when bottom-docked */
+  /* Cloud occupies the area ABOVE the docked panorama. */
+  :root[data-panorama-mode="docked"] .potree_container {
+    bottom: var(--panorama-height) !important;
+  }
+}
+
+/* ============================================================
+   LANDSCAPE PHONE — keep ONE compact row; vertical space is scarce (the mobile
+   browser's address bar already eats the top), so don't spend it on a 2nd row.
+   ============================================================ */
+@media (orientation: landscape) and (max-height: 600px) {
+  :root { --topbar-height: 42px; }
+  .dev2-tb-project-name { display: none; }                /* logo only → max canvas height */
+  .dev2-tb-btn, .dev2-tb-btn-icon { height: 30px; margin: 6px 2px; }
 }

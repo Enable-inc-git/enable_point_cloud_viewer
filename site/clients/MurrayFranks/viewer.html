@@ -294,6 +294,15 @@
       transition: outline 0.15s;
     }
     #enable-elevation-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-elevation-export { margin: 8px 0 2px; }
+    #enable-elevation-export button {
+      width: 100%; padding: 6px 8px; border: 1px solid var(--border, #333);
+      border-radius: 4px; font: 13px/1.3 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+      transition: outline 0.15s;
+    }
+    #enable-elevation-export button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    body.hold-grabbing, body.hold-grabbing * { cursor: grabbing !important; }
     #enable-elevation-buttons button.clip-btn.active {
       background: #555; outline: 2px solid var(--accent, #3EAD4A);
       pointer-events: none; opacity: 0.7;
@@ -620,6 +629,91 @@
   <!-- ===================== APP ===================== -->
   <script>
   (function () {
+    // ===================== UNITS =====================
+    // World units are METRES. Every measurement readout routes through these
+    // formatters so the top-right units switch changes EVERYTHING. Default: mm.
+    var UNIT_MODE = 'mm';                       // 'mm' | 'imp-frac' | 'imp-dec'
+    var M_TO_IN = 39.37007874015748;
+    function _reduceFrac(n, d) { while (n > 0 && (n & 1) === 0) { n >>= 1; d >>= 1; } return [n, d]; }
+    // Length (metres) -> display string WITH unit, in the current mode.
+    function fmtLen(meters) {
+      if (meters == null || isNaN(meters)) return '—';
+      var neg = meters < 0, m = Math.abs(meters);
+      if (UNIT_MODE === 'mm') return (neg ? '-' : '') + m.toFixed(3) + ' m';   // metric: metres to the mm
+      var totalIn = m * M_TO_IN;
+      if (UNIT_MODE === 'imp-dec') {
+        totalIn = Math.round(totalIn / 0.05) * 0.05;
+        var ft = Math.floor(totalIn / 12), inch = totalIn - ft * 12;
+        return (neg ? '-' : '') + (ft > 0 ? ft + "' " : '') + inch.toFixed(2) + '"';
+      }
+      // imperial fractional to 1/16"
+      var six = Math.round(totalIn * 16);
+      var ftF = Math.floor(six / 192), rem = six - ftF * 192;
+      var whole = Math.floor(rem / 16), frac = rem - whole * 16;
+      var s = (neg ? '-' : '') + (ftF > 0 ? ftF + "' " : '');
+      if (frac === 0) s += whole + '"';
+      else { var rf = _reduceFrac(frac, 16); s += (whole > 0 ? whole + ' ' : '') + rf[0] + '/' + rf[1] + '"'; }
+      return s;
+    }
+    function fmtArea(m2) {
+      if (m2 == null || isNaN(m2)) return '—';
+      return UNIT_MODE === 'mm' ? m2.toFixed(3) + ' m²' : (m2 * 10.7639104).toFixed(2) + ' ft²';
+    }
+    function fmtVol(m3) {
+      if (m3 == null || isNaN(m3)) return '—';
+      return UNIT_MODE === 'mm' ? m3.toFixed(3) + ' m³' : (m3 * 35.3146667).toFixed(2) + ' ft³';
+    }
+    // Compact value (metric strips the " m" suffix; imperial keeps the ' " marks).
+    function fmtLenVal(meters) { var s = fmtLen(meters); return UNIT_MODE === 'mm' ? s.replace(/ m$/, '') : s; }
+    function unitTitle() { return UNIT_MODE === 'mm' ? '(m)' : UNIT_MODE === 'imp-dec' ? '(ft-in dec)' : '(ft-in)'; }
+    // Length INPUT fields carry a plain decimal in the current input unit
+    // (mm mode -> mm, imperial -> decimal inches). Convert to/from metres.
+    function inputUnitLabel() { return UNIT_MODE === 'mm' ? 'm' : 'in'; }
+    function lenFromInput(val) { var x = parseFloat(val); if (isNaN(x)) return NaN; return UNIT_MODE === 'mm' ? x : x * 0.0254; }
+    function lenToInput(meters) { return UNIT_MODE === 'mm' ? meters : meters * M_TO_IN; }
+    function lenToInputStr(meters) { if (meters == null || isNaN(meters)) return ''; var v = lenToInput(meters); return UNIT_MODE === 'mm' ? v.toFixed(3) : v.toFixed(2); }
+    // Hook consumed by the patched Potree measurement labels (libs/potree.js).
+    window.__unitFmt = { len: fmtLen, area: fmtArea, vol: fmtVol };
+    function getUnitMode() { return UNIT_MODE; }
+    function setUnitMode(mode) {
+      if (mode !== 'mm' && mode !== 'imp-frac' && mode !== 'imp-dec') return;
+      UNIT_MODE = mode;
+      try { refreshUnitsAll(); } catch (e) { console.warn('[units] refresh failed', e); }
+    }
+    // Re-render every measurement display after a unit change.
+    function refreshUnitsAll() {
+      try { if (typeof rebuildAllMeasurementLists === 'function') rebuildAllMeasurementLists(); } catch (e) {}
+      try { (viewer.scene.measurements || []).forEach(function (m) { if (m && m.update) m.update(); }); } catch (e) {}
+      try { if (typeof rebuildElevationBoxList === 'function') rebuildElevationBoxList(); } catch (e) {}
+      try { _refreshElevationUnitDisplays(); } catch (e) {}
+    }
+    // Elevation status text is stored raw so it can be re-rendered on unit change.
+    var _lastElevStatus = null;
+    function renderElevStatus() {
+      if (!_lastElevStatus) return;
+      var s = _lastElevStatus;
+      try {
+        $('#enable-elevation-status').text(
+          s.name + ': ' + s.count.toLocaleString() + ' pts | ' + s.label + ': ' +
+          fmtLen(s.zMin) + ' to ' + fmtLen(s.zMax) + ' (' + fmtLen(s.zMax - s.zMin) + ')'
+        );
+      } catch (e) {}
+    }
+    function _refreshElevationUnitDisplays() {
+      try { renderElevStatus(); } catch (e) {}
+      try {
+        if (elevationActive) {
+          if (typeof updateElevationLegend === 'function') updateElevationLegend(elevationZMin, elevationZMax);
+          if (typeof buildBoxContours === 'function') {
+            elevationCropVolumes.forEach(function (v2) {
+              var c = getBoxConfig(v2);
+              if (c && c.active && c.contoursVisible) buildBoxContours(v2);
+            });
+          }
+        }
+      } catch (e) {}
+    }
+
     // ----- read ?p=<PointCloudID> and lookup in projects.js -----
     const params = new URLSearchParams(location.search);
     const pointCloudID = params.get('p');
@@ -634,8 +728,17 @@
 
     // sensible defaults
     viewer.setEDLEnabled(true);
+    // Soften EDL so the dark shading between octree-LOD points doesn't read as
+    // cross-hatch/streak artifacts on flat slabs (and stops burying GPR marks).
+    try { viewer.setEDLRadius(1.0); } catch (e) {}   // default 1.4 — tighter halo
+    try { viewer.setEDLStrength(0.3); } catch (e) {} // default ~0.4 — gentler darkening
     viewer.setFOV(60);
-    viewer.setPointBudget(2_000_000);
+    // Responsiveness-first budget. The clean (despeckled) look lives in the octree
+    // data and costs nothing to render — this only trades some density at WIDE zoom
+    // for a much smoother experience (zoom in to recover full ~1cm detail; +/- to tune).
+    viewer.setPointBudget(3_000_000); // was 16M (laggy) -> 5M -> 3M for responsiveness (+/- to tune live)
+    // minNodeSize raised above Potree default (30) to cull more small/deep nodes = fewer draw calls.
+    try { viewer.setMinNodeSize(40); } catch (e) {}
     viewer.setDescription(meta.name || pointCloudID);
     document.title = 'Enable Viewer — ' + (meta.name || pointCloudID); // tab title per loaded project
     viewer.loadSettingsFromURL(); // allow ? overrides
@@ -696,11 +799,15 @@
 
       domEl.addEventListener('mousedown', function(e) {
         if (e.button !== 0) return;
-        // Skip if the user is in any pick mode that consumes left clicks
+        // Skip if the user is in any tool workflow that consumes left clicks —
+        // a click then belongs to that tool, not to selecting a managed box.
         if (typeof MARK_MODE !== 'undefined' && MARK_MODE) return;
         if (typeof constraintPickMode !== 'undefined' && constraintPickMode) return;
         if (typeof memberPickMode !== 'undefined' && memberPickMode) return;
         if (typeof zBasePickMode !== 'undefined' && zBasePickMode) return;
+        if (typeof notePickMode !== 'undefined' && notePickMode) return;
+        if (typeof pendingMeasurement !== 'undefined' && pendingMeasurement) return;
+        if (typeof pendingVolume !== 'undefined' && pendingVolume) return;
 
         // All internally-managed boxes whose fill-mesh raycast is disabled
         // (elevation crop, cut-out, exclusion) need this manual OBB hit-test to be
@@ -750,17 +857,34 @@
         // intervene in those cases — Potree's bubble-phase onMouseUp must run
         // to fire the 'drop' event that commits placement / ends drag.
         if (ih && ih.drag && ih.drag.object) return;
-        // If Potree already has the volume in hoveredElements (i.e. the click
-        // landed on the wireframe edge), let Potree's own onMouseUp run — it
-        // does the right thing for selection. We only take over for clicks
-        // INSIDE the box where Potree can't see the volume (fill raycast off)
-        // and would otherwise call deselectAll(), undoing our selection.
+        // If Potree already has a wireframe pick on the click, let its own
+        // onMouseUp run — it does the right thing for selection. We only take over
+        // for clicks INSIDE a managed box where Potree can't see the volume (fill
+        // raycast off) and would otherwise call deselectAll(), undoing our pick.
+        //
+        // CRUCIAL: defer for ANY hovered scene volume, not just `vol`. The mousedown
+        // OBB test uses an INFINITE camera ray, so a managed box lying anywhere along
+        // the ray's depth sets pendingClick even when the user actually clicked the
+        // persistent clip box's edge across the scene. The clip box IS Potree-pickable
+        // (its box.raycast routes to its frame), so without this broader check we'd
+        // hijack the edge click and deselectAll() — making the clip-box edge feel
+        // "unresponsive" the moment any elevation/cut-out/exclusion box exists.
+        var sceneVols = (viewer.scene && viewer.scene.volumes) ? viewer.scene.volumes : [];
         var hoveredHasVol = ih && ih.hoveredElements && ih.hoveredElements.some(function(h) {
           var o = h && h.object;
-          while (o) { if (o === vol) return true; o = o.parent; }
+          while (o) {
+            if (o === vol) return true;                  // the managed box itself
+            if (sceneVols.indexOf(o) >= 0) return true;  // any other volume (e.g. clip-box edge)
+            o = o.parent;
+          }
           return false;
         });
         if (hoveredHasVol) return;
+        // Orbit-first clears hoveredElements on mousedown, so hoveredHasVol can't
+        // see the crop box. If the crop box is the intended click target, defer
+        // to the crop-click handler (main mouseup) so a managed box lying along
+        // the infinite pick ray doesn't hijack the crop-box click.
+        if (_cropClickCandidate) return;
         try {
           var alreadySelected = ih.selection && ih.selection.indexOf(vol) >= 0;
           ih.deselectAll();
@@ -1348,8 +1472,8 @@
 
       // Resolve base path for panorama URLs (relative to the project's folder).
       // meta.folder = "<project>/pointclouds/<scan_id>"; drop those two segments.
-      var _mbParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
-      var manifestBase = _mbParts.slice(0, -2).join('/') + '/stations/';
+      // Regex (not split/join) so an absolute R2 URL keeps its "https://".
+      var manifestBase = meta.folder.replace(/\/+$/, '').replace(/\/[^/]+\/[^/]+$/, '') + '/stations/';
 
       // Auto-scale pin size from cloud diagonal.
       try {
@@ -2031,6 +2155,21 @@
       footer.appendChild(saveBtn);
 
       pop.appendChild(footer);
+
+      // Keep note editing self-contained. Enter in the single-line name field
+      // commits + closes; Enter in the textarea keeps its default (newline). In
+      // BOTH cases the key is stopped from reaching the global keydown handler,
+      // which would otherwise restart the last measurement tool and jump/zoom the
+      // camera. (Escape is left to bubble — the global handler closes the popover.)
+      pop.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter') return;
+        if (ev.target === nameInput) {
+          ev.preventDefault();
+          setNoteName(n.id, nameInput.value || ('N' + n.id));
+          _closeNotePopover();
+        }
+        ev.stopPropagation();
+      });
 
       document.body.appendChild(pop);
       _notePopoverEl = pop;
@@ -3166,7 +3305,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] BDA build 2026-06-12a — orbit-unstick + measure-hide v1.3 loaded'); } catch (e) {}
+    try { console.info('[Enable] MurrayFranks / 1531 Dupont — no-login + R2 viewer stack'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -3299,18 +3438,26 @@
     }
     function _applyVisibility(vis) {
       if (!vis) return;
+      // A view shows ONLY the annotations it captured. Anything NOT in the
+      // snapshot was created AFTER this view was saved, so it must be HIDDEN
+      // (new items never appear in an older view). To add it, the user shows it
+      // then "Update view". Guarded per-map so old-format views aren't wiped.
       if (vis.marks) markedPoints.forEach(function(m) {
-        if (vis.marks[m.id] !== undefined) { m.visible = !!vis.marks[m.id]; if (m.visual) m.visual.visible = m.visible; }
+        var on = vis.marks[m.id] !== undefined ? !!vis.marks[m.id] : false;
+        m.visible = on; if (m.visual) m.visual.visible = on;
       });
       if (vis.members) members.forEach(function(m) {
-        if (vis.members[m.id] !== undefined) { m.visible = !!vis.members[m.id]; if (m.visual) m.visual.visible = m.visible; }
+        var on = vis.members[m.id] !== undefined ? !!vis.members[m.id] : false;
+        m.visible = on; if (m.visual) m.visual.visible = on;
       });
       if (vis.notes) notes.forEach(function(n) {
-        if (vis.notes[n.id] !== undefined) { n.visible = !!vis.notes[n.id]; if (n.visual) n.visual.visible = n.visible; }
+        var on = vis.notes[n.id] !== undefined ? !!vis.notes[n.id] : false;
+        n.visible = on; if (n.visual) n.visual.visible = on;
       });
       if (vis.measures) (viewer.scene.measurements || []).forEach(function(m) {
         var mid = _ensureMid(m);
-        if (vis.measures[mid] !== undefined) _setMeasureVisible(m, !!vis.measures[mid]);
+        var on = vis.measures[mid] !== undefined ? !!vis.measures[mid] : false;
+        _setMeasureVisible(m, on);
       });
       _refreshAnnotationLists();
     }
@@ -4276,7 +4423,7 @@
     function findNearestDefinitionPoint(mousePixel) {
       var camera = viewer.scene.getActiveCamera();
       var rect = renderArea.getBoundingClientRect();
-      var bestDist = 25; // pixel threshold
+      var bestDist = 14; // pixel threshold
       var bestResult = null;
       for (var ci = 0; ci < constraints.length; ci++) {
         var c = constraints[ci];
@@ -4887,7 +5034,7 @@
     function findNearestMemberEndpoint(mousePixel) {
       var camera = viewer.scene.getActiveCamera();
       var rect = renderArea.getBoundingClientRect();
-      var bestDist = 25;
+      var bestDist = 14;
       var bestResult = null;
       for (var mi = 0; mi < members.length; mi++) {
         var m = members[mi];
@@ -4912,7 +5059,7 @@
     function findNearestMarker(mousePixel) {
       var camera = viewer.scene.getActiveCamera();
       var rect = renderArea.getBoundingClientRect();
-      var bestDist = 25;
+      var bestDist = 14;
       var bestResult = null;
       for (var i = 0; i < markedPoints.length; i++) {
         var m = markedPoints[i];
@@ -4945,7 +5092,7 @@
       if (!camera) return null;
       var rect = renderArea.getBoundingClientRect();
       var best = null;
-      var bestPxSq = 324; // 18 px
+      var bestPxSq = 196; // 14 px — matches the node's on-screen size
       var meas = viewer.scene.measurements;
       for (var mi = 0; mi < meas.length; mi++) {
         var m = meas[mi];
@@ -5766,8 +5913,8 @@
           total3D += d3d; totalXY += dxy; totalZ += absZ;
 
           var segVals = isHeight
-            ? 'Vert:' + absZ.toFixed(3) + '(' + zSign + ')'
-            : '3D:' + d3d.toFixed(3) + ' XY:' + dxy.toFixed(3) + ' Z:' + absZ.toFixed(3) + '(' + zSign + ')';
+            ? 'Vert:' + fmtLen(absZ) + '(' + zSign + ')'
+            : '3D:' + fmtLen(d3d) + ' XY:' + fmtLen(dxy) + ' Z:' + fmtLen(absZ) + '(' + zSign + ')';
           html += '<div class="enable-meas-seg">' +
             '<span class="seg-name">D' + nums[si] + '\u2192D' + nums[si + 1] + '</span>' +
             '<span class="seg-vals">' + segVals + '</span>' +
@@ -5776,8 +5923,8 @@
         // Total row if multi-segment
         if (pts.length > 2) {
           var totalVals = isHeight
-            ? 'Vert:' + totalZ.toFixed(3)
-            : '3D:' + total3D.toFixed(3) + ' XY:' + totalXY.toFixed(3) + ' Z:' + totalZ.toFixed(3);
+            ? 'Vert:' + fmtLen(totalZ)
+            : '3D:' + fmtLen(total3D) + ' XY:' + fmtLen(totalXY) + ' Z:' + fmtLen(totalZ);
           html += '<div class="enable-meas-seg seg-total">' +
             '<span class="seg-name">Total</span>' +
             '<span class="seg-vals">' + totalVals + '</span>' +
@@ -5868,15 +6015,15 @@
           aChips +
           '<div class="enable-meas-seg">' +
             '<span class="seg-name">Surface</span>' +
-            '<span class="seg-vals">' + area3D.toFixed(3) + ' m\u00b2</span>' +
+            '<span class="seg-vals">' + fmtArea(area3D) + '</span>' +
           '</div>' +
           '<div class="enable-meas-seg">' +
             '<span class="seg-name">Plan (XY)</span>' +
-            '<span class="seg-vals">' + areaXY.toFixed(3) + ' m\u00b2</span>' +
+            '<span class="seg-vals">' + fmtArea(areaXY) + '</span>' +
           '</div>' +
           '<div class="enable-meas-seg">' +
             '<span class="seg-name">Perimeter</span>' +
-            '<span class="seg-vals">' + perim.toFixed(3) + ' m</span>' +
+            '<span class="seg-vals">' + fmtLen(perim) + '</span>' +
           '</div>' +
           '</div>';
       }
@@ -5991,11 +6138,11 @@
           '</div>' +
           '<div class="enable-meas-seg">' +
             '<span class="seg-name">Volume</span>' +
-            '<span class="seg-vals">' + v3.toFixed(3) + ' m\u00b3</span>' +
+            '<span class="seg-vals">' + fmtVol(v3) + '</span>' +
           '</div>' +
           '<div class="enable-meas-seg">' +
             '<span class="seg-name">Size</span>' +
-            '<span class="seg-vals">' + sx.toFixed(3) + ' \u00d7 ' + sy.toFixed(3) + ' \u00d7 ' + sz.toFixed(3) + ' m</span>' +
+            '<span class="seg-vals">' + fmtLen(sx) + ' \u00d7 ' + fmtLen(sy) + ' \u00d7 ' + fmtLen(sz) + '</span>' +
           '</div>' +
           '</div>';
       }
@@ -6028,6 +6175,7 @@
 
       var lines = [];
       lines.push('Measurements Export');
+      lines.push('Units: ' + (UNIT_MODE === 'mm' ? 'metres (to the mm)' : UNIT_MODE === 'imp-dec' ? 'feet-inches (decimal, 0.05")' : 'feet-inches (fractional, 1/16")'));
       lines.push('Distances/Heights: ' + distMeasures.length + ' | Areas: ' + areaMeasures.length +
                  ' | Angles: ' + angleMeasures.length + ' | Volumes: ' + userVolumes.length);
       lines.push('');
@@ -6048,7 +6196,7 @@
         for (var pi = 0; pi < pts.length; pi++) {
           var p = pts[pi].position ? pts[pi].position : pts[pi];
           var pn = pi < nums.length ? 'D' + nums[pi] : 'D?';
-          lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
+          lines.push('  ' + pn + ': X=' + fmtLenVal(p.x) + ', Y=' + fmtLenVal(p.y) + ', Z=' + fmtLenVal(p.z));
         }
         lines.push('');
 
@@ -6066,16 +6214,16 @@
           var sn1 = si < nums.length ? 'D' + nums[si] : 'D?';
           var sn2 = (si + 1) < nums.length ? 'D' + nums[si + 1] : 'D?';
           if (isHeight) {
-            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  Vertical: ' + absZ.toFixed(3) + ' ' + zSign);
+            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  Vertical: ' + fmtLen(absZ) + ' ' + zSign);
           } else {
-            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + d3d.toFixed(3) + '  XY: ' + dxy.toFixed(3) + '  Z: ' + absZ.toFixed(3) + ' ' + zSign);
+            lines.push('  ' + sn1 + ' -> ' + sn2 + ':  3D: ' + fmtLen(d3d) + '  XY: ' + fmtLen(dxy) + '  Z: ' + fmtLen(absZ) + ' ' + zSign);
           }
         }
         lines.push('');
         if (isHeight) {
-          lines.push('Totals:  Vertical: ' + totalZ.toFixed(3));
+          lines.push('Totals:  Vertical: ' + fmtLen(totalZ));
         } else {
-          lines.push('Totals:  3D: ' + total3D.toFixed(3) + '  XY: ' + totalXY.toFixed(3) + '  Z: ' + totalZ.toFixed(3));
+          lines.push('Totals:  3D: ' + fmtLen(total3D) + '  XY: ' + fmtLen(totalXY) + '  Z: ' + fmtLen(totalZ));
         }
         lines.push('');
       }
@@ -6093,7 +6241,7 @@
         for (var pi = 0; pi < pts.length; pi++) {
           var p = pts[pi].position ? pts[pi].position : pts[pi];
           var pn = pi < nums.length ? 'D' + nums[pi] : 'D?';
-          lines.push('  ' + pn + ': X=' + p.x.toFixed(4) + ', Y=' + p.y.toFixed(4) + ', Z=' + p.z.toFixed(4));
+          lines.push('  ' + pn + ': X=' + fmtLenVal(p.x) + ', Y=' + fmtLenVal(p.y) + ', Z=' + fmtLenVal(p.z));
         }
         var area3D = compute3DPolygonArea(pts);
         var areaXY = (typeof measure.getArea === 'function') ? measure.getArea() : 0;
@@ -6104,9 +6252,9 @@
           perim += Math.sqrt((bp.x - ap.x) * (bp.x - ap.x) + (bp.y - ap.y) * (bp.y - ap.y) + (bp.z - ap.z) * (bp.z - ap.z));
         }
         lines.push('');
-        lines.push('Surface area (3D): ' + area3D.toFixed(3) + ' m^2');
-        lines.push('Plan area (XY):    ' + areaXY.toFixed(3) + ' m^2');
-        lines.push('Perimeter:         ' + perim.toFixed(3) + ' m');
+        lines.push('Surface area (3D): ' + fmtArea(area3D));
+        lines.push('Plan area (XY):    ' + fmtArea(areaXY));
+        lines.push('Perimeter:         ' + fmtLen(perim));
         lines.push('');
       }
 
@@ -6139,9 +6287,9 @@
         var sx = Math.abs(vol.scale.x), sy = Math.abs(vol.scale.y), sz = Math.abs(vol.scale.z);
         var v3 = (typeof vol.getVolume === 'function') ? vol.getVolume() : (sx * sy * sz);
         lines.push('=== Volume ' + (vi2 + 1) + ': ' + name + ' ===');
-        lines.push('  Volume: ' + v3.toFixed(3) + ' m^3');
-        lines.push('  Size:   ' + sx.toFixed(3) + ' x ' + sy.toFixed(3) + ' x ' + sz.toFixed(3) + ' m');
-        lines.push('  Center: X=' + vol.position.x.toFixed(4) + ', Y=' + vol.position.y.toFixed(4) + ', Z=' + vol.position.z.toFixed(4));
+        lines.push('  Volume: ' + fmtVol(v3));
+        lines.push('  Size:   ' + fmtLen(sx) + ' x ' + fmtLen(sy) + ' x ' + fmtLen(sz));
+        lines.push('  Center: X=' + fmtLenVal(vol.position.x) + ', Y=' + fmtLenVal(vol.position.y) + ', Z=' + fmtLenVal(vol.position.z));
         lines.push('');
       }
 
@@ -6732,12 +6880,15 @@
     // Extract loaded-node positions, optionally filtered to nodes that
     // intersect a given AABB. Nodes outside the filter are skipped entirely
     // to avoid allocating a 300MB merged buffer for points we'll never use.
-    function extractPositions(pointCloud, filterAABB) {
+    function extractPositions(pointCloud, filterAABB, maxLevel) {
       var geo = pointCloud.pcoGeometry;
       var allPositions = [];
       var nodeMap = [];
       var totalCount = 0;
       var pcoOffset = geo.offset;
+      function nodeLevel(node) {
+        return (node.level != null) ? node.level : (node.name ? node.name.length - 1 : 0);
+      }
       function nodeIntersects(node) {
         if (!filterAABB) return true;
         if (!node.boundingBox) return true;
@@ -6751,6 +6902,10 @@
       }
       function traverse(node) {
         if (!node || !nodeIntersects(node)) return;
+        // Deterministic set: ignore nodes deeper than maxLevel. Potree also
+        // streams view-dependent deeper nodes that would otherwise leak in and
+        // make each recompute use a different point set (→ shifting contours).
+        if (maxLevel != null && nodeLevel(node) > maxLevel) return;
         if (node.loaded && node.geometry) {
           var posAttr = node.geometry.attributes.position;
           if (posAttr && posAttr.array) {
@@ -7189,6 +7344,34 @@
       rgba.needsUpdate = true;
     }
 
+    // Re-color EVERY loaded node that was ever elevation-colored — not just the
+    // compute-time elevationNodeMap. Nodes coloured while the user navigates
+    // (via elevationFrameUpdate) are NOT in elevationNodeMap, so re-coloring
+    // through applyElevationColors(elevationPositions, elevationNodeMap) left
+    // their heat colours behind when a box was hidden/deactivated ("colouring of
+    // some points at some locations remains"). Walk the elevColored geometries
+    // and re-run colorNodeByElevation with the CURRENT active-box list — points
+    // no longer covered by any active box fall back to their originals.
+    function recolorElevatedNodes() {
+      var pc = viewer.scene.pointclouds[0];
+      if (!pc || !pc.pcoGeometry || !pc.pcoGeometry.root) return;
+      var cachedBoxes = buildActiveBoxDrawList();
+      var cachedExcl = buildExclusionInvMats();
+      elevationColoredNodes.clear();
+      (function walk(node) {
+        if (!node) return;
+        if (node.loaded && node.geometry && node.geometry.attributes &&
+            node.geometry.attributes.rgba &&
+            node.geometry.userData && node.geometry.userData.elevColored) {
+          colorNodeByElevation(node, pc, cachedBoxes, cachedExcl);
+          elevationColoredNodes.add(node);
+        }
+        if (node.children) {
+          for (var k = 0; k < 8; k++) if (node.children[k]) walk(node.children[k]);
+        }
+      })(pc.pcoGeometry.root);
+    }
+
     // Per-frame check: color any newly loaded nodes
     // Throttle: only run a full octree walk when Potree has loaded a new node
     // since our last pass. Without this we walk the whole tree every frame
@@ -7304,7 +7487,7 @@
         // Label
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'right';
-        ctx.fillText(v.toFixed(decimals), labelRight, yPos);
+        ctx.fillText(fmtLenVal(v), labelRight, yPos);
       }
 
       // Title
@@ -7315,11 +7498,11 @@
       if (elevationMode === 'plane') {
         ctx.fillText('Deviation', centerX, 18);
         ctx.font = 'bold 18px sans-serif';
-        ctx.fillText('(m)', centerX, 40);
+        ctx.fillText(unitTitle(), centerX, 40);
       } else {
         ctx.fillText('Elevation', centerX, 18);
         ctx.font = 'bold 18px sans-serif';
-        ctx.fillText('(m)', centerX, 40);
+        ctx.fillText(unitTitle(), centerX, 40);
       }
 
       document.getElementById('heatmap-legend').style.display = 'block';
@@ -7469,6 +7652,403 @@
         }
       });
       elevationScene.remove(group);
+    }
+
+    // ===== Contour-map DXF export =====================================
+    // Join marching-squares segments ([x1,y1,x2,y2] in world XY) into
+    // continuous polylines by chaining shared endpoints.
+    function stitchSegments2D(segs) {
+      var q = 1e-4;
+      function key(x, y) { return Math.round(x / q) + '_' + Math.round(y / q); }
+      var ends = new Map();
+      for (var i = 0; i < segs.length; i++) {
+        var s = segs[i];
+        var ka = key(s[0], s[1]), kb = key(s[2], s[3]);
+        if (!ends.has(ka)) ends.set(ka, []); ends.get(ka).push(i);
+        if (!ends.has(kb)) ends.set(kb, []); ends.get(kb).push(i);
+      }
+      var used = new Array(segs.length).fill(false);
+      var polylines = [];
+      function endpoints(i) { var s = segs[i]; return [[s[0], s[1]], [s[2], s[3]]]; }
+      for (var i = 0; i < segs.length; i++) {
+        if (used[i]) continue;
+        used[i] = true;
+        var e = endpoints(i);
+        var pl = [e[0].slice(), e[1].slice()];
+        // grow from each end
+        for (var dir = 0; dir < 2; dir++) {
+          var grow = true;
+          while (grow) {
+            grow = false;
+            var tip = dir === 0 ? pl[pl.length - 1] : pl[0];
+            var cand = ends.get(key(tip[0], tip[1])) || [];
+            for (var c = 0; c < cand.length; c++) {
+              var ci = cand[c];
+              if (used[ci]) continue;
+              var ce = endpoints(ci), a = ce[0], b = ce[1];
+              var next = null;
+              if (key(a[0], a[1]) === key(tip[0], tip[1])) next = b;
+              else if (key(b[0], b[1]) === key(tip[0], tip[1])) next = a;
+              if (next) {
+                used[ci] = true;
+                if (dir === 0) pl.push(next.slice()); else pl.unshift(next.slice());
+                grow = true;
+                break;
+              }
+            }
+          }
+        }
+        polylines.push(pl);
+      }
+      return polylines;
+    }
+
+    // Drop points that are collinear with their neighbours (cleans up the
+    // fine marching-squares stair-steps on straight runs).
+    function simplifyPolyline2D(pl, tol) {
+      if (pl.length < 3) return pl;
+      var out = [pl[0]];
+      for (var i = 1; i < pl.length - 1; i++) {
+        var a = out[out.length - 1], b = pl[i], c = pl[i + 1];
+        var cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        var len = Math.hypot(c[0] - a[0], c[1] - a[1]) || 1;
+        if (Math.abs(cross) / len > tol) out.push(b);
+      }
+      out.push(pl[pl.length - 1]);
+      return out;
+    }
+
+    // Andrew's monotone-chain convex hull of 2D points → CCW loop.
+    function convexHull2D(pts) {
+      var p = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+      var uniq = [];
+      for (var i = 0; i < p.length; i++) {
+        if (!uniq.length || Math.abs(uniq[uniq.length - 1][0] - p[i][0]) > 1e-9 || Math.abs(uniq[uniq.length - 1][1] - p[i][1]) > 1e-9) uniq.push(p[i]);
+      }
+      p = uniq;
+      if (p.length < 3) return p.slice();
+      function cross(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+      var lower = [];
+      for (var i = 0; i < p.length; i++) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p[i]) <= 0) lower.pop(); lower.push(p[i]); }
+      var upper = [];
+      for (var i = p.length - 1; i >= 0; i--) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p[i]) <= 0) upper.pop(); upper.push(p[i]); }
+      lower.pop(); upper.pop();
+      return lower.concat(upper);
+    }
+
+    // Sutherland–Hodgman: clip convex SUBJECT by convex CCW CLIP polygon.
+    // Returns the exact intersection polygon (empty if disjoint).
+    function clipPolygonConvex(subject, clip) {
+      if (!subject || subject.length < 3 || !clip || clip.length < 3) return [];
+      var output = subject.slice();
+      for (var i = 0; i < clip.length; i++) {
+        var A = clip[i], B = clip[(i + 1) % clip.length];
+        var inside = function (pt) { return (B[0] - A[0]) * (pt[1] - A[1]) - (B[1] - A[1]) * (pt[0] - A[0]) >= -1e-9; };
+        var inter = function (p, q) {
+          var dx = q[0] - p[0], dy = q[1] - p[1];
+          var num = (B[0] - A[0]) * (A[1] - p[1]) - (B[1] - A[1]) * (A[0] - p[0]);
+          var den = (B[0] - A[0]) * dy - (B[1] - A[1]) * dx;
+          var t = den !== 0 ? num / den : 0;
+          return [p[0] + t * dx, p[1] + t * dy];
+        };
+        var input = output; output = [];
+        if (input.length === 0) break;
+        for (var j = 0; j < input.length; j++) {
+          var cur = input[j], prev = input[(j + input.length - 1) % input.length];
+          var curIn = inside(cur), prevIn = inside(prev);
+          if (curIn) { if (!prevIn) output.push(inter(prev, cur)); output.push(cur); }
+          else if (prevIn) output.push(inter(prev, cur));
+        }
+      }
+      return output;
+    }
+
+    // Union a set of convex polygons (CCW loops, no closing dup) into merged
+    // boundary loops — so OVERLAPPING exclusion footprints become a single hole
+    // instead of double-cutting the overlap under even-odd fill. Robust to
+    // degeneracies (shared/parallel edges of axis-aligned boxes) via a sub-micron
+    // per-polygon perturbation. Method: split every edge at cross-polygon
+    // intersections, keep sub-edges whose midpoint is inside no OTHER polygon,
+    // then chain the survivors into loops.
+    function unionConvexPolys(polys) {
+      if (polys.length <= 1) return polys.map(function (p) { return p.slice(); });
+      var P = polys.map(function (poly, k) {
+        var cx = 0, cy = 0; poly.forEach(function (p) { cx += p[0]; cy += p[1]; }); cx /= poly.length; cy /= poly.length;
+        var ang = 1e-6 * (k + 1), ca = Math.cos(ang), sa = Math.sin(ang), sc = 1 + 1e-7 * (k + 1);
+        return poly.map(function (p) { var dx = (p[0] - cx) * sc, dy = (p[1] - cy) * sc; return [cx + dx * ca - dy * sa, cy + dx * sa + dy * ca]; });
+      });
+      function inside(poly, x, y) {
+        for (var i = 0; i < poly.length; i++) { var a = poly[i], b = poly[(i + 1) % poly.length]; if ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]) <= 1e-9) return false; }
+        return true;
+      }
+      function segInt(p1, p2, p3, p4) {
+        var d1x = p2[0] - p1[0], d1y = p2[1] - p1[1], d2x = p4[0] - p3[0], d2y = p4[1] - p3[1];
+        var den = d1x * d2y - d1y * d2x; if (Math.abs(den) < 1e-12) return null;
+        var t = ((p3[0] - p1[0]) * d2y - (p3[1] - p1[1]) * d2x) / den;
+        var u = ((p3[0] - p1[0]) * d1y - (p3[1] - p1[1]) * d1x) / den;
+        if (t > -1e-9 && t < 1 + 1e-9 && u > -1e-9 && u < 1 + 1e-9) return Math.max(0, Math.min(1, t));
+        return null;
+      }
+      var edges = [];
+      P.forEach(function (poly, k) { for (var i = 0; i < poly.length; i++) edges.push({ a: poly[i], b: poly[(i + 1) % poly.length], owner: k }); });
+      var kept = [];
+      edges.forEach(function (e) {
+        var ts = [0, 1];
+        edges.forEach(function (f) { if (f.owner === e.owner) return; var t = segInt(e.a, e.b, f.a, f.b); if (t !== null) ts.push(t); });
+        ts.sort(function (x, y) { return x - y; });
+        for (var i = 0; i < ts.length - 1; i++) {
+          var t0 = ts[i], t1 = ts[i + 1]; if (t1 - t0 < 1e-9) continue;
+          var mt = (t0 + t1) / 2, mx = e.a[0] + (e.b[0] - e.a[0]) * mt, my = e.a[1] + (e.b[1] - e.a[1]) * mt, io = false;
+          for (var k = 0; k < P.length; k++) { if (k === e.owner) continue; if (inside(P[k], mx, my)) { io = true; break; } }
+          if (!io) kept.push([[e.a[0] + (e.b[0] - e.a[0]) * t0, e.a[1] + (e.b[1] - e.a[1]) * t0], [e.a[0] + (e.b[0] - e.a[0]) * t1, e.a[1] + (e.b[1] - e.a[1]) * t1]]);
+        }
+      });
+      var q = 1e-6; function key(p) { return Math.round(p[0] / q) + '_' + Math.round(p[1] / q); }
+      var byStart = new Map(); kept.forEach(function (e, i) { var k = key(e[0]); if (!byStart.has(k)) byStart.set(k, []); byStart.get(k).push(i); });
+      var used = new Array(kept.length).fill(false), loops = [];
+      for (var s = 0; s < kept.length; s++) {
+        if (used[s]) continue;
+        var loop = [], cur = s, startKey = key(kept[s][0]), guard = 0;
+        while (cur !== -1 && !used[cur] && guard++ < kept.length + 5) {
+          used[cur] = true; loop.push(kept[cur][0]);
+          var endK = key(kept[cur][1]); if (endK === startKey) break;
+          var cand = byStart.get(endK) || [], nxt = -1;
+          for (var c = 0; c < cand.length; c++) { if (!used[cand[c]]) { nxt = cand[c]; break; } }
+          cur = nxt;
+        }
+        if (loop.length >= 3) loops.push(loop);
+      }
+      return loops;
+    }
+
+    // Build the 2D-plan contour-map export data for one elevation box:
+    // { name, labelH, contours:[{text, polylines}], labels:[{x,y,text}], boundary:[polylines] }
+    // All coordinates are world XY (flattened plan). Returns null if the box
+    // isn't computed or has too few points.
+    function computeContourMapExport(vol, cfg) {
+      if (!elevationPositions || !cfg || !cfg.active) return null;
+      var zMin = cfg.zMin, zMax = cfg.zMax;
+      if (zMin == null || zMax == null || zMin >= zMax) return null;
+      var mode = cfg.mode || 'z';
+      var tol = (mode === 'thickness') ? 0.10 : (zMax - zMin) * 0.10;
+      var refPlane = cfg.refPlane, refSide = cfg.refSide || 1;
+      vol.updateMatrixWorld(true);
+      var boxInv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
+      var exclInvMats = buildExclusionInvMats();
+      var hasExcl = exclInvMats.length > 0;
+      var _v = new THREE.Vector3();
+
+      // Footprint bounds from the box's 8 world corners, padded so the mask
+      // has a ring of "outside" cells for the outer boundary to trace.
+      var xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+      for (var sx = -1; sx <= 1; sx += 2) for (var sy = -1; sy <= 1; sy += 2) for (var sz = -1; sz <= 1; sz += 2) {
+        _v.set(sx * 0.5, sy * 0.5, sz * 0.5).applyMatrix4(vol.matrixWorld);
+        if (_v.x < xMin) xMin = _v.x; if (_v.x > xMax) xMax = _v.x;
+        if (_v.y < yMin) yMin = _v.y; if (_v.y > yMax) yMax = _v.y;
+      }
+      var pad = Math.max(xMax - xMin, yMax - yMin) * 0.03;
+      xMin -= pad; xMax += pad; yMin -= pad; yMax += pad;
+      var gridRes = 260;
+      var cellX = (xMax - xMin) / gridRes, cellY = (yMax - yMin) / gridRes;
+      if (cellX < 1e-9 || cellY < 1e-9) return null;
+
+      // --- Bin top-surface points inside this box into an elevation grid ---
+      var eSum = new Float32Array(gridRes * gridRes);
+      var eCnt = new Uint32Array(gridRes * gridRes);
+      var pos = elevationPositions, cnt = pos.length / 3, kept = 0;
+      for (var i = 0; i < cnt; i++) {
+        var px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+        _v.set(px, py, pz).applyMatrix4(boxInv);
+        if (_v.x < -0.5 || _v.x > 0.5 || _v.y < -0.5 || _v.y > 0.5 || _v.z < -0.5 || _v.z > 0.5) continue;
+        if (cfg.planeSurfGrid) { if (!isPlaneTopSurface(px, py, pz, cfg.planeSurfGrid, tol)) continue; }
+        else if (cfg.surfaceGrid) { if (!isTopSurface(px, py, pz, cfg.surfaceGrid, tol)) continue; }
+        if (hasExcl && isPointExcluded(px, py, pz, exclInvMats)) continue;
+        var elev;
+        if (mode === 'plane' && refPlane) {
+          var nn = refPlane.normal, cc = refPlane.centroid;
+          elev = ((px - cc.x) * nn.x + (py - cc.y) * nn.y + (pz - cc.z) * nn.z) * refSide;
+        } else if (mode === 'thickness' && cfg.thicknessGrid) {
+          elev = getThicknessForPoint(px, py, pz, cfg.thicknessGrid);
+          if (elev === null) continue;
+        } else {
+          elev = pz - getZBaseZ(cfg);
+        }
+        var ix = Math.floor((px - xMin) / cellX), iy = Math.floor((py - yMin) / cellY);
+        if (ix < 0 || ix >= gridRes || iy < 0 || iy >= gridRes) continue;
+        var gi = iy * gridRes + ix;
+        eSum[gi] += elev; eCnt[gi]++; kept++;
+      }
+      if (kept < 30) return null;
+      var eGrid = new Float32Array(gridRes * gridRes);
+      for (var g = 0; g < eGrid.length; g++) eGrid[g] = eCnt[g] > 0 ? eSum[g] / eCnt[g] : NaN;
+
+      function toWorld(segs) {
+        var w = [];
+        for (var s = 0; s < segs.length; s++) {
+          var sg = segs[s];
+          w.push([xMin + sg[0] * cellX, yMin + sg[1] * cellY, xMin + sg[2] * cellX, yMin + sg[3] * cellY]);
+        }
+        return w;
+      }
+      var simpTol = Math.min(cellX, cellY) * 0.25;
+
+      // --- Contour polylines per level ---
+      var step = cfg.contourStep != null ? cfg.contourStep : 0.05;
+      var decimals = step < 0.01 ? 3 : step < 0.1 ? 2 : step < 1 ? 1 : 0;
+      var contours = [];
+      var first = Math.ceil(zMin / step) * step;
+      for (var lv = first; lv <= zMax + step * 0.01; lv += step) {
+        if (lv < zMin || lv > zMax) continue;
+        var segs = toWorld(marchingSquares(eGrid, gridRes, gridRes, lv));
+        if (segs.length === 0) continue;
+        var raw = stitchSegments2D(segs), pls = [];
+        for (var r = 0; r < raw.length; r++) pls.push(simplifyPolyline2D(raw[r], simpTol));
+        contours.push({ text: fmtLenVal(lv), polylines: pls });
+      }
+
+      // --- Boundary: EXACT box footprint MINUS exclusion footprints (plan) ---
+      // Each footprint = convex hull of the box's 8 world corners projected to
+      // XY, so rotated boxes give exact rotated rectangles (no discretization).
+      // Outer loop = the elev box; each exclusion clipped to the box = a hole
+      // loop. Under even-odd fill this is the true box-minus-exclusions region,
+      // incl. edge-crossing notches. (Heavily OVERLAPPING exclusions aren't
+      // merged — a rare case; each still exports as its own clipped loop.)
+      function planHull(v) {
+        v.updateMatrixWorld(true);
+        var cp = [];
+        for (var a = -1; a <= 1; a += 2) for (var b2 = -1; b2 <= 1; b2 += 2) for (var c3 = -1; c3 <= 1; c3 += 2) {
+          _v.set(a * 0.5, b2 * 0.5, c3 * 0.5).applyMatrix4(v.matrixWorld);
+          cp.push([_v.x, _v.y]);
+        }
+        return convexHull2D(cp);
+      }
+      var boxHull = planHull(vol);
+      var boundary = [];
+      if (boxHull.length >= 3) {
+        boundary.push(boxHull.concat([boxHull[0].slice()]));
+        var holes = [];
+        for (var ei = 0; ei < exclusionBoxes.length; ei++) {
+          var ex = exclusionBoxes[ei];
+          if (ex._disabled) continue;
+          var hole = clipPolygonConvex(planHull(ex), boxHull);
+          if (hole && hole.length >= 3) holes.push(hole);
+        }
+        // Merge overlapping exclusion footprints into single loops so an overlap
+        // isn't double-cut (even-odd would otherwise re-fill the shared sliver).
+        var merged = unionConvexPolys(holes);
+        for (var hi = 0; hi < merged.length; hi++) {
+          if (merged[hi].length >= 3) boundary.push(merged[hi].concat([merged[hi][0].slice()]));
+        }
+      }
+
+      // --- Labels: greedy min-spacing across all levels ---
+      var mapDiag = Math.hypot(xMax - xMin, yMax - yMin);
+      var minSpSq = (mapDiag * 0.10) * (mapDiag * 0.10);
+      var placed = [], labels = [];
+      for (var ci = 0; ci < contours.length; ci++) {
+        var cpls = contours[ci].polylines;
+        for (var pi = 0; pi < cpls.length; pi++) {
+          var pl = cpls[pi];
+          if (pl.length < 4) continue;
+          var mid = pl[Math.floor(pl.length / 2)], ok = true;
+          for (var q2 = 0; q2 < placed.length; q2++) {
+            var dx = mid[0] - placed[q2][0], dy = mid[1] - placed[q2][1];
+            if (dx * dx + dy * dy < minSpSq) { ok = false; break; }
+          }
+          if (ok) { placed.push(mid); labels.push({ x: mid[0], y: mid[1], text: contours[ci].text }); }
+        }
+      }
+
+      return {
+        name: vol.name || 'Elev Box',
+        labelH: Math.max(0.05, mapDiag * 0.012),
+        contours: contours, labels: labels, boundary: boundary
+      };
+    }
+
+    // Assemble R12-style DXF (POLYLINE/VERTEX + TEXT) for a set of contour maps.
+    function contourMapsToDXF(maps) {
+      function san(s) { return String(s).replace(/[^A-Za-z0-9_]/g, '_'); }
+      // Export geometry in the selected unit so the drawing is self-consistent:
+      // metres for metric, feet for either imperial mode (labels are feet-inches).
+      var k = (typeof UNIT_MODE !== 'undefined' && UNIT_MODE !== 'mm') ? 3.280839895013123 : 1;
+      var insUnits = (k === 1) ? 6 : 2; // DXF $INSUNITS: 6=metres, 2=feet
+      var lines = [];
+      var layerSet = {}, layers = [];
+      function addLayer(n, color) { if (!layerSet[n]) { layerSet[n] = 1; layers.push({ n: n, c: color }); } }
+      for (var m = 0; m < maps.length; m++) {
+        var b = san(maps[m].name);
+        addLayer(b + '_CONTOURS', 7); addLayer(b + '_LABELS', 3); addLayer(b + '_BOUNDARY', 1);
+      }
+      lines.push('0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '' + insUnits, '0', 'ENDSEC');
+      lines.push('0', 'SECTION', '2', 'TABLES');
+      lines.push('0', 'TABLE', '2', 'LAYER', '70', '' + layers.length);
+      for (var L = 0; L < layers.length; L++) lines.push('0', 'LAYER', '2', layers[L].n, '70', '0', '62', '' + layers[L].c, '6', 'CONTINUOUS');
+      lines.push('0', 'ENDTAB', '0', 'ENDSEC');
+      lines.push('0', 'SECTION', '2', 'ENTITIES');
+      function emitPolyline(layer, pts, closed) {
+        var p = pts.slice();
+        if (closed && p.length > 2 && Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < 1e-6) p = p.slice(0, p.length - 1);
+        if (p.length < 2) return;
+        lines.push('0', 'POLYLINE', '8', layer, '66', '1', '70', closed ? '1' : '0');
+        for (var i = 0; i < p.length; i++) lines.push('0', 'VERTEX', '8', layer, '10', '' + (p[i][0] * k), '20', '' + (p[i][1] * k), '30', '0');
+        lines.push('0', 'SEQEND');
+      }
+      for (var mi = 0; mi < maps.length; mi++) {
+        var map = maps[mi], base = san(map.name);
+        for (var ci = 0; ci < map.contours.length; ci++) {
+          var pls = map.contours[ci].polylines;
+          for (var pj = 0; pj < pls.length; pj++) {
+            var pl = pls[pj];
+            var closed = pl.length > 2 && Math.hypot(pl[0][0] - pl[pl.length - 1][0], pl[0][1] - pl[pl.length - 1][1]) < 1e-6;
+            emitPolyline(base + '_CONTOURS', pl, closed);
+          }
+        }
+        for (var li = 0; li < map.labels.length; li++) {
+          var lb = map.labels[li];
+          lines.push('0', 'TEXT', '8', base + '_LABELS', '10', '' + (lb.x * k), '20', '' + (lb.y * k), '30', '0', '40', '' + (map.labelH * k), '1', lb.text);
+        }
+        for (var bi = 0; bi < map.boundary.length; bi++) emitPolyline(base + '_BOUNDARY', map.boundary[bi], true);
+      }
+      lines.push('0', 'ENDSEC', '0', 'EOF');
+      return lines.join('\n');
+    }
+
+    // Export contour maps for the checked boxes (or all active boxes if none
+    // checked) to a single DXF. Each box becomes its own layer group named
+    // after the box (e.g. "Elev Box 1" -> Elev_Box_1_CONTOURS/_LABELS/_BOUNDARY).
+    function exportContourMapsDXF() {
+      if (!elevationActive || !elevationPositions) { showToast('Compute an elevation map first'); return; }
+      // Selection comes from chrome.js (click a box row to select, Ctrl/Cmd+click
+      // to add more). Falls back to ALL computed boxes when nothing is selected.
+      var selNames = (window.__elevExportSel && window.__elevExportSel.length) ? window.__elevExportSel : null;
+      var selected = [], active = [];
+      for (var i = 0; i < elevationCropVolumes.length; i++) {
+        var vol = elevationCropVolumes[i], cfg = getBoxConfig(vol);
+        if (!cfg.active || cfg.zMin == null || cfg.zMax == null) continue;
+        active.push(vol);
+        if (selNames && selNames.indexOf(vol.name) !== -1) selected.push(vol);
+      }
+      var targets = selected.length ? selected : active;
+      if (targets.length === 0) { showToast('No computed elevation boxes to export'); return; }
+      showToast('Building contour map' + (targets.length > 1 ? 's' : '') + '…');
+      var maps = [];
+      for (var t = 0; t < targets.length; t++) {
+        var data = computeContourMapExport(targets[t], getBoxConfig(targets[t]));
+        if (data) maps.push(data);
+      }
+      if (maps.length === 0) { showToast('Nothing to export (boxes had too few points)'); return; }
+      var content = contourMapsToDXF(maps);
+      var blob = new Blob([content], { type: 'application/dxf' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = maps.length === 1 ? (String(maps[0].name).replace(/[^A-Za-z0-9_]/g, '_') + '_contours.dxf') : 'contour_maps.dxf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Exported ' + maps.length + ' contour map' + (maps.length > 1 ? 's' : ''));
     }
 
     function clearElevationContours() {
@@ -7791,7 +8371,7 @@
         // Place labels with greedy spacing. Walk segments in order and try
         // to place at each midpoint; spacing rules will reject candidates
         // too close to already-placed labels (any level).
-        var labelText = level.toFixed(decimals) + ' m';
+        var labelText = fmtLenVal(level);
         var placedAny = false;
         var stride = Math.max(1, Math.floor(midData.length / 24)); // sample
         for (var li = 0; li < midData.length; li += stride) {
@@ -8185,14 +8765,15 @@
           eyeBtn.style.cssText = iconBtnStyle + ';opacity:' + (cfg.heatmapHidden ? '0.45' : '1');
           eyeBtn.addEventListener('click', function() {
             cfg.heatmapHidden = !cfg.heatmapHidden;
-            if (cfg.contourGroup) cfg.contourGroup.visible = !cfg.heatmapHidden;
-            if (elevationActive && elevationPositions && elevationNodeMap) {
-              applyElevationColors(elevationPositions, elevationNodeMap);
-              elevationColoredNodes.clear();
-              for (var ni = 0; ni < elevationNodeMap.length; ni++) {
-                elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
-              }
+            // Keep contours in step with the heat map. If they were disposed
+            // while hidden, rebuild on show so they don't silently vanish (they
+            // used to need a manual recompute).
+            if (!cfg.heatmapHidden && cfg.active && cfg.contoursVisible && !cfg.contourGroup) {
+              buildBoxContours(vol);
+            } else if (cfg.contourGroup) {
+              cfg.contourGroup.visible = !cfg.heatmapHidden;
             }
+            if (elevationActive) recolorElevatedNodes();
             rebuildElevationBoxList();
           });
 
@@ -8325,37 +8906,37 @@
             var thRow = document.createElement('div');
             thRow.style.cssText = 'display:flex;gap:4px;margin:4px 0';
             var thMinCol = document.createElement('div'); thMinCol.style.cssText = 'flex:1';
-            thMinCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Expect min (m)</div>';
+            thMinCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Expect min (' + inputUnitLabel() + ')</div>';
             var thMinIn = document.createElement('input');
-            thMinIn.type = 'number'; thMinIn.step = '0.01'; thMinIn.style.cssText = inputStyleTh;
-            thMinIn.value = (cfg.thicknessExpectedMin != null ? cfg.thicknessExpectedMin : 0.10).toFixed(3);
+            thMinIn.type = 'number'; thMinIn.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05'); thMinIn.style.cssText = inputStyleTh;
+            thMinIn.value = lenToInputStr(cfg.thicknessExpectedMin != null ? cfg.thicknessExpectedMin : 0.10);
             thMinIn.title = 'Cells thinner than this are flagged (voids/openings)';
             thMinIn.addEventListener('change', function() {
-              var x = parseFloat(thMinIn.value);
+              var x = lenFromInput(thMinIn.value);
               if (!isNaN(x) && x > 0) cfg.thicknessExpectedMin = x;
             });
             thMinCol.appendChild(thMinIn);
 
             var thMaxCol = document.createElement('div'); thMaxCol.style.cssText = 'flex:1';
-            thMaxCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Expect max (m)</div>';
+            thMaxCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Expect max (' + inputUnitLabel() + ')</div>';
             var thMaxIn = document.createElement('input');
-            thMaxIn.type = 'number'; thMaxIn.step = '0.01'; thMaxIn.style.cssText = inputStyleTh;
-            thMaxIn.value = (cfg.thicknessExpectedMax != null ? cfg.thicknessExpectedMax : 0.60).toFixed(3);
+            thMaxIn.type = 'number'; thMaxIn.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05'); thMaxIn.style.cssText = inputStyleTh;
+            thMaxIn.value = lenToInputStr(cfg.thicknessExpectedMax != null ? cfg.thicknessExpectedMax : 0.60);
             thMaxIn.title = 'Cells thicker than this are rejected (columns/capitals)';
             thMaxIn.addEventListener('change', function() {
-              var x = parseFloat(thMaxIn.value);
+              var x = lenFromInput(thMaxIn.value);
               if (!isNaN(x) && x > 0) cfg.thicknessExpectedMax = x;
             });
             thMaxCol.appendChild(thMaxIn);
 
             var thGapCol = document.createElement('div'); thGapCol.style.cssText = 'flex:1';
-            thGapCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Gap tol (m)</div>';
+            thGapCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Gap tol (' + inputUnitLabel() + ')</div>';
             var thGapIn = document.createElement('input');
-            thGapIn.type = 'number'; thGapIn.step = '0.005'; thGapIn.style.cssText = inputStyleTh;
-            thGapIn.value = (cfg.thicknessGapTol != null ? cfg.thicknessGapTol : 0.025).toFixed(3);
+            thGapIn.type = 'number'; thGapIn.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05'); thGapIn.style.cssText = inputStyleTh;
+            thGapIn.value = lenToInputStr(cfg.thicknessGapTol != null ? cfg.thicknessGapTol : 0.025);
             thGapIn.title = 'Air gap that breaks the slab band (separates fixtures from soffit)';
             thGapIn.addEventListener('change', function() {
-              var x = parseFloat(thGapIn.value);
+              var x = lenFromInput(thGapIn.value);
               if (!isNaN(x) && x > 0) cfg.thicknessGapTol = x;
             });
             thGapCol.appendChild(thGapIn);
@@ -8470,35 +9051,35 @@
           rangeRow.style.cssText = 'display:flex;gap:4px;margin:4px 0';
           var minCol = document.createElement('div');
           minCol.style.cssText = 'flex:1';
-          minCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Min (m)</div>';
+          minCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Min (' + inputUnitLabel() + ')</div>';
           var minInput = document.createElement('input');
           minInput.type = 'number';
-          minInput.step = '0.01';
+          minInput.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05');
           minInput.placeholder = 'auto';
           minInput.style.cssText = inputStyle;
-          if (cfg.zMin !== null && cfg.zMin !== undefined) minInput.value = cfg.zMin.toFixed(3);
+          if (cfg.zMin !== null && cfg.zMin !== undefined) minInput.value = lenToInputStr(cfg.zMin);
           minCol.appendChild(minInput);
 
           var maxCol = document.createElement('div');
           maxCol.style.cssText = 'flex:1';
-          maxCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Max (m)</div>';
+          maxCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Max (' + inputUnitLabel() + ')</div>';
           var maxInput = document.createElement('input');
           maxInput.type = 'number';
-          maxInput.step = '0.01';
+          maxInput.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05');
           maxInput.placeholder = 'auto';
           maxInput.style.cssText = inputStyle;
-          if (cfg.zMax !== null && cfg.zMax !== undefined) maxInput.value = cfg.zMax.toFixed(3);
+          if (cfg.zMax !== null && cfg.zMax !== undefined) maxInput.value = lenToInputStr(cfg.zMax);
           maxCol.appendChild(maxInput);
 
           var stepCol = document.createElement('div');
           stepCol.style.cssText = 'flex:1';
-          stepCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Contour (m)</div>';
+          stepCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Contour (' + inputUnitLabel() + ')</div>';
           var stepInput = document.createElement('input');
           stepInput.type = 'number';
-          stepInput.step = '0.01';
-          stepInput.min = '0.01';
+          stepInput.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05');
+          stepInput.min = '0';
           stepInput.style.cssText = inputStyle;
-          stepInput.value = (cfg.contourStep != null ? cfg.contourStep : 0.05).toFixed(3);
+          stepInput.value = lenToInputStr(cfg.contourStep != null ? cfg.contourStep : 0.05);
           stepCol.appendChild(stepInput);
 
           rangeRow.appendChild(minCol);
@@ -8513,9 +9094,9 @@
           applyBtn.title = 'Apply min/max/contour to this box (blank = auto)';
           applyBtn.style.cssText = btnStyle + ';flex:1';
           applyBtn.addEventListener('click', function() {
-            var mn = minInput.value.trim() === '' ? null : parseFloat(minInput.value);
-            var mx = maxInput.value.trim() === '' ? null : parseFloat(maxInput.value);
-            var sp = parseFloat(stepInput.value);
+            var mn = minInput.value.trim() === '' ? null : lenFromInput(minInput.value);
+            var mx = maxInput.value.trim() === '' ? null : lenFromInput(maxInput.value);
+            var sp = lenFromInput(stepInput.value);
             if (mn !== null && isNaN(mn)) { showToast('Invalid min'); return; }
             if (mx !== null && isNaN(mx)) { showToast('Invalid max'); return; }
             if (mn !== null && mx !== null && mn >= mx) { showToast('Min must be < Max'); return; }
@@ -8525,11 +9106,7 @@
             cfg.contourStep = sp;
 
             if (cfg.active && elevationActive && elevationPositions) {
-              applyElevationColors(elevationPositions, elevationNodeMap);
-              elevationColoredNodes.clear();
-              for (var ni = 0; ni < elevationNodeMap.length; ni++) {
-                elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
-              }
+              recolorElevatedNodes();
               updateElevationLegend(cfg.zMin, cfg.zMax);
               if (cfg.contoursVisible) buildBoxContours(vol);
               showToast('Applied');
@@ -8547,20 +9124,25 @@
             if (!cfg.active || !elevationActive || !elevationPositions) {
               showToast('Compute elevation for this box first'); return;
             }
-            var sp = parseFloat(stepInput.value);
+            var sp = lenFromInput(stepInput.value);
             if (!isNaN(sp) && sp > 0) cfg.contourStep = sp;
             if (cfg.contoursVisible) {
-              if (cfg.contourGroup) {
-                disposeContourGroup(cfg.contourGroup);
-                cfg.contourGroup = null;
-              }
+              // Hide but KEEP the group so the eye toggle / re-show restores it
+              // without a recompute. It's disposed only on delete or recompute.
+              if (cfg.contourGroup) cfg.contourGroup.visible = false;
               cfg.contoursVisible = false;
               // Update global flag based on remaining visible boxes
               elevationContoursVisible = elevationCropVolumes.some(function(v2) {
                 return getBoxConfig(v2).contoursVisible;
               });
             } else {
-              buildBoxContours(vol);
+              if (cfg.contourGroup) {
+                cfg.contourGroup.visible = true;
+                cfg.contoursVisible = true;
+                elevationContoursVisible = true;
+              } else {
+                buildBoxContours(vol);
+              }
             }
             contoursBtn.textContent = cfg.contoursVisible ? 'Hide Contours' : 'Show Contours';
           });
@@ -8646,13 +9228,19 @@
       if (elevationOrigBudget === null) elevationOrigBudget = viewer.getPointBudget();
       viewer.setPointBudget(20000000);
 
+      // Fixed octree depth for both loading AND extraction. Using a fixed level
+      // (rather than a timing-dependent point cap) makes recompute deterministic:
+      // the same nodes load and are extracted every time, so the computed range
+      // and contours are identical across recomputes of the same box.
+      var ELEV_MAX_LEVEL = 6;
+
       forceLoadAllNodes(pc, loadAABB, {
-        // Depth 6 + 1.5M point soft cap keeps web load times bounded without
-        // visibly degrading the elevation grid (200×200 = 40K cells; ~10–40
-        // points per cell is plenty for stable top-surface detection). Bump
-        // these if a particular cloud needs finer resolution.
-        maxDepth: 6,
-        maxPoints: 1500000,
+        // Depth-bounded load. NOTE: we deliberately do NOT pass a points-based
+        // soft cap here — it stopped loading at a timing-dependent moment, so the
+        // loaded set (and thus the computed range + contours) varied run-to-run.
+        // Depth alone gives a fixed, reproducible node set (200×200 grid, ~10–40
+        // points per cell is plenty). Bump the depth if a cloud needs finer data.
+        maxDepth: ELEV_MAX_LEVEL,
         onProgress: function(p) {
           setComputeProgress('Loading octree nodes... ' + p.loaded.toLocaleString() + ' pts loaded'
             + (p.inFlight > 0 ? ' (' + p.inFlight + ' in flight)' : ''));
@@ -8661,7 +9249,7 @@
         setComputeProgress('Extracting positions...');
         return _yieldToPaint();
       }).then(function () {
-        var data = extractPositions(pc, loadAABB);
+        var data = extractPositions(pc, loadAABB, ELEV_MAX_LEVEL);
         elevationPositions = data.positions;
         elevationNodeMap = data.nodeMap;
         if (!elevationOrigRGBA) {
@@ -8959,14 +9547,19 @@
 
         var rangeLabel = selCfg.mode === 'plane' ? 'Deviation' :
                          (selCfg.mode === 'thickness' ? 'Thickness' : 'Z');
-        $('#enable-elevation-status').text(
-          targetVol.name + ': ' + countInside.toLocaleString() + ' pts | ' + rangeLabel + ': ' +
-          zMin.toFixed(3) + ' to ' + zMax.toFixed(3) + ' (' + (zMax - zMin).toFixed(3) + ' m)'
-        );
+        _lastElevStatus = { name: targetVol.name, count: countInside, label: rangeLabel, zMin: zMin, zMax: zMax };
+        renderElevStatus();
         rebuildElevationBoxList();
 
         // Rebuild contours for this box if they were visible
-        if (selCfg.contoursVisible) buildBoxContours(targetVol);
+        if (selCfg.contoursVisible) {
+          buildBoxContours(targetVol);
+        } else if (selCfg.contourGroup) {
+          // Not showing contours now — drop any stale group from a previous
+          // compute so a later "Show" rebuilds fresh against the new data.
+          disposeContourGroup(selCfg.contourGroup);
+          selCfg.contourGroup = null;
+        }
 
         _elevBoxTransformCache = '';
         for (var bi = 0; bi < elevationCropVolumes.length; bi++) {
@@ -9558,19 +10151,45 @@
     }
     var MODEL_TEAL = 0x00e5ff;
 
-    // -- Visual snap indicator: a cyan dot that jumps to the feature the next
+    // -- Visual snap indicator: a white dot that jumps to the feature the next
     //    measurement click will grab. Lives in markerScene (renders on top). --
     var _snapTargetPos = null;
     var _snapTargetTime = 0;
     var _snapIndicator = (function () {
       var geo = new THREE.SphereGeometry(1, 16, 12);
-      var mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 });
+      var mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 });
       var mesh = new THREE.Mesh(geo, mat);
       mesh.renderOrder = 99999;
       mesh.visible = false;
       markerScene.add(mesh);
       return mesh;
     })();
+    // -- Hover indicator: a white dot shown while the cursor is over a draggable
+    //    node's hit box (mark / member / constraint / dimension sphere) so the
+    //    user knows they'll grab it, not orbit. Persistent while hovering. --
+    var _hoverIndicatorPos = null;
+    var _hoverIndicator = (function () {
+      var geo = new THREE.SphereGeometry(1, 16, 12);
+      var mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 });
+      var mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 99998;
+      mesh.visible = false;
+      markerScene.add(mesh);
+      return mesh;
+    })();
+    var _hoverIndSize = new THREE.Vector2();
+    viewer.addEventListener("render.pass.perspective_overlay", function () {
+      if (!_hoverIndicator) return;
+      _hoverIndicator.visible = !!_hoverIndicatorPos;
+      if (!_hoverIndicatorPos) return;
+      var cam = viewer.scene.getActiveCamera();
+      _hoverIndicator.position.copy(_hoverIndicatorPos);
+      var sz = viewer.renderer.getSize(_hoverIndSize);
+      var dist = cam.position.distanceTo(_hoverIndicatorPos);
+      var pr = Potree.Utils.projectedRadius(1, cam, dist, sz.x, sz.y);
+      var s = pr > 0.0001 ? (6 / pr) : 0.05; // ~6 px radius — matches the node dot (like the snap indicator)
+      _hoverIndicator.scale.set(s, s, s);
+    });
     var _snapIndSize = new THREE.Vector2();
     viewer.addEventListener("render.pass.perspective_overlay", function () {
       if (!_snapIndicator) return;
@@ -9622,6 +10241,93 @@
     // origins untouched, so its coords already match — position stays at origin.
     const MODEL_X_ROTATION = Math.PI / 2;
 
+    // =====================================================================
+    // Model clipping — make loaded GLB models obey the SAME crop boxes that
+    // clip the point cloud. Potree clips points in its point shader and never
+    // touches THREE meshes, so the model used to persist outside the crop.
+    // We inject Potree's box test into each model material via onBeforeCompile
+    // and `discard` fragments that fall outside the active crop boxes. Mirrors
+    // potree.js update() (clipBox = box.matrixWorld.invert()) and the point
+    // shader test (inside == abs(local) <= 0.5; SHOW_INSIDE + INSIDE_ANY, or
+    // INSIDE_ALL during plane-ortho view). Per-model toggle (rec.clipped,
+    // default true); with no active crop box the model shows fully.
+    // =====================================================================
+    var MODEL_CLIP_MAX = 8; // GLSL array size; live count varies via a uniform
+    var _modelClipBoxes = (function () { var a = []; for (var k = 0; k < MODEL_CLIP_MAX; k++) a.push(new THREE.Matrix4()); return a; })();
+    var modelClipUniforms = {
+      count:  { value: 0 },
+      method: { value: 0 },          // 0 = INSIDE_ANY, 1 = INSIDE_ALL
+      boxes:  { value: _modelClipBoxes }
+    };
+
+    function refreshModelClipUniforms() {
+      var vols = (viewer.scene.volumes || []).filter(function (v) {
+        return v && v.clip === true && (v instanceof Potree.BoxVolume);
+      });
+      var n = Math.min(vols.length, MODEL_CLIP_MAX);
+      for (var i = 0; i < n; i++) {
+        vols[i].updateMatrixWorld();
+        _modelClipBoxes[i].copy(vols[i].matrixWorld).invert();
+      }
+      modelClipUniforms.count.value  = n;
+      modelClipUniforms.method.value = (viewer.clipMethod === Potree.ClipMethod.INSIDE_ALL) ? 1 : 0;
+    }
+    viewer.addEventListener("update", refreshModelClipUniforms);
+
+    // Inject the clip test into every material of a loaded model group. A
+    // per-model enable uniform lets the panel toggle clipping without a shader
+    // recompile (box matrices/count are shared across all models).
+    function applyModelClip(root, rec) {
+      if (!rec._clipEnabledUniform) rec._clipEnabledUniform = { value: (rec.clipped !== false) ? 1 : 0 };
+      root.traverse(function (obj) {
+        if (!obj.isMesh || !obj.material) return;
+        var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(function (m) {
+          if (!m) return;
+          m.userData = m.userData || {};
+          if (m.userData._enableClipInstalled) return;
+          m.userData._enableClipInstalled = true;
+          m.onBeforeCompile = function (shader) {
+            shader.uniforms.uClipEnabled = rec._clipEnabledUniform;
+            shader.uniforms.uClipCount   = modelClipUniforms.count;
+            shader.uniforms.uClipMethod  = modelClipUniforms.method;
+            shader.uniforms.uClipBoxes   = modelClipUniforms.boxes;
+            shader.vertexShader =
+              'varying vec3 vEnableClipWPos;\n' +
+              shader.vertexShader.replace(
+                '#include <begin_vertex>',
+                '#include <begin_vertex>\n  vEnableClipWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+              );
+            shader.fragmentShader =
+              'uniform int uClipEnabled;\nuniform int uClipCount;\nuniform int uClipMethod;\n' +
+              'uniform mat4 uClipBoxes[' + MODEL_CLIP_MAX + '];\nvarying vec3 vEnableClipWPos;\n' +
+              shader.fragmentShader.replace(
+                'void main() {',
+                'void main() {\n' +
+                '  if (uClipEnabled == 1 && uClipCount > 0) {\n' +
+                '    int _ins = 0;\n' +
+                '    for (int i = 0; i < ' + MODEL_CLIP_MAX + '; i++) {\n' +
+                '      if (i >= uClipCount) break;\n' +
+                '      vec3 _l = (uClipBoxes[i] * vec4(vEnableClipWPos, 1.0)).xyz;\n' +
+                '      if (all(lessThanEqual(abs(_l), vec3(0.5)))) _ins++;\n' +
+                '    }\n' +
+                '    bool _keep = (uClipMethod == 1) ? (_ins == uClipCount) : (_ins > 0);\n' +
+                '    if (!_keep) discard;\n' +
+                '  }\n'
+              );
+          };
+          m.needsUpdate = true;
+        });
+      });
+    }
+
+    function setModelClipped(rec, on) {
+      rec.clipped = !!on;
+      if (rec._clipEnabledUniform) rec._clipEnabledUniform.value = on ? 1 : 0;
+      if (viewer.repaint) viewer.repaint();
+      updateModelsPanel();
+    }
+
     function ensureModelLights() {
       if (modelLightsAdded) return;
       const s = viewer.scene.scene;
@@ -9649,7 +10355,7 @@
 
     // A model record is a directory entry; group === null until the user loads it.
     function addModelEntry(name, url, fromFile) {
-      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false };
+      var rec = { name: name, url: url, fromFile: !!fromFile, group: null, visible: false, loading: false, clipped: true };
       models.push(rec);
       return rec;
     }
@@ -9657,6 +10363,7 @@
     function displayLoadedGroup(rec, scene3d) {
       ensureModelLights();
       prepModelMaterials(scene3d);
+      applyModelClip(scene3d, rec);   // obey the same crop boxes as the point cloud
       var group = new THREE.Group();
       group.name = 'EnableModel:' + rec.name;
       group.add(scene3d);
@@ -9761,6 +10468,112 @@
         });
     }
 
+    // =====================================================================
+    // Multi-scan support — load >1 point cloud and view/hide each from the
+    // right-hand "Scans" panel (adopted into Tool settings by chrome.js).
+    // Driven by projects.js: meta.folder is the primary cloud, meta.clouds[]
+    // lists every cloud + its default visibility.
+    // =====================================================================
+    var scanClouds = []; // [{ id, name, pc, visible }]
+
+    function applyScanMaterialDefaults(pc) {
+      try {
+        pc.material.size = 2.0;  // moderate — fills gaps without amplifying speckle; stays fast
+        pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE; // auto-size with zoom/distance (chrome.js governs)
+        pc.material.shape = Potree.PointShape.CIRCLE;
+      } catch (e) { /* ignore */ }
+    }
+
+    function _cloudMetaFor(folder) {
+      var cs = (meta && meta.clouds) || [];
+      for (var i = 0; i < cs.length; i++) { if (cs[i].folder === folder) return cs[i]; }
+      return null;
+    }
+
+    // The primary cloud is already loaded by the main flow; register it here.
+    function registerPrimaryScan(pc) {
+      var cm = _cloudMetaFor(meta.folder) || { id: 'scan', name: 'Scan', visible: true };
+      pc.visible = (cm.visible !== false);
+      scanClouds.push({ id: cm.id || 'scan', name: cm.name || 'Scan', pc: pc, visible: pc.visible });
+      updateScansPanel();
+    }
+
+    // Load every non-primary cloud listed in meta.clouds and add to the scene.
+    function loadAdditionalScans() {
+      var cs = (meta && meta.clouds) || [];
+      cs.forEach(function (cm) {
+        if (!cm.folder || cm.folder === meta.folder) return; // skip the primary (already loaded)
+        var url = cm.folder.replace(/\/+$/, '') + '/cloud.js';
+        Potree.loadPointCloud(url, cm.id).then(function (e) {
+          var pc = e.pointcloud;
+          viewer.scene.addPointCloud(pc);
+          applyScanMaterialDefaults(pc);
+          // Inherit the primary cloud's CURRENT display settings (size/mode/shape)
+          // so a scan that finishes loading after the point-size slider was set
+          // still matches it. The slider itself now updates all clouds (chrome.js).
+          try {
+            var prim = loadedPointCloud;
+            if (prim && prim.material && pc.material) {
+              pc.material.size = prim.material.size;
+              pc.material.pointSizeType = prim.material.pointSizeType;
+              pc.material.shape = prim.material.shape;
+              if (pc.material.uniforms && prim.material.uniforms) {
+                if (pc.material.uniforms.minSize && prim.material.uniforms.minSize) pc.material.uniforms.minSize.value = prim.material.uniforms.minSize.value;
+                if (pc.material.uniforms.maxSize && prim.material.uniforms.maxSize) pc.material.uniforms.maxSize.value = prim.material.uniforms.maxSize.value;
+              }
+            }
+          } catch (e2) { /* ignore */ }
+          pc.visible = (cm.visible === true);
+          scanClouds.push({ id: cm.id, name: cm.name || cm.id, pc: pc, visible: pc.visible });
+          updateScansPanel();
+          console.log('[scans] loaded', cm.id, '(visible=' + pc.visible + ')');
+        }).catch(function (err) { console.warn('[scans] failed to load', cm.id, err); });
+      });
+    }
+
+    function setScanVisible(idx, vis) {
+      var s = scanClouds[idx];
+      if (!s || !s.pc) return;
+      s.visible = vis;
+      s.pc.visible = vis;
+      updateScansPanel();
+    }
+
+    function ensureScansPanel() {
+      var p = document.getElementById('enable-scans-panel');
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'enable-scans-panel';
+        document.body.appendChild(p); // chrome.js reparents this into the context panel
+      }
+      return p;
+    }
+
+    function updateScansPanel() {
+      var p = ensureScansPanel();
+      // Only show the Scans panel when the project actually has >1 cloud — a
+      // single-cloud project doesn't need a selector.
+      var nClouds = (meta && meta.clouds && meta.clouds.length) || 0;
+      if (nClouds < 2) { p.style.display = 'none'; p.innerHTML = ''; return; }
+      p.style.display = '';
+      var rows = '<div style="font-weight:600;font-size:12px;opacity:0.85;padding:4px 2px 6px">Scans</div>';
+      for (var i = 0; i < scanClouds.length; i++) {
+        var s = scanClouds[i];
+        rows += '<div class="enable-scans-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">' +
+          '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + s.name + '">' + s.name + '</span>' +
+          '<button class="enable-scan-eye" data-idx="' + i + '" title="Show / hide this scan" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (s.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+          '</div>';
+      }
+      p.innerHTML = rows;
+      var btns = p.querySelectorAll('.enable-scan-eye');
+      for (var j = 0; j < btns.length; j++) {
+        btns[j].addEventListener('click', function () {
+          var k = parseInt(this.getAttribute('data-idx'), 10);
+          setScanVisible(k, !scanClouds[k].visible);
+        });
+      }
+    }
+
     // -- Right-panel Models directory (adopted into Tool settings by chrome.js). --
     function ensureModelsPanel() {
       var p = document.getElementById('enable-models-panel');
@@ -9781,7 +10594,8 @@
         if (rec.loading) {
           right = '<span style="opacity:0.7;font-size:12px">Loading…</span>';
         } else if (rec.group) {
-          right = '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+          right = '<button class="enable-model-clip" data-idx="' + i + '" title="Clip to crop box (' + (rec.clipped !== false ? 'on' : 'off') + ')" style="background:none;border:0;cursor:pointer;font-size:14px;padding:0 2px;opacity:' + (rec.clipped !== false ? '1' : '0.35') + '">✂️</button>' +
+                  '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
                   '<button class="enable-model-unload" data-idx="' + i + '" title="Unload" style="background:none;border:0;cursor:pointer;color:#f66;font-size:14px;padding:0 2px">✕</button>';
         } else {
           right = '<button class="enable-model-load" data-idx="' + i + '" title="Load this model" style="font-size:12px;padding:2px 10px">Load</button>';
@@ -9798,6 +10612,7 @@
       var te = p.querySelector('#btn-toggle-edges');
       if (te) te.addEventListener('click', toggleModelEdges);
       p.querySelectorAll('.enable-model-load').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) loadModelRec(r); }); });
+      p.querySelectorAll('.enable-model-clip').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelClipped(r, !(r.clipped !== false)); }); });
       p.querySelectorAll('.enable-model-eye').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) setModelVisible(r, !r.visible); }); });
       p.querySelectorAll('.enable-model-unload').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) unloadModelRec(r); }); });
       var lb = p.querySelector('#btn-load-model');
@@ -9822,7 +10637,8 @@
             '<button id="btn-load-session" title="Load a saved session file">Load Session</button>' +
           '</div>' +
           '<input type="file" id="session-file-input" accept=".json" style="display:none">' +
-          '<div id="enable-cloud-section">' +
+          // Cloud sessions require sign-in; HRI is open-access (no login), so hidden.
+          '<div id="enable-cloud-section" style="display:none">' +
             '<button id="btn-save-cloud" title="Save your work to the cloud (private to you)">Save to Cloud</button>' +
             '<div id="enable-cloud-list"></div>' +
           '</div>' +
@@ -9909,6 +10725,9 @@
           '<div id="exclusion-list"></div>' +
           '<div id="enable-elevation-status"></div>' +
           '<div id="enable-elevation-box-list"></div>' +
+          '<div id="enable-elevation-export">' +
+            '<button id="btn-export-contours" title="Export contour maps (contours + elevation labels + boundary polygon) for the checked boxes — or all computed boxes if none are checked — to a DXF">Export Contour Maps (.dxf)</button>' +
+          '</div>' +
         closeGroup() +
 
         // === 7. STRUCTURAL FRAMING (collapsed) ===
@@ -9927,8 +10746,8 @@
           '<div id="enable-scene-slot"></div>' +
         closeGroup() +
 
-        // === 9. SIGNED-IN USER (identity + sign out) ===
-        '<div id="enable-user-bar">' +
+        // === 9. SIGNED-IN USER (identity + sign out) — hidden: HRI has no login ===
+        '<div id="enable-user-bar" style="display:none">' +
           '<span id="enable-user-email"></span>' +
           '<button id="enable-signout" title="Sign out">Sign out</button>' +
         '</div>' +
@@ -10053,6 +10872,8 @@
 
       // Elevation map buttons
       document.getElementById('btn-add-elev-box').addEventListener('click', function() { addElevationBox(); });
+      var _expContoursBtn = document.getElementById('btn-export-contours');
+      if (_expContoursBtn) _expContoursBtn.addEventListener('click', function() { exportContourMapsDXF(); });
       document.getElementById('btn-clear-all-elev-boxes').addEventListener('click', function() { clearAllElevationBoxes(); });
       document.getElementById('btn-hide-exclusion-outlines').addEventListener('click', function() { onToggleExclusionOutlines(); });
       document.getElementById('btn-add-exclusion').addEventListener('click', function() { onAddExclusion(); });
@@ -10123,18 +10944,75 @@
     let mouseDownPos = null;
     let _orbitNextDrag = false;    // set on Esc: force the next left-drag to orbit (don't grab the trailing sphere)
     let _draggingMeasureSphere = false;  // true while a measurement point's handle is being dragged
-    // When a measurement-point adjust ends, the cursor is resting ON that point,
-    // so the next click-drag would re-grab it (the point follows the cursor)
-    // instead of orbiting. The adjust is DONE on release — force the next
-    // left-drag to orbit. Capture phase, so it runs alongside Potree's mouseup.
+    // A measurement-point adjust just ended. Node hit boxes are node-sized now,
+    // so re-grabbing the point (to adjust again) is the desired behaviour — do
+    // NOT force the next drag to orbit (that was making re-grabs feel broken).
     window.addEventListener('mouseup', function(e) {
       if (e.button === 0 && _draggingMeasureSphere) {
         _draggingMeasureSphere = false;
-        _orbitNextDrag = true;
       }
     }, true);
     let _stationCandidate = null;  // { station, downX, downY } set in mousedown if a pin is under cursor
     let _noteCandidate    = null;  // { note,    downX, downY } same pattern for note icons
+    let _cropClickCandidate = null; // persistent box (crop box) under cursor at mousedown → click selects it on mouseup
+
+    // ===== Orbit-first "hold to grab" (model A) =====
+    // A left-drag ORBITS by default, even when it starts on a draggable item.
+    // Grabbing an item — marker / member / constraint / measurement node, or a
+    // crop / exclusion / elevation box resize+move handle — requires a brief
+    // press-and-hold (held still). ANY movement before the hold fires cancels
+    // the pending grab so the drag orbits instead.
+    var HOLD_GRAB_MS = 180;
+    var HOLD_GRAB_MOVE = 4;      // px of motion before the hold fires → orbit
+    var _pgTimer = null;
+    var _pgPending = null;       // { downX, downY, arm } while a hold is pending
+    var _pgArmed = false;        // a grab is armed and the item is being dragged
+    function _pgClear() {
+      if (_pgTimer) { clearTimeout(_pgTimer); _pgTimer = null; }
+      _pgPending = null;
+    }
+    function _pgArm() {
+      if (!_pgPending) return;
+      var arm = _pgPending.arm;
+      _pgTimer = null; _pgPending = null; _pgArmed = true;
+      // Cancel any orbit Potree armed on mousedown so the drag moves the item.
+      if (viewer.inputHandler && viewer.inputHandler.drag) viewer.inputHandler.drag = null;
+      document.body.classList.add('hold-grabbing');
+      try { arm(); } catch (e) { /* ignore */ }
+    }
+
+    // Screen-space distance² from point (px,py) to segment (ax,ay)-(bx,by).
+    function _segDistSq(px, py, ax, ay, bx, by) {
+      var dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+      var t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+      t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      var cx = ax + t * dx, cy = ay + t * dy;
+      return (px - cx) * (px - cx) + (py - cy) * (py - cy);
+    }
+    // Is a canvas-relative point within thrPx of a box volume's projected
+    // wireframe edges? Direct hit-test — independent of Potree's hoveredElements,
+    // which is unreliable on touch (synth mousemove doesn't always settle hover).
+    function _pointNearBoxEdges(px, py, vol, thrPx) {
+      if (!vol) return false;
+      vol.updateMatrixWorld(true);
+      var cam = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var t = new THREE.Vector3(), scr = [];
+      for (var sx = -1; sx <= 1; sx += 2) for (var sy = -1; sy <= 1; sy += 2) for (var sz = -1; sz <= 1; sz += 2) {
+        t.set(sx * 0.5, sy * 0.5, sz * 0.5).applyMatrix4(vol.matrixWorld).project(cam);
+        scr.push({ x: (t.x + 1) * 0.5 * rect.width, y: (1 - (t.y + 1) * 0.5) * rect.height, z: t.z });
+      }
+      // corner order: 0(-,-,-)1(-,-,+)2(-,+,-)3(-,+,+)4(+,-,-)5(+,-,+)6(+,+,-)7(+,+,+)
+      var edges = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+      var thr2 = thrPx * thrPx;
+      for (var i = 0; i < edges.length; i++) {
+        var a = scr[edges[i][0]], b = scr[edges[i][1]];
+        if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
+        if (_segDistSq(px, py, a.x, a.y, b.x, b.y) < thr2) return true;
+      }
+      return false;
+    }
+    var _coarsePointerDev = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     renderArea.addEventListener('mousedown', function(e) {
       // Right after Esc (e.g. finishing the distance tool), the cursor is sitting
@@ -10155,7 +11033,18 @@
       // if the user drags. mouseup decides click vs drag with a 5px threshold.
       _stationCandidate = null;
       _noteCandidate = null;
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode) {
+      _cropClickCandidate = null;
+      // While ANY tool workflow is active (placing a measurement / volume, or in
+      // a mark / member / constraint / note / z-base pick), a click belongs to
+      // that tool — it must NOT also select/highlight the clip box or any other
+      // volume. Clear Potree's hovered volumes so its own onMouseUp can't select
+      // one. (Applies across every tool + feature.)
+      if (e.button === 0 && viewer.inputHandler &&
+          (pendingMeasurement || pendingVolume || MARK_MODE || memberPickMode ||
+           constraintPickMode || zBasePickMode || notePickMode)) {
+        if (viewer.inputHandler.hoveredElements) viewer.inputHandler.hoveredElements = [];
+      }
+      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode && !pendingMeasurement && !pendingVolume) {
         var rectS = renderArea.getBoundingClientRect();
         var mousePixelS = { x: e.clientX - rectS.left, y: e.clientY - rectS.top };
         // Notes first (they sit on top visually).
@@ -10170,46 +11059,98 @@
         }
       }
 
-      // Check if clicking near an unlocked marker (for dragging)
-      if (e.button === 0 && markedPoints.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
-        var rect = renderArea.getBoundingClientRect();
-        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        var markerHit = findNearestMarker(mousePixel);
-        if (markerHit) {
-          markerDragActive = true;
-          markerDragInfo = markerHit;
-          document.body.classList.add('marker-drag');
-          e.stopPropagation();
+      // ===== Grab / orbit decision.
+      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode && !pendingMeasurement && !pendingVolume) {
+        var rectG = renderArea.getBoundingClientRect();
+        var mpG = { x: e.clientX - rectG.left, y: e.clientY - rectG.top };
+
+        // ---- Nodes grab IMMEDIATELY when you click on one, so adjusting a
+        // dimension / mark / member / constraint node is a direct click-drag
+        // (no press-and-hold). Clicking OFF a node (outside the findNearest*
+        // threshold) falls through to orbit. Locked items return null → orbit. ----
+        var _nodeArm = null;
+        var _mk = markedPoints.length ? findNearestMarker(mpG) : null;
+        if (_mk) _nodeArm = function () { markerDragActive = true; markerDragInfo = _mk; document.body.classList.add('marker-drag'); };
+        if (!_nodeArm && members.length) {
+          var _mb = findNearestMemberEndpoint(mpG);
+          if (_mb) _nodeArm = function () { memberDragActive = true; memberDragInfo = _mb; document.body.classList.add('member-drag'); };
+        }
+        if (!_nodeArm && constraints.length) {
+          var _cn = findNearestDefinitionPoint(mpG);
+          if (_cn) _nodeArm = function () { constraintDragActive = true; constraintDragInfo = _cn; document.body.classList.add('constraint-drag'); };
+        }
+        if (!_nodeArm && viewer.inputHandler) {
+          var _sph = findNearestMeasurementSphere(mpG);
+          if (_sph) _nodeArm = function () { viewer.inputHandler.mouse.set(mpG.x, mpG.y); viewer.inputHandler.startDragging(_sph); _draggingMeasureSphere = true; };
+        }
+        if (_nodeArm) {
+          if (viewer.inputHandler && viewer.inputHandler.drag) viewer.inputHandler.drag = null;
+          _nodeArm();
+          e.stopPropagation();   // grab now — Potree neither orbits nor grabs this gesture
           mouseDownPos = null;
           return;
         }
-      }
-      // Check if clicking near a member endpoint (for dragging) — check before constraints
-      if (e.button === 0 && members.length > 0 && !memberPickMode && !constraintPickMode && !MARK_MODE) {
-        var rect = renderArea.getBoundingClientRect();
-        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        var memberHit = findNearestMemberEndpoint(mousePixel);
-        if (memberHit) {
-          memberDragActive = true;
-          memberDragInfo = memberHit;
-          document.body.classList.add('member-drag');
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
+
+        // ---- Crop box + box resize/move handles keep ORBIT-FIRST: a quick drag
+        // orbits (these are big / locked and used to block orbit); grabbing a
+        // handle needs a brief hold, or is immediate when a box is already
+        // selected; the crop box is click-to-select. ----
+        var _arm = null;
+        var _clearHover = false;
+        // Persistent crop box: reliable DIRECT screen-space edge hit-test
+        // (touch-safe), independent of Potree's hover. Orbit-first + click selects.
+        if (typeof initialClipBox !== 'undefined' && initialClipBox &&
+            _pointNearBoxEdges(mpG.x, mpG.y, initialClipBox, _coarsePointerDev ? 30 : 12)) {
+          _clearHover = true;
+          _cropClickCandidate = { vol: initialClipBox, downX: e.clientX, downY: e.clientY };
         }
-      }
-      // Check if clicking near a constraint definition point (for dragging)
-      if (e.button === 0 && constraints.length > 0 && !constraintPickMode && !MARK_MODE && !memberPickMode) {
-        var rect = renderArea.getBoundingClientRect();
-        var mousePixel = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        var hit = findNearestDefinitionPoint(mousePixel);
-        if (hit) {
-          constraintDragActive = true;
-          constraintDragInfo = hit;
-          document.body.classList.add('constraint-drag');
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
+        // Any Potree-hovered draggable — box resize/move handles AND the crop-box
+        // frame. A highlighted transform HANDLE takes ABSOLUTE priority for the
+        // left button, so prefer a non-persistent draggable (handle) over the
+        // persistent crop-box frame when Potree hovered both.
+        if (!_arm && viewer.inputHandler && viewer.inputHandler.hoveredElements && viewer.inputHandler.hoveredElements.length) {
+          var _persistOf = function (o) { var p = o; while (p) { if (p.userData && p.userData.persistent) return p; p = p.parent; } return null; };
+          var _drags = viewer.inputHandler.hoveredElements.filter(function (el) {
+            var o = el.object;
+            return o && o._listeners && o._listeners['drag'] && o._listeners['drag'].length > 0;
+          });
+          var _hEl = _drags.find(function (el) { return !_persistOf(el.object); }) || _drags[0];
+          if (_hEl) {
+            var _persistVol = _persistOf(_hEl.object);
+            var _persist = !!_persistVol;
+            var _hasSel = !!(viewer.inputHandler.selection && viewer.inputHandler.selection.length > 0);
+            if (!_persist && _hasSel) {
+              // A transform HANDLE is highlighted (handles only show when a box is
+              // selected) → ABSOLUTE priority: let Potree grab it THIS mousedown.
+              // Undo any clear-hover / crop-click the edge hit-test set above —
+              // handles sit ON the crop-box edge, so that test often also matched
+              // and would otherwise wipe the hover and make the drag orbit.
+              _clearHover = false;
+              _cropClickCandidate = null;
+            } else if (_persist) {
+              // Locked box (crop box) frame, no handle hovered: never grab it.
+              // Orbit-first; the direct edge hit-test above is the primary
+              // selector, this is a fallback when Potree happened to hover it.
+              _clearHover = true;
+              if (!_cropClickCandidate) _cropClickCandidate = { vol: _persistVol, downX: e.clientX, downY: e.clientY };
+            } else {
+              // Non-persistent draggable but nothing selected (an unselected box
+              // frame) → orbit-first: defer the grab to a brief hold.
+              _clearHover = true;
+              var _hObj = _hEl.object, _hPt = _hEl.point;
+              _arm = function () { viewer.inputHandler.mouse.set(mpG.x, mpG.y); viewer.inputHandler.startDragging(_hObj, { location: _hPt }); };
+            }
+          }
+        }
+        // Suppress Potree's own grab whenever we're deferring one (markers don't
+        // register with Potree, but a stray hovered sphere/box under the cursor
+        // still would — clear unconditionally when we set up a pending grab).
+        if (_arm) _clearHover = true;
+        if (_clearHover && viewer.inputHandler) viewer.inputHandler.hoveredElements = [];
+        if (_arm) {
+          _pgPending = { downX: e.clientX, downY: e.clientY, arm: _arm };
+          _pgTimer = setTimeout(_pgArm, HOLD_GRAB_MS);
+          // Deliberately do NOT stopPropagation: Potree arms orbit for a quick drag.
         }
       }
       // X-axis pick marker dragging (only during plane-x-axis pick mode)
@@ -10226,27 +11167,8 @@
           return;
         }
       }
-      // Distance/area/angle measurement sphere drag (Potree-managed) — runs
-      // last so marker/member/constraint custom drags take priority. This
-      // uses Potree's own InputHandler.startDragging so the existing drag /
-      // drop / marker_moved event flow handles position updates and sidebar
-      // refresh. Mirrors the touch sphere-grab in chrome.js so mouse and
-      // touch reach measurement spheres with the same 18 px tolerance.
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode
-          && !zBasePickMode && !notePickMode
-          && viewer.inputHandler) {
-        var rectMS = renderArea.getBoundingClientRect();
-        var mousePixelMS = { x: e.clientX - rectMS.left, y: e.clientY - rectMS.top };
-        var sphHit = findNearestMeasurementSphere(mousePixelMS);
-        if (sphHit) {
-          viewer.inputHandler.mouse.set(mousePixelMS.x, mousePixelMS.y);
-          viewer.inputHandler.startDragging(sphHit);
-          _draggingMeasureSphere = true;   // on release, force next drag to orbit (see mouseup above)
-          e.stopPropagation();
-          mouseDownPos = null;
-          return;
-        }
-      }
+      // (Measurement-sphere + box-handle grabs are handled by the orbit-first
+      // candidate block above — no immediate grab here.)
       if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) {
         // Not grabbing anything and not in a pick mode → this left-drag should
         // ORBIT. Potree only starts a fresh scene-drag (orbit) when
@@ -10267,9 +11189,15 @@
     // -- Hover highlight state (persists across mousemove calls) --
     var _hoveredGroup = null;
     var _hoveredStation = null;  // currently hovered station object (or null)
-    var HOVER_THRESHOLD = 12; // pixels
+    var HOVER_THRESHOLD = 14; // pixels — matches the node grab hit box (node-sized)
 
     renderArea.addEventListener('mousemove', function(e) {
+      // Orbit-first: any movement before the hold fires cancels the pending grab
+      // so this drag orbits instead of grabbing the item under the cursor.
+      if (_pgPending) {
+        var _pdx = e.clientX - _pgPending.downX, _pdy = e.clientY - _pgPending.downY;
+        if (_pdx * _pdx + _pdy * _pdy > HOLD_GRAB_MOVE * HOLD_GRAB_MOVE) _pgClear();
+      }
       // Member rubber-band: orange cursor sphere + line from the first endpoint.
       if (memberPickMode) _updateMemberPreview(e);
       // Hover-preview spheres — Mark (red), Note (yellow), Constraint (green).
@@ -10365,9 +11293,11 @@
     var cam = viewer.scene.getActiveCamera();
     var bestHoverDist = HOVER_THRESHOLD;
     var bestHoverGroup = null;
+    var bestHoverPos = null;
 
     var checkHover = function(worldPos, group) {
       var pt = worldPos.clone().project(cam);
+      if (pt.z < -1 || pt.z > 1) return;
       var sx = (pt.x * 0.5 + 0.5) * rect2.width;
       var sy = (1 - (pt.y * 0.5 + 0.5)) * rect2.height;
       var dx = sx - mousePixel2.x, dy = sy - mousePixel2.y;
@@ -10375,6 +11305,7 @@
       if (dist < bestHoverDist) {
         bestHoverDist = dist;
         bestHoverGroup = group;
+        bestHoverPos = worldPos.clone();
       }
     };
 
@@ -10411,6 +11342,23 @@
         checkHover(constraintPickMarkers[hi4].position, constraintPickMarkers[hi4]);
       }
     }
+    // Dimension (measurement) spheres — same hit box; they have no CircleGeometry
+    // dot to lerp, so they rely on the white hover indicator below.
+    if (viewer.scene.measurements) {
+      for (var hmi = 0; hmi < viewer.scene.measurements.length; hmi++) {
+        var hmeas = viewer.scene.measurements[hmi];
+        if (hmeas.visible === false || !hmeas.spheres) continue;
+        for (var hsi = 0; hsi < hmeas.spheres.length; hsi++) {
+          var hsph = hmeas.spheres[hsi];
+          if (!hsph.visible || !hsph._listeners || !hsph._listeners.drag) continue;
+          checkHover(hsph.getWorldPosition(new THREE.Vector3()), null);
+        }
+      }
+    }
+
+    // White hover indicator follows the nearest node within its hit box.
+    _hoverIndicatorPos = bestHoverPos;
+    renderArea.style.cursor = bestHoverPos ? 'pointer' : '';
 
     // Apply/remove hover effect (lighten center dot color)
     if (_hoveredGroup !== bestHoverGroup) {
@@ -10480,6 +11428,19 @@
     }, true);
 
     renderArea.addEventListener('mouseup', function(e) {
+      // Orbit-first hold-to-grab cleanup. If a grab was armed, the finalize
+      // blocks below (markerDrag/memberDrag/…) still run — _pgArm set those
+      // flags. A press+release with no hold just clears the pending timer.
+      if (_pgArmed) { _pgArmed = false; document.body.classList.remove('hold-grabbing'); }
+      _pgClear();
+      // Tool workflow active → make sure Potree's own onMouseUp (which runs after
+      // this capture-phase handler) can't select a hovered volume (e.g. the clip
+      // box) on this click. Belt-and-suspenders with the mousedown clear above.
+      if (e.button === 0 && viewer.inputHandler &&
+          (pendingMeasurement || pendingVolume || MARK_MODE || memberPickMode ||
+           constraintPickMode || zBasePickMode || notePickMode)) {
+        if (viewer.inputHandler.hoveredElements) viewer.inputHandler.hoveredElements = [];
+      }
       // Note icon click — toggle the popover if the mouse barely moved.
       if (_noteCandidate) {
         var nc = _noteCandidate;
@@ -10491,6 +11452,31 @@
           if (Math.sqrt(ndx * ndx + ndy * ndy) < 5) {
             if (_expandedNoteId === nc.note.id) _closeNotePopover();
             else _openNotePopover(nc.note.id);
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+      // Crop-box (persistent) click — a clean click selects/activates it. We
+      // cleared Potree's hover on mousedown to allow orbit, so Potree's own
+      // click-select won't fire; do it here instead.
+      if (_cropClickCandidate) {
+        var cc2 = _cropClickCandidate;
+        _cropClickCandidate = null;
+        // Depth priority: a station icon under the cursor sits IN FRONT of the
+        // crop-box wireframe, so it wins. Defer to the station handler below
+        // (notes already ran above). The wireframe isn't selectable here.
+        var noDragCrop = !_stationCandidate && !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive && !_pgArmed;
+        if (noDragCrop && e.button === 0 && viewer.inputHandler) {
+          var cdx = e.clientX - cc2.downX, cdy = e.clientY - cc2.downY;
+          if (Math.sqrt(cdx * cdx + cdy * cdy) < 5) {
+            try {
+              var alreadySel = viewer.inputHandler.selection && viewer.inputHandler.selection.indexOf(cc2.vol) >= 0;
+              viewer.inputHandler.deselectAll();
+              if (!alreadySel) viewer.inputHandler.toggleSelection(cc2.vol);
+            } catch (e3) { /* ignore */ }
+            // Block Potree's bubble-phase onMouseUp — with hover cleared it would
+            // otherwise deselectAll() and wipe the selection we just made.
             e.stopPropagation();
             return;
           }
@@ -10596,9 +11582,15 @@
         return;
       }
 
-      const pickResult = Potree.Utils.getMousePointCloudIntersection(
-        mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
-      );
+      // Notes land exactly where the yellow preview sphere sits: use the RAW
+      // (unpatched) picker so a note never snaps onto a nearby member / constraint /
+      // measurement node ("protected circle") and never projects onto an active
+      // constraint. Every other tool keeps the snapping picker.
+      const pickResult = notePickMode
+        ? _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true })
+        : Potree.Utils.getMousePointCloudIntersection(
+            mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
+          );
 
       if (pickResult && pickResult.location) {
         var pos = pickResult.location;
@@ -10625,14 +11617,20 @@
       }
     }, true);
 
-    // ----- gate access, then load the point cloud -----
-    // EnableAuth.requireAccess shows the login overlay and only resolves once the
-    // signed-in user is an authorized member of this client. The point cloud (and
-    // the rest of the viewer) only comes alive after that.
-    EnableAuth.requireAccess('MurrayFranks').then(function (access) {
-      window.__enableUser = access.user;
-      updateUserBar(access.user);
-      refreshCloudSessions();
+    // ----- HRI: login requirement REMOVED — open access for everyone -----
+    // The auth gate (EnableAuth.requireAccess) is intentionally bypassed for HRI
+    // so the viewer loads immediately with no sign-in. enable-firebase.js still
+    // auto-shows its login overlay on load, so hide it; and hide the cloud-session
+    // UI (Save to Cloud / user bar) since those require sign-in and don't apply.
+    (function () {
+      var ov = document.getElementById('enable-auth-overlay');
+      if (ov) ov.style.display = 'none';
+      ['enable-cloud-section', 'enable-user-bar'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+    })();
+    Promise.resolve().then(function () {
       return Potree.loadPointCloud(cloudURL, pointCloudID);
     }).then((e) => {
       const pc    = e.pointcloud;
@@ -10642,9 +11640,13 @@
       discoverProjectModels(); // list this project's models/ folder (load on demand)
 
       // material defaults
-      pc.material.size = 1.0;
-      pc.material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
-      pc.material.shape = Potree.PointShape.CIRCLE;
+      applyScanMaterialDefaults(pc);
+
+      // ----- Multi-scan: register the primary cloud + load any extra clouds -----
+      // (e.g. 40 Larch has scan [default visible] + croppedScan [hidden], both
+      // listed in the right-hand "Scans" panel with view/hide toggles.)
+      registerPrimaryScan(pc);
+      loadAdditionalScans();
 
       // Fit camera to content on first load
       viewer.fitToScreen();
@@ -10689,8 +11691,8 @@
           // Manifest sits at <projectRoot>/stations/stations.json; meta.folder is
           // "<projectRoot>/pointclouds/<scan_id>", so we drop the last two path
           // segments rather than relying on browser '../' normalization.
-          var _folderParts = meta.folder.replace(/\/+$/, '').split('/').filter(function(p) { return p.length > 0; });
-          var _projectRoot = _folderParts.slice(0, -2).join('/');
+          // Regex (not split/join) so an absolute R2 URL keeps its "https://".
+          var _projectRoot = meta.folder.replace(/\/+$/, '').replace(/\/[^/]+\/[^/]+$/, '');
           var manifestURL = _projectRoot + '/stations/stations.json';
           console.log('[stations] fetching manifest:', manifestURL);
           fetch(manifestURL)
@@ -10757,10 +11759,16 @@
           // outline to orbit). Force a thin ~1.5%-of-box band so you grab right on
           // the wireframe and orbit everywhere else.
           if (clipBox.box && clipBox.frame) {
+            // Grab band for the crop-box wireframe, measured in unit-cube space
+            // (≈ fraction of box size). Was 0.015 (~1.5%) — too thin to hit without
+            // pixel-perfect aim. Widened, and much wider on coarse pointers (touch)
+            // where a fingertip can't land on a thin edge.
+            var _coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+            var _clipEdgeGrab = _coarsePointer ? 0.09 : 0.04;
             clipBox.box.raycast = function(raycaster, intersects) {
               var lp = raycaster.params && raycaster.params.Line;
               var saved = lp ? lp.threshold : null;
-              if (lp) lp.threshold = 0.015;   // unit-cube space → ~1.5% of box size in world units
+              if (lp) lp.threshold = _clipEdgeGrab;
               try { clipBox.frame.raycast(raycaster, intersects); }
               finally { if (lp) lp.threshold = saved; }
             };
@@ -10804,17 +11812,26 @@
 
     // ----- keyboard helpers -----
     window.addEventListener('keydown', (ev) => {
-      // Existing shortcuts
-      if (ev.key === 'e' || ev.key === 'E') viewer.setEDLEnabled(!viewer.getEDLEnabled()); // toggle EDL
-      if (ev.key === '+' || ev.key === '=') viewer.setPointBudget(viewer.getPointBudget() + 250000);
-      if (ev.key === '-' || ev.key === '_') viewer.setPointBudget(Math.max(250000, viewer.getPointBudget() - 250000));
-      if (ev.key === 'f' || ev.key === 'F') viewer.fitToScreen();
+      // Single-key tool shortcuts must NEVER fire while the user is typing in a form
+      // field (note text/name, sidebar inputs). Otherwise typing "m"/"x"/"z"/"f"/"e"
+      // into a note toggles tools — e.g. "m" starts member-pick mode, so the next
+      // click prompts for a member endpoint. See feedback_keyboard_guards.
+      var _sk = ev.target;
+      var _skTyping = _sk && (_sk.tagName === 'INPUT' || _sk.tagName === 'TEXTAREA' ||
+                              _sk.tagName === 'SELECT' || _sk.isContentEditable);
+      // Existing shortcuts (suppressed while typing)
+      if (!_skTyping) {
+        if (ev.key === 'e' || ev.key === 'E') viewer.setEDLEnabled(!viewer.getEDLEnabled()); // toggle EDL
+        if (ev.key === '+' || ev.key === '=') viewer.setPointBudget(viewer.getPointBudget() + 250000);
+        if (ev.key === '-' || ev.key === '_') viewer.setPointBudget(Math.max(250000, viewer.getPointBudget() - 250000));
+        if (ev.key === 'f' || ev.key === 'F') viewer.fitToScreen();
 
-      // Mark point shortcuts
-      if (ev.key === 'x' || ev.key === 'X') toggleMarkMode();
-      if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
-      // Member shortcut
-      if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+        // Mark point shortcuts
+        if (ev.key === 'x' || ev.key === 'X') toggleMarkMode();
+        if ((ev.key === 'z' || ev.key === 'Z') && !ev.ctrlKey && !ev.metaKey) clearAllMarkers();
+        // Member shortcut
+        if (ev.key === 'm' || ev.key === 'M') startMemberPick();
+      }
       // Ortho-measure toggle (requires an active plane with a basis)
       if (ev.key === 'o' || ev.key === 'O') {
         var _t = ev.target;
@@ -10876,7 +11893,10 @@
         } else {
           var t = ev.target;
           var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-          if (!typing && !constraintPickMode && !memberPickMode && !MARK_MODE && !pendingMeasurement) {
+          // Don't restart the measurement tool (which re-arms Potree's insertion and
+          // jumps the camera) while a note is being placed or its popover is open.
+          if (!typing && !notePickMode && _expandedNoteId == null &&
+              !constraintPickMode && !memberPickMode && !MARK_MODE && !pendingMeasurement) {
             if (restartLastMeasurementTool()) {
               ev.preventDefault();
             }
@@ -10895,6 +11915,9 @@
         // cancel_insertions, stops the InputHandler drag, and removes any
         // orphan measurement that has fewer than the required points.
         cancelPotreeInsertion();
+        // Also drop any current selection (e.g. the large clip box or a managed
+        // volume) — Esc should clear a highlighted/selected object, not just modes.
+        try { if (viewer.inputHandler && viewer.inputHandler.deselectAll) viewer.inputHandler.deselectAll(); } catch (e) {}
         // The user pressed Esc to stop a tool — they want to navigate next, not
         // grab whatever sphere/mark the cursor is resting on. Force the next
         // left-drag to orbit.
@@ -10907,6 +11930,24 @@
     //      This is the only viewer.html JS edit Dev2 makes beyond the body
     //      wrapper divs and the script tags — none of the handlers above
     //      are touched.
+    // ---- Independent visibility toggles for the top-bar "eye" dropdown ----
+    // (clip box / panoramas / notes). Separate from the old combined
+    // stations+notes "annotations" switch and the "all dimensions" switch.
+    var _notesVisibleAll = true;
+    function _setStationsVisOnly(vis) {
+      _stationsVisible = vis;
+      for (var _svi = 0; _svi < stations.length; _svi++) {
+        stations[_svi].visible = vis;
+        if (stations[_svi].visual) stations[_svi].visual.visible = vis;
+      }
+    }
+    function _setNotesVisOnly(vis) {
+      _notesVisibleAll = vis;
+      for (var _nvi = 0; _nvi < notes.length; _nvi++) {
+        if (notes[_nvi].visual) notes[_nvi].visual.visible = vis && (notes[_nvi].visible !== false);
+      }
+      if (!vis && typeof _closeNotePopover === 'function') _closeNotePopover();
+    }
     window.__dev2 = {
       get viewer()              { return viewer;              },
       get stations()            { return stations;            },
@@ -10917,6 +11958,17 @@
       startNotePick:            function () { return startNotePick(); },
       performUndo:              function () { return performUndo();   },
       performRedo:              function () { return performRedo();   },
+      setUnitMode:              function (m) { return setUnitMode(m); },
+      getUnitMode:              function () { return getUnitMode();   },
+      // Visibility toggles for the top-bar eye dropdown.
+      getClipBoxVis:            function () { return !!(typeof initialClipBox !== 'undefined' && initialClipBox && !initialClipBox._outlineHidden); },
+      toggleClipBoxVis:         function () { var b = document.getElementById('btn-toggle-clipbox-outline'); if (b) b.click(); return this.getClipBoxVis(); },
+      hasStations:              function () { return stations.length > 0; },
+      getStationsVis:           function () { return _stationsVisible; },
+      toggleStationsVis:        function () { _setStationsVisOnly(!_stationsVisible); return _stationsVisible; },
+      hasNotes:                 function () { return notes.length > 0; },
+      getNotesVis:              function () { return _notesVisibleAll; },
+      toggleNotesVis:           function () { _setNotesVisOnly(!_notesVisibleAll); return _notesVisibleAll; },
       get undoStack()           { return undoStack;           },
       // Called from chrome.js after a clean 1-finger tap on touch. Exits any
       // single-action pick mode (Mark, Note, Constraint) so the user can

@@ -28,7 +28,16 @@
     try { savedCtxWidth  = localStorage.getItem('dev2.context.width'); } catch (_) {}
     try { savedPanoWidth = localStorage.getItem('dev2.panorama.width'); } catch (_) {}
     document.documentElement.dataset.theme = 'dark';
-    if (savedSidebar === 'true') document.documentElement.dataset.sidebarCollapsed = 'true';
+    if (savedSidebar === 'true') {
+      document.documentElement.dataset.sidebarCollapsed = 'true';
+    } else if (savedSidebar === null && window.matchMedia &&
+               window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 600px)').matches) {
+      // Phone-size screen (narrow portrait OR short landscape) and no saved
+      // preference → start with the sidebar collapsed so the cloud gets the full
+      // screen. The toggle still opens it (as an overlay drawer on mobile — see
+      // the chrome.css small-screen block).
+      document.documentElement.dataset.sidebarCollapsed = 'true';
+    }
     // Tool Settings is closed by default. Only "pinned" persists; auto-open
     // on content arrival happens through updateContextPanelVisibility.
     if (savedPinned === 'true') document.documentElement.dataset.contextPinned = 'true';
@@ -283,8 +292,7 @@
       {
         id: 'clip', label: 'Clip', iconName: 'scissors',
         items: [
-          { label: 'Toggle clip box outline', iconName: 'frame',  action: function () { clickLegacy('btn-toggle-clipbox-outline'); } },
-          { kind: 'sep' },
+          // Clip-box outline visibility moved to the top-right "eye" dropdown.
           { label: 'Add cut-out box',         iconName: 'plus',    action: function () { clickLegacy('btn-add-cutout'); } },
           { label: 'Clear all cut-outs',      iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-cutouts'); } }
         ]
@@ -297,7 +305,9 @@
           { kind: 'sep' },
           { label: 'Add exclusion zone',      iconName: 'plus',    action: function () { clickLegacy('btn-add-exclusion'); } },
           { label: 'Clear exclusion zones',   iconName: 'trash-2', action: function () { clickLegacy('btn-clear-exclusions'); } },
-          { label: 'Hide exclusion outlines', iconName: 'eye-off', action: function () { clickLegacy('btn-hide-exclusion-outlines'); } }
+          { label: 'Hide exclusion outlines', iconName: 'eye-off', action: function () { clickLegacy('btn-hide-exclusion-outlines'); } },
+          { kind: 'sep' },
+          { label: 'Export contour maps (DXF)', iconName: 'download', action: function () { clickLegacy('btn-export-contours'); } }
         ]
       },
       {
@@ -541,10 +551,74 @@
     // ---- Meta actions on the right (save / load / export / vis / undo / redo / about) ----
     topbar.appendChild(el('div', { className: 'dev2-tb-flex-spacer' }));
     var meta = el('div', { className: 'dev2-tb-right' });
+
+    // ---- Units switch: mm / imperial-fractional (1/16") / imperial-decimal (0.05"). Default mm. ----
+    var _unitDefs = [
+      { mode: 'mm',       label: 'm',     title: 'Metres (to the millimetre)' },
+      { mode: 'imp-frac', label: '1/16"', title: 'Feet-inches, fractional to 1/16"' },
+      { mode: 'imp-dec',  label: '0.05"', title: 'Feet-inches, decimal to 0.05"' }
+    ];
+    var _unitBtns = {};
+    var _unitSeg = el('div', { className: 'dev2-tb-units', title: 'Measurement units' });
+    _unitDefs.forEach(function (u) {
+      var b = el('button', { className: 'dev2-tb-unit-btn', type: 'button', title: u.title, text: u.label });
+      b.addEventListener('click', function () { _setUnit(u.mode); });
+      _unitBtns[u.mode] = b;
+      _unitSeg.appendChild(b);
+    });
+    function _setUnit(mode) {
+      var d = window.__dev2;
+      if (d && typeof d.setUnitMode === 'function') d.setUnitMode(mode);
+      for (var m in _unitBtns) _unitBtns[m].classList.toggle('active', m === mode);
+    }
+    (function initUnits() {
+      var d = window.__dev2;
+      var cur = (d && d.getUnitMode) ? d.getUnitMode() : 'mm';
+      for (var m in _unitBtns) _unitBtns[m].classList.toggle('active', m === cur);
+    })();
+    meta.appendChild(_unitSeg);
+
     meta.appendChild(iconBtn('save',     'Save session',           function () { clickLegacy('btn-save-session'); }));
     meta.appendChild(iconBtn('upload',   'Load session',           function () { clickLegacy('btn-load-session'); }));
     meta.appendChild(iconBtn('download', 'Export distances',       function () { clickLegacy('btn-export-measurements'); }));
-    meta.appendChild(iconBtn('eye',      'Toggle annotations (stations + notes)', function () { clickLegacy('btn-toggle-stations'); }));
+    // ---- Visibility "eye" dropdown: clip box / panoramas / notes ----
+    var eyeMenu = el('div', { className: 'dev2-tb-menu', id: 'dev2-menu-visibility', dataset: { open: 'false' } });
+    document.body.appendChild(eyeMenu);
+    function rebuildEyeMenu() {
+      eyeMenu.innerHTML = '';
+      var d = window.__dev2 || {};
+      var rows = [
+        { label: 'Clip box',  avail: true,
+          on: d.getClipBoxVis ? d.getClipBoxVis() : true,
+          toggle: function () { if (d.toggleClipBoxVis) d.toggleClipBoxVis(); } },
+        { label: 'Panoramas', avail: d.hasStations ? d.hasStations() : false,
+          on: d.getStationsVis ? d.getStationsVis() : true,
+          toggle: function () { if (d.toggleStationsVis) d.toggleStationsVis(); } },
+        { label: 'Notes',     avail: d.hasNotes ? d.hasNotes() : false,
+          on: d.getNotesVis ? d.getNotesVis() : true,
+          toggle: function () { if (d.toggleNotesVis) d.toggleNotesVis(); } }
+      ];
+      rows.forEach(function (r) {
+        var mi = el('button', {
+          className: 'dev2-tb-menu-item',
+          type: 'button',
+          onClick: function () { if (r.avail) { r.toggle(); rebuildEyeMenu(); } }
+        }, [ svg(r.on ? 'eye' : 'eye-off', 16), el('span', { text: r.label + (r.avail ? '' : ' (none)') }) ]);
+        if (!r.avail) mi.style.opacity = '0.45';
+        eyeMenu.appendChild(mi);
+      });
+    }
+    var eyeTrigger = iconBtn('eye', 'Show / hide clip box, panoramas, notes', function () {
+      if (_openMenu && _openMenu.trigger === eyeTrigger) { closeOpenMenu(); return; }
+      rebuildEyeMenu();
+      openMenuFor(eyeTrigger, eyeMenu);
+      // Right-align under the eye if the menu would run off the right edge.
+      var mr = eyeMenu.getBoundingClientRect();
+      if (mr.right > window.innerWidth - 8) {
+        eyeMenu.style.left = Math.max(8, eyeTrigger.getBoundingClientRect().right - mr.width) + 'px';
+      }
+    });
+    meta.appendChild(eyeTrigger);
     meta.appendChild(iconBtn('undo',     'Undo (Ctrl+Z)',          function () {
       var d = window.__dev2; if (d && typeof d.performUndo === 'function') d.performUndo();
     }));
@@ -775,6 +849,7 @@
   // ============================================================
 
   var CONTEXT_SLOTS = [
+    'enable-scans-panel',
     'enable-models-panel',
     'enable-plane-depth-controls',
     'enable-elevation-status',
@@ -823,6 +898,14 @@
     // Pin overrides everything: panel stays open.
     if (document.documentElement.dataset.contextPinned === 'true') {
       cp.dataset.open = 'true';
+      return;
+    }
+    // On phones, do NOT auto-open from content — keep the right Tool Settings
+    // panel closed until the user explicitly opens it (the toggle pins it). It
+    // otherwise pops open on load and eats the small screen.
+    if (window.matchMedia &&
+        window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 600px)').matches) {
+      cp.dataset.open = 'false';
       return;
     }
     // Transient manual-hide override — user clicked tab while content was
@@ -914,6 +997,7 @@
   var _elevPanelCache = {};       // boxName -> { wrapper, panels, accent }
   var _focusedElevBoxName = null;
   var _lastSeenBoxNames = [];
+  var _elevSel = new Set();        // box names selected for contour-map export
 
   function getElevHost() {
     var body = getContextBody();
@@ -965,11 +1049,20 @@
         (function (name) {
           topRow.addEventListener('click', function (e) {
             if (e.target.closest('button')) return;
-            var wasFocused = _focusedElevBoxName === name;
-            _focusedElevBoxName = wasFocused ? null : name;
-            // Switching focus to a different box is a fresh "active tool"
-            // event — clear the user's manual-hide override.
-            if (!wasFocused) clearContextHiddenIfActive();
+            if (e.ctrlKey || e.metaKey) {
+              // Ctrl/Cmd+click → add/remove this box from the export selection
+              // (leaves the settings focus on it so its panel is still shown).
+              if (_elevSel.has(name)) _elevSel.delete(name); else _elevSel.add(name);
+              _focusedElevBoxName = name;
+              clearContextHiddenIfActive();
+            } else {
+              // Plain click → focus + single-select for export.
+              var wasFocused = _focusedElevBoxName === name;
+              _focusedElevBoxName = wasFocused ? null : name;
+              _elevSel = new Set(wasFocused ? [] : [name]);
+              if (!wasFocused) clearContextHiddenIfActive();
+            }
+            window.__elevExportSel = Array.from(_elevSel);
             renderFocusedElevSection();
           });
         })(boxName);
@@ -997,6 +1090,10 @@
       _focusedElevBoxName = null; // focused box was deleted
     }
     _lastSeenBoxNames = currentNames;
+
+    // Drop deleted boxes from the export selection + publish for viewer.html.
+    Array.from(_elevSel).forEach(function (n) { if (currentNames.indexOf(n) === -1) _elevSel.delete(n); });
+    window.__elevExportSel = Array.from(_elevSel);
 
     renderFocusedElevSection();
   }
@@ -1036,6 +1133,8 @@
         var bn = readBoxName(w, i);
         if (bn === name) w.classList.add('dev2-elev-focused');
         else w.classList.remove('dev2-elev-focused');
+        if (_elevSel.has(bn)) w.classList.add('dev2-elev-selected');
+        else w.classList.remove('dev2-elev-selected');
       }
     }
 
@@ -1287,17 +1386,15 @@
   // ============================================================
   // Point cloud display settings: size, size-mode, shape.
   //
-  // viewer.html defaults pointSizeType to ADAPTIVE (line 8608), which sizes
-  // points inversely to octree node density — creates a visible "some big,
-  // some small" pattern at zoom. We override to FIXED for uniform sizing
-  // on load, then expose live controls in a Display topbar dropdown.
-  // User selections persist in localStorage.
+  // Defaults to ADAPTIVE (points auto-scale with zoom/distance). Live controls
+  // are exposed in a Display topbar dropdown; user selections persist in
+  // localStorage. (FIXED uniform sizing was tried but felt unnatural in use.)
   // ============================================================
 
-  // Point rendering mode is fixed to ADAPTIVE — it's the only one that gave
-  // a usable, visibly-responsive slider in practice. FIXED and ATTENUATED
-  // are removed from the UI; the user requested a single size control.
-  var POINT_SIZE_DEFAULT  = 1.0;
+  // Point rendering mode: ADAPTIVE — points scale automatically with zoom/distance
+  // (closer points render larger), which reads as natural depth. FIXED (uniform
+  // on-screen pixel size, slider-controlled) was tried but felt unnatural in use.
+  var POINT_SIZE_DEFAULT  = 2.0;  // moderate — big enough to fill gaps, small enough to stay crisp/fast
   var POINT_MODE_DEFAULT  = 'ADAPTIVE';
   var POINT_SHAPE_DEFAULT = 'CIRCLE';
 
@@ -1308,29 +1405,31 @@
   }
 
   function applyPointCloudSettings(opts) {
-    var pc = getActivePointcloud();
-    if (!pc || !pc.material) return false;
+    var v = window.__dev2 && window.__dev2.viewer;
+    if (!v || !v.scene || !v.scene.pointclouds || !v.scene.pointclouds.length) return false;
     var Potree = window.Potree;
     if (!Potree) return false;
-    // Loosen the shader-side pixel clamp. Potree's defaults are minSize=2,
-    // maxSize=50; in ATTENUATED mode the calculated `size * spacing * projFactor`
-    // is often less than 2 for dense scans, which makes the slider feel dead.
-    // We set these once per material so all three modes have meaningful range.
-    if (pc.material.uniforms && pc.material.uniforms.minSize) {
-      pc.material.uniforms.minSize.value = 0.6;
-    }
-    if (pc.material.uniforms && pc.material.uniforms.maxSize) {
-      pc.material.uniforms.maxSize.value = 100;
-    }
-    if (opts.size != null)  pc.material.size = opts.size;
-    if (opts.mode != null && Potree.PointSizeType[opts.mode] != null) {
-      pc.material.pointSizeType = Potree.PointSizeType[opts.mode];
-    }
-    if (opts.shape != null && Potree.PointShape[opts.shape] != null) {
-      pc.material.shape = Potree.PointShape[opts.shape];
-    }
-    var v = window.__dev2 && window.__dev2.viewer;
-    if (v && v.repaint) v.repaint();
+    // Apply to EVERY loaded point cloud, not just the first — multi-scan
+    // projects (e.g. multi-scan: scan + croppedScan) must all respond to the slider.
+    v.scene.pointclouds.forEach(function (pc) {
+      if (!pc || !pc.material) return;
+      // Loosen the shader-side pixel clamp (Potree defaults minSize=2/maxSize=50)
+      // so the slider has meaningful range on dense scans.
+      if (pc.material.uniforms && pc.material.uniforms.minSize) {
+        pc.material.uniforms.minSize.value = 0.6;
+      }
+      if (pc.material.uniforms && pc.material.uniforms.maxSize) {
+        pc.material.uniforms.maxSize.value = 100;
+      }
+      if (opts.size != null) pc.material.size = opts.size;
+      if (opts.mode != null && Potree.PointSizeType[opts.mode] != null) {
+        pc.material.pointSizeType = Potree.PointSizeType[opts.mode];
+      }
+      if (opts.shape != null && Potree.PointShape[opts.shape] != null) {
+        pc.material.shape = Potree.PointShape[opts.shape];
+      }
+    });
+    if (v.repaint) v.repaint();
     return true;
   }
 
