@@ -1,0 +1,1165 @@
+/* =============================================================
+   Dev2 chrome — top toolbar, sidebar, right context panel, themes.
+   All Dev2-only rules live here. The legacy custom.css still loads
+   for marker/toast/station-pin cosmetics; theme variables defined
+   below override Potree's own CSS variables at the bottom.
+   ============================================================= */
+
+/* ---------- Theme tokens ---------- */
+
+:root[data-theme="dark"] {
+  --tb-bg:           #1f1f1f;
+  --tb-fg:           #e6e6e6;
+  --tb-fg-dim:       #999;
+  --tb-border:       #2e2e2e;
+  --tb-divider:      #2e2e2e;
+  --panel-bg:        #1c1c1c;
+  --panel-bg-2:      #242424;
+  --panel-fg:        #e6e6e6;
+  --panel-fg-dim:    #9a9a9a;
+  --panel-border:    #2e2e2e;
+  --btn-hover:       #2a2a2a;
+  --btn-active-bg:   #2f4a32;
+  --btn-active-fg:   #ffffff;
+  --accent:          #3EAD4A;
+  --accent-hover:    #4fcb5a;
+  --accent-dim:      rgba(62,173,74,0.18);
+  --danger:          #d04545;
+  --shadow:          0 6px 24px rgba(0,0,0,0.5);
+  --canvas-fade:     linear-gradient(180deg, rgba(0,0,0,0.0) 0%, rgba(0,0,0,0.25) 100%);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --tb-bg:           #ffffff;
+  --tb-fg:           #1a1a1a;
+  --tb-fg-dim:       #6b6b6b;
+  --tb-border:       #e3e3e6;
+  --tb-divider:      #e9e9ec;
+  --panel-bg:        #ffffff;
+  --panel-bg-2:      #f5f5f7;
+  --panel-fg:        #1a1a1a;
+  --panel-fg-dim:    #6b6b6b;
+  --panel-border:    #e3e3e6;
+  --btn-hover:       #f2f2f4;
+  --btn-active-bg:   #e8f5ea;
+  --btn-active-fg:   #1a1a1a;
+  --accent:          #2D8537;
+  --accent-hover:    #3EAD4A;
+  --accent-dim:      rgba(45,133,55,0.10);
+  --danger:          #c83a3a;
+  --shadow:          0 6px 20px rgba(0,0,0,0.08);
+  --canvas-fade:     linear-gradient(180deg, rgba(255,255,255,0.0) 0%, rgba(255,255,255,0.20) 100%);
+  color-scheme: light;
+}
+
+/* ---------- Reset Potree's container positioning ---------- */
+
+html, body {
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+}
+
+/* Hide the original Potree sidebar entirely (the logo pseudo-element goes with it) */
+#potree_sidebar_container { display: none !important; }
+
+/* Reposition the WebGL render area to sit below the topbar (48px) and right of
+   our new sidebar (280px). When the right context panel is open (or the
+   panorama is docked), shift the canvas right-edge inward by the panel width
+   so we don't render a stripe that nobody can see. */
+.potree_container {
+  position: absolute !important;
+  top: var(--topbar-height) !important;
+  left: 280px !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  transition: left 0.18s ease, right 0.18s ease;
+}
+
+/* Canvas right edge: reserve whatever right-side panels are visible. */
+
+/* Context panel open, no panorama → reserve context width */
+#dev2-context-panel[data-open="true"] ~ .potree_container {
+  right: var(--context-panel-width) !important;
+}
+
+/* Panorama docked, context closed → reserve panorama width */
+:root[data-panorama-mode="docked"] .potree_container {
+  right: var(--panorama-width) !important;
+}
+
+/* Both context panel open AND panorama docked → reserve sum */
+:root[data-panorama-mode="docked"] #dev2-context-panel[data-open="true"] ~ .potree_container {
+  right: calc(var(--panorama-width) + var(--context-panel-width)) !important;
+}
+#potree_render_area {
+  left: 0 !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ---------- Top toolbar ---------- */
+
+#dev2-topbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--topbar-height);
+  background: var(--tb-bg);
+  color: var(--tb-fg);
+  border-bottom: 1px solid var(--tb-border);
+  display: flex;
+  align-items: stretch;
+  z-index: 1000;
+  user-select: none;
+  font-size: 13px;
+}
+
+/* Brand area occupies the same horizontal slot as the left sidebar, so the
+   first tool aligns with the sidebar's right edge / canvas's left edge.
+   Internally the logo sits on one line and the project name on a second
+   line beneath it — both confined to sidebar width. */
+.dev2-tb-brand-area {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  box-sizing: border-box;
+  /* Match the sidebar's OUTER edge (280px content + 1px right border) so this
+     area's right border lines up with the sidebar's right border below it.
+     Without border-box the 12px h-padding + border overhang it by ~25px and
+     also shove the tools right. */
+  width: calc(var(--sidebar-width) + 1px);
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border-right: 1px solid var(--tb-divider);
+  gap: 12px;
+  min-width: 0;
+}
+.dev2-tb-brand-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.dev2-tb-flex-spacer { flex: 1 1 auto; min-width: 0; }
+
+.dev2-tb-logo {
+  height: 24px;
+  width: auto;
+  display: block;
+  flex: 0 0 auto;
+}
+.dev2-tb-project-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tb-fg-dim);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Company contact, beside the brand — matches .dev2-tb-project-name font so it
+   reads as part of the title block. Two short lines fit the existing bar height. */
+.dev2-tb-contact {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
+.dev2-tb-contact-line {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tb-fg-dim);
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.dev2-tb-contact-line:hover {
+  color: var(--tb-fg);
+  text-decoration: underline;
+}
+
+.dev2-tb-groups {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;            /* allow the nav to shrink so overflow-x scrolling works */
+  align-items: stretch;
+  /* No left padding so the first tool button's left edge sits flush with the
+     brand-area / sidebar boundary (x = var(--sidebar-width)). Right padding
+     keeps the last group from butting against the meta cluster. */
+  padding: 0 6px 0 0;
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dev2-tb-groups::-webkit-scrollbar { display: none; }
+/* Drop the first tool's left margin so its left edge (and hover background)
+   aligns with the sidebar's right border. */
+.dev2-tb-groups > .dev2-tb-btn:first-child { margin-left: 0; }
+
+/* Horizontal scroller wrapper + arrows — shown only when the tool row overflows
+   the available width (e.g. when many tools are present). */
+.dev2-tb-groups-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  position: relative;
+}
+.dev2-tb-scroll-arrow {
+  flex: 0 0 auto;
+  display: none;            /* revealed by .has-overflow */
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+  background: var(--tb-bg);
+  border: 0;
+  color: var(--tb-fg);
+  cursor: pointer;
+  z-index: 2;
+}
+.dev2-tb-groups-wrap.has-overflow .dev2-tb-scroll-arrow { display: inline-flex; }
+.dev2-tb-scroll-arrow:hover { background: var(--btn-hover); }
+.dev2-tb-scroll-arrow:disabled { opacity: 0.25; cursor: default; background: transparent; box-shadow: none; }
+.dev2-tb-scroll-left  { box-shadow: 6px 0 8px -4px rgba(0, 0, 0, 0.35); }
+.dev2-tb-scroll-right { box-shadow: -6px 0 8px -4px rgba(0, 0, 0, 0.35); }
+.dev2-tb-arrow-flip { transform: rotate(180deg); }
+
+.dev2-tb-right {
+  display: flex;
+  align-items: stretch;
+  padding: 0 6px;
+  border-left: 1px solid var(--tb-divider);
+  gap: 0;
+}
+
+/* Units switch (mm / imperial-fractional / imperial-decimal) */
+.dev2-tb-units {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  margin: 0 8px;
+  border: 1px solid var(--tb-divider, #3a3a3a);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.dev2-tb-unit-btn {
+  background: transparent;
+  color: var(--sidebar-text, #ddd);
+  border: 0;
+  border-right: 1px solid var(--tb-divider, #3a3a3a);
+  cursor: pointer;
+  font: 11px/1 sans-serif;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.dev2-tb-unit-btn:last-child { border-right: 0; }
+.dev2-tb-unit-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.dev2-tb-unit-btn.active { background: var(--accent, #3EAD4A); color: #fff; }
+
+/* Generic toolbar button — chrome for both labeled-group buttons and icon-only */
+.dev2-tb-btn,
+.dev2-tb-btn-icon {
+  background: transparent;
+  border: 0;
+  color: var(--tb-fg);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  margin: 7px 2px;
+  height: 34px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  position: relative;
+  transition: background 0.12s ease;
+}
+.dev2-tb-btn:hover,
+.dev2-tb-btn-icon:hover { background: var(--btn-hover); }
+.dev2-tb-btn:focus-visible,
+.dev2-tb-btn-icon:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.dev2-tb-btn[aria-expanded="true"],
+.dev2-tb-btn.is-active,
+.dev2-tb-btn-icon.is-active {
+  background: var(--btn-active-bg);
+  color: var(--btn-active-fg);
+}
+.dev2-tb-btn svg,
+.dev2-tb-btn-icon svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dev2-tb-btn .dev2-chev {
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  opacity: 0.7;
+}
+
+/* Dropdown menu surface */
+.dev2-tb-menu {
+  position: fixed;
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  min-width: 220px;
+  z-index: 1010;
+  display: none;
+  font-size: 13px;
+}
+.dev2-tb-menu[data-open="true"] { display: block; }
+.dev2-tb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 8px 10px;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.dev2-tb-menu-item:hover { background: var(--btn-hover); }
+.dev2-tb-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.dev2-tb-menu-item svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.dev2-tb-menu-item .dev2-mi-kbd {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--panel-fg-dim);
+  padding: 2px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.dev2-tb-menu-sep {
+  height: 1px;
+  background: var(--tb-divider);
+  margin: 6px 4px;
+}
+.dev2-tb-menu-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--panel-fg-dim);
+  padding: 6px 10px 4px;
+}
+
+/* Slider row inside a dropdown menu (e.g. Display → Point size). */
+.dev2-tb-menu-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 8px;
+}
+.dev2-tb-menu-slider input[type="range"] {
+  flex: 1 1 auto;
+  accent-color: var(--accent);
+  cursor: ew-resize;
+  background: transparent;
+}
+.dev2-tb-slider-val {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--panel-fg-dim);
+  min-width: 28px;
+  text-align: right;
+}
+
+/* Segmented radio control. Three (or two) buttons side by side; active gets accent fill. */
+.dev2-tb-menu-radio {
+  display: flex;
+  gap: 4px;
+  padding: 2px 10px 6px;
+}
+.dev2-tb-menu-radio-opt {
+  flex: 1 1 0;
+  background: var(--panel-bg-2);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  color: var(--panel-fg);
+  padding: 6px 4px;
+  font: 12px -apple-system, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.dev2-tb-menu-radio-opt:hover {
+  background: var(--btn-hover);
+}
+.dev2-tb-menu-radio-opt.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------- Left sidebar (Objects panel) ---------- */
+
+#dev2-sidebar {
+  position: fixed;
+  top: var(--topbar-height);
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  border-right: 1px solid var(--panel-border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 900;
+  font-size: 13px;
+}
+#dev2-sidebar::-webkit-scrollbar { width: 8px; }
+#dev2-sidebar::-webkit-scrollbar-track { background: transparent; }
+#dev2-sidebar::-webkit-scrollbar-thumb {
+  background: var(--tb-divider);
+  border-radius: 4px;
+}
+
+.dev2-sb-section {
+  border-bottom: 1px solid var(--panel-border);
+}
+.dev2-sb-section:last-child { border-bottom: 0; }
+.dev2-sb-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--panel-fg-dim);
+}
+.dev2-sb-header:hover { background: var(--btn-hover); }
+.dev2-sb-header .dev2-sb-chev {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dev2-sb-section[data-expanded="false"] .dev2-sb-chev {
+  transform: rotate(-90deg);
+}
+.dev2-sb-section[data-expanded="false"] .dev2-sb-body {
+  display: none;
+}
+.dev2-sb-header .dev2-sb-count {
+  margin-left: auto;
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--panel-fg-dim);
+  background: var(--panel-bg-2);
+  padding: 1px 6px;
+  border-radius: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.dev2-sb-body {
+  padding: 4px 12px 12px;
+  color: var(--panel-fg);
+}
+.dev2-sb-body:empty::before {
+  content: "Nothing here yet.";
+  display: block;
+  font-size: 12px;
+  color: var(--panel-fg-dim);
+  padding: 6px 0 12px;
+  font-style: italic;
+}
+
+/* Make legacy list rows blend with new sidebar (light-theme readability mainly) */
+:root[data-theme="light"] .dev2-sb-body .mark-row,
+:root[data-theme="light"] .dev2-sb-body .constraint-row,
+:root[data-theme="light"] .dev2-sb-body .member-row,
+:root[data-theme="light"] .dev2-sb-body .elev-row,
+:root[data-theme="light"] .dev2-sb-body .crop-row {
+  color: var(--panel-fg);
+}
+
+/* ---------- Right context panel ---------- */
+/* Widths are CSS variables so the collapse-toggle, canvas right-edge, and any
+   other layout-dependent rule stay in sync.  --context-panel-width drives the
+   Tool Settings panel;  --panorama-width drives the docked station panorama. */
+:root {
+  --context-panel-width: 225px;
+  --panorama-width: 400px;
+  --topbar-height: 60px;
+  --sidebar-width: 280px;
+}
+
+#dev2-context-panel {
+  position: fixed;
+  top: var(--topbar-height);
+  right: 0;
+  bottom: 0;
+  width: var(--context-panel-width);
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  border-left: 1px solid var(--panel-border);
+  z-index: 900;
+  transform: translateX(100%);
+  transition: transform 0.18s ease;
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+#dev2-context-panel[data-open="true"] { transform: translateX(0); }
+
+.dev2-cp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--panel-fg-dim);
+}
+.dev2-cp-header .dev2-cp-title { flex: 1 1 auto; }
+.dev2-cp-header .dev2-cp-close {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.dev2-cp-header .dev2-cp-close:hover { background: var(--btn-hover); }
+.dev2-cp-body { padding: 10px 12px 16px; }
+.dev2-cp-slot {
+  margin-bottom: 14px;
+}
+.dev2-cp-slot:empty { display: none; }
+
+/* ---------- Status pill (small badge for context panel + sidebar) ---------- */
+.dev2-pill {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------- Tooltip-ish title text ---------- */
+[data-tooltip] { position: relative; }
+
+/* ---------- Hide Potree leftovers that leak into the canvas ---------- */
+
+/* The three-bars hamburger Potree paints over the canvas to toggle its own
+   sidebar (see potree.js:89511 — img.potree_menu_toggle). We've replaced
+   that whole sidebar with our own; the hamburger has no job to do. */
+.potree_menu_toggle { display: none !important; }
+
+/* Potree's About / version popup link in the corner */
+.potree_about, #potree_about_link { display: none !important; }
+
+/* Potree's project description banner — duplicates the project info we now
+   show in the topbar's second row. */
+#potree_description { display: none !important; }
+
+/* Cartoonish leaf/folder icons in the scene tree (jstree theme icons).
+   We keep the checkbox (visibility toggle) and the expand/collapse arrow —
+   those are functional. Pass 2 can swap themeicons for Lucide equivalents. */
+#dev2-sb-scene .jstree-themeicon,
+#dev2-sb-scene .jstree-themeicon-custom { display: none !important; }
+#dev2-sb-scene .jstree-anchor { padding-left: 4px !important; }
+
+/* ---------- Sidebar collapse toggle ---------- */
+
+#dev2-sidebar-toggle {
+  position: fixed;
+  top: 50%;
+  left: 280px;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 56px;
+  background: var(--panel-bg);
+  color: var(--panel-fg-dim);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: left 0.18s ease, color 0.12s ease, background 0.12s ease;
+  box-shadow: var(--shadow);
+}
+#dev2-sidebar-toggle:hover {
+  color: var(--panel-fg);
+  background: var(--btn-hover);
+}
+#dev2-sidebar-toggle svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.18s ease;
+  /* Default (sidebar expanded): chevron-right rotated to face LEFT —
+     visual cue: "click to collapse sidebar to the left". */
+  transform: rotate(180deg);
+}
+
+/* Collapsed state — sidebar slides off-screen, render area expands. */
+:root[data-sidebar-collapsed="true"] #dev2-sidebar {
+  transform: translateX(-100%);
+  transition: transform 0.18s ease;
+}
+:root #dev2-sidebar { transition: transform 0.18s ease; }
+
+:root[data-sidebar-collapsed="true"] .potree_container {
+  left: 0 !important;
+  transition: left 0.18s ease;
+}
+:root .potree_container { transition: left 0.18s ease; }
+
+:root[data-sidebar-collapsed="true"] #dev2-sidebar-toggle {
+  left: 0;
+  transform: translate(0, -50%);
+  border-radius: 0 6px 6px 0;
+  border-left: 0;
+}
+:root[data-sidebar-collapsed="true"] #dev2-sidebar-toggle svg {
+  /* Collapsed: chevron-right in its natural orientation (points right) —
+     visual cue: "click to expand sidebar to the right". */
+  transform: rotate(0deg);
+}
+
+/* ---------- Context panel collapse toggle (mirror of left toggle) ---------- */
+
+#dev2-context-toggle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translate(0, -50%);
+  width: 22px;
+  height: 56px;
+  background: var(--panel-bg);
+  color: var(--panel-fg-dim);
+  border: 1px solid var(--panel-border);
+  border-right: 0;
+  border-radius: 6px 0 0 6px;
+  cursor: pointer;
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: right 0.18s ease, color 0.12s ease, background 0.12s ease;
+  box-shadow: var(--shadow);
+}
+#dev2-context-toggle:hover {
+  color: var(--panel-fg);
+  background: var(--btn-hover);
+}
+#dev2-context-toggle svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.18s ease;
+  /* Default (panel hidden): chevron-right points right — but we WANT it
+     pointing LEFT (toward the screen) to suggest "pull the panel out". */
+  transform: rotate(180deg);
+}
+
+/* When panel is OPEN, tab sits at the panel's left edge, chevron flipped
+   to point right (visual cue: "push the panel out to the right to close"). */
+#dev2-context-panel[data-open="true"] ~ #dev2-context-toggle {
+  right: var(--context-panel-width);
+}
+#dev2-context-panel[data-open="true"] ~ #dev2-context-toggle svg {
+  transform: rotate(0deg);
+}
+
+/* When collapsed, the toggle stays at right:0 (the right edge of the screen)
+   regardless of whether the panorama is docked. Sitting on top of the
+   panorama's right edge is a small, predictable overlap — far less jarring
+   than jumping over to the panorama's left edge. */
+
+/* (No pinned-state color tint: both toggle tabs use the same neutral skin
+   so they're visually consistent. Pin state is conveyed by the chevron
+   direction and by the panel being open with no active content.) */
+
+/* ---------- Elevation section styling in the right context panel ---------- */
+
+.dev2-cp-elev-section {
+  margin-bottom: 14px;
+  padding: 0;
+  background: var(--panel-bg-2);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.dev2-cp-elev-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 12px;
+  font-weight: 600;
+}
+.dev2-cp-elev-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.dev2-cp-elev-name {
+  flex: 1 1 auto;
+  color: var(--panel-fg);
+}
+.dev2-cp-elev-close {
+  background: transparent;
+  border: 0;
+  color: var(--panel-fg-dim);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.dev2-cp-elev-close:hover {
+  background: var(--btn-hover);
+  color: var(--panel-fg);
+}
+
+/* Left sidebar row highlight when a box is focused in the right panel */
+#enable-elevation-box-list > .dev2-elev-focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  background: var(--accent-dim) !important;
+}
+/* Boxes picked for contour-map export (click to select, Ctrl/Cmd+click to add). */
+#enable-elevation-box-list > .dev2-elev-selected {
+  background: var(--accent-dim) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+/* Strip the legacy "border-top dashed" off the moved panel since we own the
+   chrome now. The panel was styled inline so we use a wildcard descendant
+   selector to defeat the inline border-top. */
+.dev2-cp-elev-section > div + div {
+  padding: 10px !important;
+  border-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+/* Tighten the panel layout for the narrower (~225px) context column.
+   The legacy panel was authored for a 320px sidebar with horizontal label+input
+   rows; here we still keep most rows horizontal but: (a) make labels shorter
+   and stack the 3-column number row if it overflows, (b) full-width buttons,
+   (c) consistent vertical rhythm. */
+.dev2-cp-elev-section > div + div > div {
+  margin: 6px 0 !important;
+}
+
+/* Two-element label+control rows: shrink the prefix label so the control
+   gets more horizontal room. Targets the inline 'min-width:40/60px' labels. */
+.dev2-cp-elev-section > div + div > div > span:first-child {
+  min-width: auto !important;
+  flex: 0 0 auto !important;
+  font-size: 11px !important;
+  color: var(--panel-fg-dim) !important;
+  letter-spacing: 0.02em;
+}
+
+/* Selects and number inputs inside the panel — match the chrome theme rather
+   than the legacy dark-grey background-on-dark scheme. */
+.dev2-cp-elev-section input[type="number"],
+.dev2-cp-elev-section input[type="text"],
+.dev2-cp-elev-section select {
+  background: var(--panel-bg) !important;
+  color: var(--panel-fg) !important;
+  border: 1px solid var(--panel-border) !important;
+  border-radius: 4px !important;
+  padding: 4px 6px !important;
+  font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  min-width: 0;
+}
+.dev2-cp-elev-section input[type="number"]:focus,
+.dev2-cp-elev-section select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Tiny labels above multi-column inputs (Min / Max / Contour, Expect min/max/Gap) */
+.dev2-cp-elev-section > div + div > div > div > div:first-child {
+  font-size: 10px !important;
+  color: var(--panel-fg-dim) !important;
+  margin-bottom: 3px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+/* Three-column number rows — wrap when truly tight. With 225px panel we have
+   ~205px content; 3 inputs is doable but the contour col can wrap onto its
+   own line on the narrowest displays. */
+.dev2-cp-elev-section > div + div > div[style*="display:flex"][style*="gap:4px"] {
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+.dev2-cp-elev-section > div + div > div[style*="display:flex"][style*="gap:4px"] > div {
+  flex: 1 1 60px !important;
+  min-width: 60px;
+}
+
+/* All buttons inside the panel: match the chrome accent style, comfortable
+   tap target, and consistent typography. */
+.dev2-cp-elev-section button {
+  background: var(--panel-bg-2) !important;
+  color: var(--panel-fg) !important;
+  border: 1px solid var(--panel-border) !important;
+  border-radius: 4px !important;
+  padding: 6px 10px !important;
+  font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.dev2-cp-elev-section button:hover {
+  background: var(--btn-hover) !important;
+  border-color: var(--accent) !important;
+  color: var(--panel-fg) !important;
+}
+.dev2-cp-elev-section button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Primary actions (Compute / Apply / Show Contours) get the accent color */
+.dev2-cp-elev-section button[style*="width:100%"],
+.dev2-cp-elev-section > div + div > div:last-child button {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border-color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+.dev2-cp-elev-section button[style*="width:100%"]:hover,
+.dev2-cp-elev-section > div + div > div:last-child button:hover {
+  background: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
+}
+
+/* Bottom action row (Apply / Show Contours): make sure the buttons share width
+   even when their inline 'flex:1' is fighting the new padding. */
+.dev2-cp-elev-section > div + div > div:last-child {
+  display: flex !important;
+  gap: 6px !important;
+}
+.dev2-cp-elev-section > div + div > div:last-child > button {
+  flex: 1 1 0 !important;
+  min-width: 0;
+}
+
+/* ---------- Panorama dock (right-panel side-split mode) ---------- */
+/* When a station marker is clicked, viewer.html adds .show to the modal.
+   chrome.js immediately also adds .dev2-pano-docked which we use here to
+   reshape the modal from fullscreen to right-panel-sized. The fullscreen
+   button in the modal header toggles between docked and full overlay. */
+
+#station-panorama-modal.dev2-pano-docked {
+  position: fixed !important;
+  top: var(--topbar-height) !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: var(--panorama-width) !important;
+  background: #000 !important;
+  z-index: 940; /* above the context panel but below dropdowns */
+  border-left: 1px solid var(--panel-border);
+  box-shadow: var(--shadow);
+}
+
+/* Layout: Tool Settings panel always hugs the right edge (right:0). When the
+   panorama is docked AND the context panel is also open, the panorama slides
+   left to make room for the context panel on its right. */
+#dev2-context-panel[data-open="true"] ~ #station-panorama-modal.dev2-pano-docked {
+  right: var(--context-panel-width) !important;
+}
+
+/* Resize handle for the panorama — same skin as the context panel handle. */
+.dev2-cp-resize-pano {
+  /* The base .dev2-cp-resize styles already cover layout (position absolute
+     left:0 etc.). The modal is position:fixed so absolute positioning anchors
+     to it correctly. */
+  z-index: 941; /* above the panorama canvas */
+}
+/* Only show the panorama resize handle when actually docked. */
+#station-panorama-modal:not(.dev2-pano-docked) .dev2-cp-resize-pano {
+  display: none;
+}
+
+/* Fullscreen mode override (button toggles this). Reverts to original CSS
+   (position:fixed; inset:0;) defined in viewer.html. */
+#station-panorama-modal.dev2-pano-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  width: auto !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  background: rgba(0, 0, 0, 0.92) !important;
+}
+
+/* ---------- Right panel resize handle ---------- */
+
+.dev2-cp-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: ew-resize;
+  background: transparent;
+  z-index: 905;
+  transition: background 0.12s ease;
+  /* Suppress browser pan/zoom on touch so the pointer events below fire. */
+  touch-action: none;
+}
+/* Same for the panorama canvas — browser default touch-action would
+   intercept finger drags before the panorama's pointermove handler sees
+   them, making the panorama un-pannable on tablet. */
+#station-panorama-modal #spm-canvas {
+  touch-action: none;
+}
+/* Neutral hover/active — green is reserved for true accents (active buttons,
+   focused elev row). The drag handle is chrome, not signal. */
+.dev2-cp-resize:hover {
+  background: var(--panel-fg);
+  opacity: 0.18;
+}
+.dev2-cp-resize:active {
+  background: var(--panel-fg);
+  opacity: 0.32;
+}
+
+/* Suspend layout transitions during an active resize drag — they fight the
+   continuous variable updates and produce a jittery feel. */
+:root.dev2-dragging .potree_container,
+:root.dev2-dragging #dev2-context-panel,
+:root.dev2-dragging #dev2-context-toggle,
+:root.dev2-dragging #dev2-sidebar,
+:root.dev2-dragging #dev2-sidebar-toggle {
+  transition: none !important;
+}
+
+/* During a drag the panel transition would fight the live mouse-tracking
+   width — keep transitions off when the user actively drags. We can't
+   easily set this in JS without race conditions, so prefer 'transform'
+   transitions (open/close) over 'width' transitions (which we never set). */
+
+/* ---------- Potree overrides for surviving native widgets ---------- */
+/* Potree's About dialog (jQuery UI) — light theme readability if it surfaces */
+:root[data-theme="light"] .ui-dialog,
+:root[data-theme="light"] .ui-widget-content {
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+}
+
+/* Potree's compass — keep but tighten position (above context panel toggle if open) */
+.potree_container > .potree-compass,
+.potree_container img[src*="compas"] {
+  z-index: 800 !important;
+}
+
+/* Existing custom.css used these vars — keep them mapped to new theme so any
+   leftover Enable-themed widgets (the License footer in the legacy host, etc.)
+   inherit the active theme even before pass 2 cleanup. */
+:root[data-theme="dark"] {
+  --accent: #3EAD4A;
+  --sidebar-bg: var(--panel-bg);
+  --logo-panel-bg: #1a1a1a;
+}
+:root[data-theme="light"] {
+  --accent: #2D8537;
+  --sidebar-bg: var(--panel-bg);
+  --logo-panel-bg: var(--panel-bg);
+}
+
+/* ---------- Small text "About" link in topbar far-right ---------- */
+.dev2-tb-about-link {
+  color: var(--tb-fg-dim);
+  font-size: 11px;
+  padding: 0 10px;
+  align-self: center;
+  text-decoration: none;
+}
+.dev2-tb-about-link:hover { color: var(--tb-fg); }
+
+/* ---------- Light theme tweaks for canvas readability over light surfaces ---------- */
+:root[data-theme="light"] #potree_render_area {
+  /* Soft drop shadow at top to detach canvas from white topbar */
+  box-shadow: inset 0 1px 0 rgba(0,0,0,0.04);
+}
+
+/* ---------- Hide Potree's WebXR "Enter VR" button (none of these viewers use VR;
+   it auto-appears on devices that report XR support, e.g. phones) ---------- */
+#VRButton { display: none !important; }
+
+/* ============================================================
+   PHONE / SMALL-SCREEN BASE — narrow (portrait phones) OR short (landscape phones).
+   Landscape phones are ~840px WIDE but only ~400px TALL, so a width-only breakpoint
+   misses them; we also trigger on short height. The desktop chrome assumes ~1000px+
+   (280px sidebar + a 281px brand block with contact lines + tools), which on a phone
+   swallows the bar and pushes every tool off-screen and leaves no canvas. Here we:
+   drop the contact lines, shrink the brand to a small logo so the tool row gets the
+   width (it already scrolls), make the sidebar + context panel OVERLAY the canvas
+   (canvas stays full-bleed), and trim the bar. Sidebar also starts collapsed on
+   phones (see chrome.js).
+   ============================================================ */
+@media (max-width: 768px), (orientation: landscape) and (max-height: 600px) {
+  :root {
+    --topbar-height: 50px;
+    --context-panel-width: min(86vw, 340px);
+    --panorama-width: min(96vw, 400px);
+  }
+
+  /* Canvas is always full-bleed on phones; the side panels float over it. */
+  .potree_container,
+  #dev2-context-panel[data-open="true"] ~ .potree_container,
+  :root[data-panorama-mode="docked"] .potree_container,
+  :root[data-panorama-mode="docked"] #dev2-context-panel[data-open="true"] ~ .potree_container {
+    left: 0 !important;
+    right: 0 !important;
+  }
+
+  /* Top toolbar: reclaim horizontal space for the tools. */
+  .dev2-tb-contact { display: none !important; }          /* drop www / email lines */
+  .dev2-tb-brand-area {
+    width: auto !important;                                /* was sidebar-width (281px) */
+    min-width: 0;
+    padding: 4px 8px;
+    gap: 8px;
+  }
+  .dev2-tb-logo { height: 20px; }
+  .dev2-tb-project-name { max-width: 88px; }              /* keep the short name, capped */
+  .dev2-tb-btn, .dev2-tb-btn-icon { padding: 0 8px; }     /* slightly tighter tool buttons */
+
+  /* Sidebar + context panel become comfortable touch-width overlay drawers. */
+  #dev2-sidebar { width: min(86vw, 320px); box-shadow: var(--shadow); }
+  /* Raise the panels ABOVE the docked panorama (z 940) so an expanded sidebar /
+     Tool Settings panel sits on top of the image instead of behind it. Stays
+     below the edge toggles (z 950). */
+  #dev2-sidebar, #dev2-context-panel { z-index: 945; }
+}
+
+/* ============================================================
+   PORTRAIT PHONE — two-row toolbar + bottom-docked (vertical) panorama.
+   Row 1 = logo/brand + file tools (save/load/undo/…); row 2 = the tool ribbon,
+   full width (scrolls). Uses flex-wrap + `order`; --topbar-height grows to the
+   two-row height so the sidebar/canvas/panorama offsets stay aligned.
+   ============================================================ */
+@media (max-width: 768px) and (orientation: portrait) {
+  :root { --topbar-height: 92px; --panorama-height: 48vh; }
+
+  /* Row 1 = brand/logo (order 0) + file tools (order 2), kept on ONE line; the
+     tool ribbon (order 3, basis 100%) wraps to row 2. The logo + 7 file icons
+     must fit row 1 or the file tools spill to a 3rd row, so we hide the project
+     name and compact the icons. */
+  #dev2-topbar { flex-wrap: wrap; height: var(--topbar-height); align-content: flex-start; }
+  .dev2-tb-brand-area   { order: 0; height: 46px; border-right: 0; flex: 0 1 auto; padding: 4px 6px; min-width: 0; }
+  .dev2-tb-flex-spacer  { order: 1; flex: 1 1 auto; }
+  .dev2-tb-right        { order: 2; height: 46px; border-left: 0; padding: 0 4px; flex: 0 0 auto; }
+  .dev2-tb-groups-wrap  { order: 3; flex-basis: 100%; width: 100%; height: 46px;
+                          border-top: 1px solid var(--tb-divider); }
+  .dev2-tb-project-name { display: none; }                /* logo + file tools share row 1 */
+  .dev2-tb-logo         { height: 18px; }
+  .dev2-tb-right .dev2-tb-btn-icon { padding: 0 5px; margin: 7px 1px; height: 32px; }  /* compact so all fit */
+  .dev2-tb-groups .dev2-tb-btn, .dev2-tb-groups .dev2-tb-btn-icon { height: 32px; }
+
+  /* Station panorama docks to the BOTTOM (vertical stack) instead of the right. */
+  #station-panorama-modal.dev2-pano-docked,
+  #dev2-context-panel[data-open="true"] ~ #station-panorama-modal.dev2-pano-docked {
+    top: auto !important; bottom: 0 !important; left: 0 !important; right: 0 !important;
+    width: auto !important; height: var(--panorama-height) !important;
+    border-left: 0; border-top: 1px solid var(--panel-border);
+  }
+  .dev2-cp-resize-pano { display: none !important; }      /* side handle N/A when bottom-docked */
+  /* Cloud occupies the area ABOVE the docked panorama. */
+  :root[data-panorama-mode="docked"] .potree_container {
+    bottom: var(--panorama-height) !important;
+  }
+}
+
+/* ============================================================
+   LANDSCAPE PHONE — keep ONE compact row; vertical space is scarce (the mobile
+   browser's address bar already eats the top), so don't spend it on a 2nd row.
+   ============================================================ */
+@media (orientation: landscape) and (max-height: 600px) {
+  :root { --topbar-height: 42px; }
+  .dev2-tb-project-name { display: none; }                /* logo only → max canvas height */
+  .dev2-tb-btn, .dev2-tb-btn-icon { height: 30px; margin: 6px 2px; }
+}

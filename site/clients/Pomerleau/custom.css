@@ -7,13 +7,13 @@
   --bg:               #1d1d1d;   /* main page background */
   --sidebar-bg:       #363636;   /* sidebar container */
   --sidebar-text:     #fbfbfb;   /* default text */
-  --accent:           #0085E0;   /* Pomerleau blue (matches logo) */
+  --accent:           #3EAD4A;   /* Enable-green (matches logo "e") */
   --muted:            #9aa3b2;   /* secondary text */
   --panel-bg:         #6b6b6b;   /* inner cards/panels / inputs */
   --border:           #000102;   /* hairlines */
 
   /* NEW: header/section controls */
-  --logo-panel-bg:    #ffffff;   /* strip behind the logo — white (Pomerleau logo bg) */
+  --logo-panel-bg:    #1a1a1a;   /* strip behind the logo — near-black */
   --section-bg:       #252525;   /* bars: Tools / Scene / About */
   --section-text:     #e8eaf0;
   --section-border:   #a0a0a0;
@@ -176,7 +176,7 @@ html, body, #potree_render_area{
   color: var(--sidebar-text) !important;
 }
 #jstree_scene .jstree-anchor.jstree-clicked{
-  background: rgba(0,133,224,0.15) !important;
+  background: rgba(62,173,74,0.15) !important;
   border-radius: 4px;
 }
 

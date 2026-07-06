@@ -107,3 +107,16 @@ site/clients/BDA/St. Joseph's Hamilton/stations/
 site/clients/BDA/St. Joseph's Hamilton/HighResolution/
 site/clients/BDA/222 Jarvis Elevator 4/pointclouds/
 site/clients/BDA/222 Jarvis Elevator 4/stations/
+
+# ---------- Pomerleau Hart House: octree + panoramas served from Cloudflare R2 (2026-07-06) ----------
+# pointclouds/ + stations/ live in R2 bucket 'enable-pointclouds' (pomerleau/harthouse/...).
+# "Hart House/" holds the raw LAS/scan + HighResolution panorama staging (not served).
+site/clients/Pomerleau/pointclouds/
+site/clients/Pomerleau/stations/
+site/clients/Pomerleau/Hart House/
+
+# ---------- SECRETS — never commit ----------
+# Cloudflare R2 upload credentials (Object Read & Write). Plaintext on this machine
+# only; NEVER pushed. Agents read this file for R2 uploads. See reference_r2_migration.
+.r2creds.json
+.r2creds*
