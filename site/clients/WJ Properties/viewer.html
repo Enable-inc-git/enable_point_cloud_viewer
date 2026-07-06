@@ -11105,30 +11105,37 @@
           _cropClickCandidate = { vol: initialClipBox, downX: e.clientX, downY: e.clientY };
         }
         // Any Potree-hovered draggable — box resize/move handles AND the crop-box
-        // frame. Persistent volumes (locked crop box) get cleared-but-not-armed.
+        // frame. A highlighted transform HANDLE takes ABSOLUTE priority for the
+        // left button, so prefer a non-persistent draggable (handle) over the
+        // persistent crop-box frame when Potree hovered both.
         if (!_arm && viewer.inputHandler && viewer.inputHandler.hoveredElements && viewer.inputHandler.hoveredElements.length) {
-          var _hEl = viewer.inputHandler.hoveredElements.find(function (el) {
+          var _persistOf = function (o) { var p = o; while (p) { if (p.userData && p.userData.persistent) return p; p = p.parent; } return null; };
+          var _drags = viewer.inputHandler.hoveredElements.filter(function (el) {
             var o = el.object;
             return o && o._listeners && o._listeners['drag'] && o._listeners['drag'].length > 0;
           });
+          var _hEl = _drags.find(function (el) { return !_persistOf(el.object); }) || _drags[0];
           if (_hEl) {
-            var _persist = false, _persistVol = null, _p = _hEl.object;
-            while (_p) { if (_p.userData && _p.userData.persistent) { _persist = true; _persistVol = _p; break; } _p = _p.parent; }
+            var _persistVol = _persistOf(_hEl.object);
+            var _persist = !!_persistVol;
             var _hasSel = !!(viewer.inputHandler.selection && viewer.inputHandler.selection.length > 0);
-            if (_persist) {
-              // Locked box (crop box): never grab/drag it. Orbit-first; the
-              // direct edge hit-test above is the primary selector, this is a
-              // fallback when Potree happened to hover it.
+            if (!_persist && _hasSel) {
+              // A transform HANDLE is highlighted (handles only show when a box is
+              // selected) → ABSOLUTE priority: let Potree grab it THIS mousedown.
+              // Undo any clear-hover / crop-click the edge hit-test set above —
+              // handles sit ON the crop-box edge, so that test often also matched
+              // and would otherwise wipe the hover and make the drag orbit.
+              _clearHover = false;
+              _cropClickCandidate = null;
+            } else if (_persist) {
+              // Locked box (crop box) frame, no handle hovered: never grab it.
+              // Orbit-first; the direct edge hit-test above is the primary
+              // selector, this is a fallback when Potree happened to hover it.
               _clearHover = true;
               if (!_cropClickCandidate) _cropClickCandidate = { vol: _persistVol, downX: e.clientX, downY: e.clientY };
-            } else if (_hasSel) {
-              // A box is already highlighted (handles showing) → grabbing a handle
-              // is the likely intent: let Potree grab it IMMEDIATELY (no hold, no
-              // orbit-defer). Leave hoveredElements intact so Potree's own
-              // mousedown grabs the handle this frame.
-              /* intentional no-op: do not defer, do not clear hover */
             } else {
-              // Nothing selected → orbit-first: defer the grab to a brief hold.
+              // Non-persistent draggable but nothing selected (an unselected box
+              // frame) → orbit-first: defer the grab to a brief hold.
               _clearHover = true;
               var _hObj = _hEl.object, _hPt = _hEl.point;
               _arm = function () { viewer.inputHandler.mouse.set(mpG.x, mpG.y); viewer.inputHandler.startDragging(_hObj, { location: _hPt }); };
