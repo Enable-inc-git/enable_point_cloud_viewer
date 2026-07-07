@@ -811,48 +811,12 @@
                                    new THREE.Vector3( 0.5,  0.5,  0.5));
 
       domEl.addEventListener('mousedown', function(e) {
-        if (e.button !== 0) return;
-        // Skip if the user is in any tool workflow that consumes left clicks —
-        // a click then belongs to that tool, not to selecting a managed box.
-        if (typeof MARK_MODE !== 'undefined' && MARK_MODE) return;
-        if (typeof constraintPickMode !== 'undefined' && constraintPickMode) return;
-        if (typeof memberPickMode !== 'undefined' && memberPickMode) return;
-        if (typeof zBasePickMode !== 'undefined' && zBasePickMode) return;
-        if (typeof notePickMode !== 'undefined' && notePickMode) return;
-        if (typeof pendingMeasurement !== 'undefined' && pendingMeasurement) return;
-        if (typeof pendingVolume !== 'undefined' && pendingVolume) return;
-
-        // All internally-managed boxes whose fill-mesh raycast is disabled
-        // (elevation crop, cut-out, exclusion) need this manual OBB hit-test to be
-        // selectable — Potree can no longer pick them by their (now non-raycasting)
-        // fill mesh, so without this their wireframe edges can't be clicked.
-        var selBoxes = [];
-        if (typeof elevationCropVolumes !== 'undefined') selBoxes = selBoxes.concat(elevationCropVolumes);
-        if (typeof cutoutBoxes !== 'undefined') selBoxes = selBoxes.concat(cutoutBoxes);
-        if (typeof exclusionBoxes !== 'undefined') selBoxes = selBoxes.concat(exclusionBoxes);
-        if (selBoxes.length === 0) return;
-
-        var rect = domEl.getBoundingClientRect();
-        var ndc = {
-          x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
-          y: -((e.clientY - rect.top) / rect.height) * 2 + 1
-        };
-        var camera = viewer.scene.getActiveCamera();
-        var raycaster = new THREE.Raycaster();
-        raycaster.setFromCamera(ndc, camera);
-
-        for (var i = 0; i < selBoxes.length; i++) {
-          var vol = selBoxes[i];
-          if (vol._disabled) continue;
-          vol.updateMatrixWorld(true);
-          var inv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
-          var localRay = raycaster.ray.clone().applyMatrix4(inv);
-          var hit = new THREE.Vector3();
-          if (localRay.intersectBox(unitBox, hit)) {
-            pendingClick = { vol: vol, x: e.clientX, y: e.clientY };
-            return;
-          }
-        }
+        // SUPERSEDED (2026-07-07): all boxes — crop, elevation, cut-out,
+        // exclusion, volume — now select through the unified nearest-box edge
+        // hit-test (_nearestBoxByEdge) + the crop-click mouseup handler, the
+        // same reliable EDGE-ONLY path the crop box uses. This legacy interior
+        // OBB hit-test is disabled: once the crop box existed it hijacked or
+        // dropped managed-box clicks. Nearest-edge picking fixes that.
       }, true);
 
       domEl.addEventListener('mouseup', function(e) {
@@ -5686,10 +5650,21 @@
         }
       } catch (_) {}
       // The volume tool leaves its half-placed box in the scene when cancelled;
-      // drop any volume that was still mid-insertion when Esc was pressed.
+      // drop any volume that was still mid-insertion when Esc was pressed — BUT
+      // only if it's a genuine orphan. A managed box (elevation / cut-out /
+      // exclusion) or committed user volume is already placed and TRACKED in the
+      // app's arrays, so removing it here would wipe its outline while it lingers
+      // in those arrays (invisible-but-still-clickable box). Keep those; just
+      // clear the mid-insertion flag so selection works and Esc is non-destructive.
       if (pendingVolume) {
-        try { viewer.scene.removeVolume(pendingVolume); } catch (_) {}
+        var _pv = pendingVolume;
         pendingVolume = null;
+        var _tracked =
+          (typeof elevationCropVolumes !== 'undefined' && elevationCropVolumes.indexOf(_pv) >= 0) ||
+          (typeof cutoutBoxes !== 'undefined' && cutoutBoxes.indexOf(_pv) >= 0) ||
+          (typeof exclusionBoxes !== 'undefined' && exclusionBoxes.indexOf(_pv) >= 0) ||
+          (typeof isUserVolumeMeasurement === 'function' && isUserVolumeMeasurement(_pv));
+        if (!_tracked) { try { viewer.scene.removeVolume(_pv); } catch (_) {} }
       }
       cleanupOrphanMeasurements();
     }
@@ -9750,9 +9725,9 @@
         // viewer.html:720 (same pattern as styleElevationBox at line 7346).
         vol.box.raycast = function() {};
       }
-      // Red frame for cut-out boxes
+      // Black frame for cut-out boxes
       if (vol.frame) {
-        vol.frame.material.color.setHex(0xff4444);
+        vol.frame.material.color.setHex(0x000000);
         vol.frame.material.needsUpdate = true;
       }
       // Hide the volume label
@@ -11025,6 +11000,58 @@
       }
       return false;
     }
+    // Min pixel distance from (px,py) to any of a box volume's 12 projected
+    // wireframe edges (Infinity if the box is entirely behind the camera).
+    function _boxEdgeDist(px, py, vol) {
+      if (!vol) return Infinity;
+      vol.updateMatrixWorld(true);
+      var cam = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var t = new THREE.Vector3(), scr = [];
+      for (var sx = -1; sx <= 1; sx += 2) for (var sy = -1; sy <= 1; sy += 2) for (var sz = -1; sz <= 1; sz += 2) {
+        t.set(sx * 0.5, sy * 0.5, sz * 0.5).applyMatrix4(vol.matrixWorld).project(cam);
+        scr.push({ x: (t.x + 1) * 0.5 * rect.width, y: (1 - (t.y + 1) * 0.5) * rect.height, z: t.z });
+      }
+      var edges = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+      var best = Infinity;
+      for (var i = 0; i < edges.length; i++) {
+        var a = scr[edges[i][0]], b = scr[edges[i][1]];
+        if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
+        var d2 = _segDistSq(px, py, a.x, a.y, b.x, b.y);
+        if (d2 < best) best = d2;
+      }
+      return best === Infinity ? Infinity : Math.sqrt(best);
+    }
+    // Every user-selectable box: the persistent crop box, elevation/cut-out/
+    // exclusion managed boxes, and user volume-measurement boxes.
+    function _allSelectableBoxes() {
+      var boxes = [];
+      if (typeof initialClipBox !== 'undefined' && initialClipBox) boxes.push(initialClipBox);
+      if (typeof elevationCropVolumes !== 'undefined') boxes = boxes.concat(elevationCropVolumes);
+      if (typeof cutoutBoxes !== 'undefined') boxes = boxes.concat(cutoutBoxes);
+      if (typeof exclusionBoxes !== 'undefined') boxes = boxes.concat(exclusionBoxes);
+      var vols = (viewer.scene && viewer.scene.volumes) ? viewer.scene.volumes : [];
+      for (var i = 0; i < vols.length; i++) {
+        if (typeof isUserVolumeMeasurement === 'function' && isUserVolumeMeasurement(vols[i]) &&
+            boxes.indexOf(vols[i]) < 0) boxes.push(vols[i]);
+      }
+      return boxes;
+    }
+    // The box whose projected wireframe edge is NEAREST the cursor (within
+    // thrPx), or null. Used so ALL boxes select via the same reliable edge
+    // hit-test as the crop box — the nearest edge wins, so a small managed box
+    // inside the huge crop box is still clickable.
+    function _nearestBoxByEdge(px, py, thrPx) {
+      var boxes = _allSelectableBoxes();
+      var bestVol = null, bestDist = thrPx;
+      for (var i = 0; i < boxes.length; i++) {
+        var v = boxes[i];
+        if (!v || v._disabled || v.visible === false) continue;
+        var d = _boxEdgeDist(px, py, v);
+        if (d < bestDist) { bestDist = d; bestVol = v; }
+      }
+      return bestVol;
+    }
     var _coarsePointerDev = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     renderArea.addEventListener('mousedown', function(e) {
@@ -11110,12 +11137,15 @@
         // selected; the crop box is click-to-select. ----
         var _arm = null;
         var _clearHover = false;
-        // Persistent crop box: reliable DIRECT screen-space edge hit-test
-        // (touch-safe), independent of Potree's hover. Orbit-first + click selects.
-        if (typeof initialClipBox !== 'undefined' && initialClipBox &&
-            _pointNearBoxEdges(mpG.x, mpG.y, initialClipBox, _coarsePointerDev ? 30 : 12)) {
+        // ALL boxes (crop + elevation + cut-out + exclusion + volume) select the
+        // SAME way: a reliable DIRECT screen-space edge hit-test (touch-safe,
+        // independent of Potree's hover). Whichever box's wireframe edge is
+        // NEAREST the cursor wins, so a small managed box inside the huge crop
+        // box is still selectable. Orbit-first; a clean click selects on mouseup.
+        var _nearBox = _nearestBoxByEdge(mpG.x, mpG.y, _coarsePointerDev ? 30 : 12);
+        if (_nearBox) {
           _clearHover = true;
-          _cropClickCandidate = { vol: initialClipBox, downX: e.clientX, downY: e.clientY };
+          _cropClickCandidate = { vol: _nearBox, downX: e.clientX, downY: e.clientY };
         }
         // Any Potree-hovered draggable — box resize/move handles AND the crop-box
         // frame. A highlighted transform HANDLE takes ABSOLUTE priority for the
@@ -11164,6 +11194,23 @@
           _pgPending = { downX: e.clientX, downY: e.clientY, arm: _arm };
           _pgTimer = setTimeout(_pgArm, HOLD_GRAB_MS);
           // Deliberately do NOT stopPropagation: Potree arms orbit for a quick drag.
+        }
+      }
+      // While a box tool is active (pendingVolume) the block above is skipped so
+      // node/handle grabs don't fight box placement. But an ALREADY-PLACED box
+      // must still be selectable by its edge — the volume tool's 'drop' can lag,
+      // leaving pendingVolume set briefly after the box is down (that's why you
+      // could not click the edge until Esc). Run JUST the box-edge picker here:
+      // no node/handle grab and no stopPropagation, so a placement drag still
+      // works and only a clean click (<5px, handled on mouseup) selects.
+      if (e.button === 0 && pendingVolume && !pendingMeasurement && !MARK_MODE &&
+          !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode &&
+          !_cropClickCandidate && !_stationCandidate && !_noteCandidate) {
+        var _rectPV = renderArea.getBoundingClientRect();
+        var _nbPV = _nearestBoxByEdge(e.clientX - _rectPV.left, e.clientY - _rectPV.top, _coarsePointerDev ? 30 : 12);
+        if (_nbPV) {
+          if (viewer.inputHandler) viewer.inputHandler.hoveredElements = [];
+          _cropClickCandidate = { vol: _nbPV, downX: e.clientX, downY: e.clientY };
         }
       }
       // X-axis pick marker dragging (only during plane-x-axis pick mode)
