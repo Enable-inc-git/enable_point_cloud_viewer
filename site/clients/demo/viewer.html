@@ -10599,8 +10599,19 @@
           '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + rec.name + '">' + rec.name + '</span>' + right + '</div>';
       }
       var anyLoaded = models.some(function(m) { return m.group; });
+      // Point-cloud opacity: fades the cloud so a loaded model reads clearly
+      // "inside" it. Drives viewer.edlOpacity (the EDL composite pass blends the
+      // point-cloud image over the already-rendered model, depth-tested — so
+      // points in front of the model fade while points behind stay occluded).
+      var _pcOpacityPct = Math.round((viewer.edlOpacity != null ? viewer.edlOpacity : 1) * 100);
       p.innerHTML =
         '<div style="font-weight:600;margin:2px 0 6px">Models</div>' +
+        '<div style="margin:2px 0 10px">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
+            '<span>Point cloud opacity</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
+          '</div>' +
+          '<input type="range" id="pc-opacity-slider" min="0" max="100" value="' + _pcOpacityPct + '" style="width:100%">' +
+        '</div>' +
         (models.length ? rows : '<div style="opacity:0.6;font-size:12px;margin:2px 0 8px">No model loaded.</div>') +
         (anyLoaded ? '<div style="margin-top:8px"><button id="btn-toggle-edges" style="width:100%">' + (showModelEdges ? 'Hide' : 'Show') + ' snappable edges</button></div>' : '') +
         '<div style="margin-top:8px"><button id="btn-load-model" style="width:100%">Load model from file (.glb)…</button></div>' +
@@ -10615,6 +10626,14 @@
       if (lb) lb.addEventListener('click', function() { p.querySelector('#model-file-input').click(); });
       var fi = p.querySelector('#model-file-input');
       if (fi) fi.addEventListener('change', function(e) { var f = e.target.files[0]; if (f) loadModelFile(f); e.target.value = ''; });
+      var os = p.querySelector('#pc-opacity-slider');
+      if (os) os.addEventListener('input', function() {
+        var v = Math.max(0, Math.min(100, +this.value));
+        viewer.edlOpacity = v / 100;   // EDL composite reads this each frame
+        var lbl = p.querySelector('#pc-opacity-val');
+        if (lbl) lbl.textContent = v + '%';
+        if (viewer.repaint) viewer.repaint();
+      });
     }
 
     function injectMarkButtons() {
