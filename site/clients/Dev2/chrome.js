@@ -828,6 +828,9 @@
     for (var i = 0; i < body.children.length; i++) {
       var c = body.children[i];
       if (c.dataset && c.dataset.elevHost && c.children.length === 0) continue;
+      // Models panel is always present (for its "Load model from file" button),
+      // but when nothing is loaded it must not auto-open the context panel.
+      if (c.id === 'enable-models-panel' && c.dataset && c.dataset.uploadOnly === 'true') continue;
       var hidden = (c.hidden === true) ||
                    (c.style && c.style.display === 'none') ||
                    (window.getComputedStyle(c).display === 'none');

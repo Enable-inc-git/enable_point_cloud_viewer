@@ -5691,31 +5691,34 @@
             // Don't cancel prior measurement when starting volume — different tool family
             lastVolumeToolArgs = args || {};
             var v = origVS(args);
-            pendingVolume = v;   // mid-insertion until 'drop' (or cancelled by Esc)
-            // After the user finishes dragging out the box, Potree fires 'drop'
-            // on the volume itself. Without explicit cleanup the just-placed
-            // volume stays in InputHandler.selection/hoveredElements and its
-            // wireframe wins subsequent hit-tests — blocking drags on
-            // pre-existing measurement spheres, marker dots, etc.
+            pendingVolume = v;   // mid-insertion until placed
+            // Potree places these boxes via a "floating" startDragging(volume)
+            // and relies on a 'drop' that does NOT fire reliably here — leaving
+            // the viewer stuck in the insertion state (pendingVolume + the
+            // floating inputHandler.drag), so the box is unclickable / has no
+            // handles until the user hits Esc. Force-FINISH on the placement
+            // mouseup instead: reset the tool state like Esc (keeping the box —
+            // cancelPotreeInsertion skips tracked boxes) and select it so its
+            // resize/move handles appear and it's adjustable right away. The
+            // 'drop' path stays as a secondary trigger; a flag makes it idempotent.
+            var _volDone = false;
+            function _finishVolumePlacement() {
+              if (_volDone) return; _volDone = true;
+              document.removeEventListener('mouseup', _volPlaceOnce, true);
+              try { cancelPotreeInsertion(); } catch (_) {}   // clears pendingVolume + floating drag + re-enables input; keeps tracked box
+              try {
+                var ih = viewer.inputHandler;
+                if (ih) {
+                  ih.deselectAll();
+                  ih.toggleSelection(v);                        // show the box's handles
+                  if (Array.isArray(ih.hoveredElements)) ih.hoveredElements = [];
+                }
+              } catch (_) {}
+            }
+            var _volPlaceOnce = function() { setTimeout(_finishVolumePlacement, 0); };
+            document.addEventListener('mouseup', _volPlaceOnce, true);
             if (v && typeof v.addEventListener === 'function') {
-              v.addEventListener('drop', function() {
-                pendingVolume = null;   // box committed — no longer mid-insertion
-                try {
-                  var ih = viewer.inputHandler;
-                  if (!ih) return;
-                  if (ih.drag) ih.drag = null;
-                  if (ih.selection && ih.selection.indexOf(v) >= 0) {
-                    try { ih.toggleSelection(v); } catch (_) {}
-                  }
-                  if (Array.isArray(ih.hoveredElements)) {
-                    ih.hoveredElements = ih.hoveredElements.filter(function(h) {
-                      var o = h && h.object;
-                      while (o) { if (o === v) return false; o = o.parent; }
-                      return true;
-                    });
-                  }
-                } catch (_) {}
-              });
+              v.addEventListener('drop', _finishVolumePlacement);
             }
             return v;
           };
@@ -10574,8 +10577,12 @@
     }
     function updateModelsPanel() {
       var p = ensureModelsPanel();
-      if (!models.length) { p.style.display = 'none'; p.innerHTML = ''; return; }
+      // Always show the panel in the right context panel (like Scans) so the
+      // "Load model from file" button is available on EVERY viewer, even before
+      // any model is loaded. When there's nothing loaded, flag it upload-only so
+      // chrome.js doesn't auto-open the context panel just for the button.
       p.style.display = '';
+      p.dataset.uploadOnly = models.length ? 'false' : 'true';
       var rows = '';
       for (var i = 0; i < models.length; i++) {
         var rec = models[i], right;
@@ -10593,7 +10600,8 @@
       }
       var anyLoaded = models.some(function(m) { return m.group; });
       p.innerHTML =
-        '<div style="font-weight:600;margin:2px 0 6px">Models</div>' + rows +
+        '<div style="font-weight:600;margin:2px 0 6px">Models</div>' +
+        (models.length ? rows : '<div style="opacity:0.6;font-size:12px;margin:2px 0 8px">No model loaded.</div>') +
         (anyLoaded ? '<div style="margin-top:8px"><button id="btn-toggle-edges" style="width:100%">' + (showModelEdges ? 'Hide' : 'Show') + ' snappable edges</button></div>' : '') +
         '<div style="margin-top:8px"><button id="btn-load-model" style="width:100%">Load model from file (.glb)…</button></div>' +
         '<input type="file" id="model-file-input" accept=".glb,.gltf" style="display:none">';
@@ -11196,23 +11204,10 @@
           // Deliberately do NOT stopPropagation: Potree arms orbit for a quick drag.
         }
       }
-      // While a box tool is active (pendingVolume) the block above is skipped so
-      // node/handle grabs don't fight box placement. But an ALREADY-PLACED box
-      // must still be selectable by its edge — the volume tool's 'drop' can lag,
-      // leaving pendingVolume set briefly after the box is down (that's why you
-      // could not click the edge until Esc). Run JUST the box-edge picker here:
-      // no node/handle grab and no stopPropagation, so a placement drag still
-      // works and only a clean click (<5px, handled on mouseup) selects.
-      if (e.button === 0 && pendingVolume && !pendingMeasurement && !MARK_MODE &&
-          !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode &&
-          !_cropClickCandidate && !_stationCandidate && !_noteCandidate) {
-        var _rectPV = renderArea.getBoundingClientRect();
-        var _nbPV = _nearestBoxByEdge(e.clientX - _rectPV.left, e.clientY - _rectPV.top, _coarsePointerDev ? 30 : 12);
-        if (_nbPV) {
-          if (viewer.inputHandler) viewer.inputHandler.hoveredElements = [];
-          _cropClickCandidate = { vol: _nbPV, downX: e.clientX, downY: e.clientY };
-        }
-      }
+      // (Box selection during placement is handled by force-finishing the
+      // insertion on the placement mouseup — see the volumeTool wrap. No special
+      // pendingVolume box-picker here; it would set a crop-click candidate on the
+      // placement click and stopPropagation Potree's 'drop', stranding the tool.)
       // X-axis pick marker dragging (only during plane-x-axis pick mode)
       if (e.button === 0 && constraintPickMode && constraintPickType === 'plane-x-axis' && constraintPickMarkers.length > 0) {
         var rectXA = renderArea.getBoundingClientRect();
@@ -11698,6 +11693,7 @@
       scene.addPointCloud(pc);
       loadedPointCloud = pc; // used by model import
       discoverProjectModels(); // list this project's models/ folder (load on demand)
+      updateModelsPanel();     // show the Models panel (with "Load model from file") even before any model is discovered
 
       // material defaults
       applyScanMaterialDefaults(pc);
