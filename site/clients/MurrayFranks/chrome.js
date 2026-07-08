@@ -884,7 +884,19 @@
 
   function adoptIntoContextPanel(node) {
     var body = getContextBody();
-    body.appendChild(node);
+    // Insert in CONTEXT_SLOTS order (not adoption order) so panels always keep a
+    // stable sequence — e.g. Scans above Models — regardless of which loaded
+    // first. Find the earliest already-present slot that ranks after this one.
+    var myIdx = CONTEXT_SLOTS.indexOf(node.id);
+    var ref = null;
+    if (myIdx !== -1) {
+      for (var i = 0; i < body.children.length; i++) {
+        var kIdx = CONTEXT_SLOTS.indexOf(body.children[i].id);
+        if (kIdx > myIdx) { ref = body.children[i]; break; }
+      }
+    }
+    body.insertBefore(node, ref); // ref === null → append at end
+
     // IMPORTANT: do NOT force display=''. These elements live in viewer.html's
     // JS with their own visibility logic — when no tool is active they're
     // display:none on purpose. The panel must stay closed until the underlying
@@ -924,6 +936,9 @@
       // Models panel is always present (for its "Load model from file" button),
       // but when nothing is loaded it must not auto-open the context panel.
       if (c.id === 'enable-models-panel' && c.dataset && c.dataset.uploadOnly === 'true') continue;
+      // Scans panel is always present (it hosts the point-cloud opacity slider),
+      // but when it is slider-only (single-cloud project) it must not auto-open.
+      if (c.id === 'enable-scans-panel' && c.dataset && c.dataset.sliderOnly === 'true') continue;
       var hidden = (c.hidden === true) ||
                    (c.style && c.style.display === 'none') ||
                    (window.getComputedStyle(c).display === 'none');

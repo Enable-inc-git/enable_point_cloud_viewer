@@ -10517,6 +10517,15 @@
       updateScansPanel();
     }
 
+    // Inline SVG string for a context-panel group title, using the shared
+    // Lucide subset (window.DEV2_ICONS holds each icon's inner shapes). Matches
+    // the left toolbar's 14px stroked icons so the group headers feel native.
+    function _cpIcon(name) {
+      var inner = (window.DEV2_ICONS && window.DEV2_ICONS[name]) || '';
+      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+             'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
+    }
+
     function ensureScansPanel() {
       var p = document.getElementById('enable-scans-panel');
       if (!p) {
@@ -10529,20 +10538,44 @@
 
     function updateScansPanel() {
       var p = ensureScansPanel();
-      // Only show the Scans panel when the project actually has >1 cloud — a
-      // single-cloud project doesn't need a selector.
-      var nClouds = (meta && meta.clouds && meta.clouds.length) || 0;
-      if (nClouds < 2) { p.style.display = 'none'; p.innerHTML = ''; return; }
+      // Always show the Scans panel: it hosts the point-cloud opacity slider on
+      // every project. The per-cloud show/hide list only appears when there is
+      // more than one cloud. When it is slider-only (<=1 cloud) flag it so
+      // chrome.js does not auto-open the context panel just for the slider.
       p.style.display = '';
-      var rows = '<div style="font-weight:600;font-size:12px;opacity:0.85;padding:4px 2px 6px">Scans</div>';
-      for (var i = 0; i < scanClouds.length; i++) {
-        var s = scanClouds[i];
-        rows += '<div class="enable-scans-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">' +
-          '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + s.name + '">' + s.name + '</span>' +
-          '<button class="enable-scan-eye" data-idx="' + i + '" title="Show / hide this scan" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (s.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
-          '</div>';
+      var multi = scanClouds.length > 1;
+      p.dataset.sliderOnly = multi ? 'false' : 'true';
+      // Point-cloud opacity: fades the cloud(s) so a loaded model reads clearly
+      // "inside" it. Drives viewer.edlOpacity (the EDL composite blends the
+      // point-cloud image over the already-rendered model, depth-tested — so
+      // points in front of the model fade while points behind stay occluded).
+      var _pcOpacityPct = Math.round((viewer.edlOpacity != null ? viewer.edlOpacity : 1) * 100);
+      var html =
+        '<div class="enable-cp-title">' + _cpIcon('layers') + '<span>Scans</span></div>' +
+        '<div style="margin:2px 0 10px">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
+            '<span>Point cloud opacity</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
+          '</div>' +
+          '<input type="range" id="pc-opacity-slider" min="0" max="100" value="' + _pcOpacityPct + '" style="width:100%">' +
+        '</div>';
+      if (multi) {
+        for (var i = 0; i < scanClouds.length; i++) {
+          var s = scanClouds[i];
+          html += '<div class="enable-scans-row">' +
+            '<span title="' + s.name + '">' + s.name + '</span>' +
+            '<button class="enable-scan-eye enable-cp-eye" data-idx="' + i + '" title="' + (s.visible ? 'Hide this scan' : 'Show this scan') + '">' + (s.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+            '</div>';
+        }
       }
-      p.innerHTML = rows;
+      p.innerHTML = html;
+      var os = p.querySelector('#pc-opacity-slider');
+      if (os) os.addEventListener('input', function () {
+        var v = Math.max(0, Math.min(100, +this.value));
+        viewer.edlOpacity = v / 100;   // EDL composite reads this each frame
+        var lbl = p.querySelector('#pc-opacity-val');
+        if (lbl) lbl.textContent = v + '%';
+        if (viewer.repaint) viewer.repaint();
+      });
       var btns = p.querySelectorAll('.enable-scan-eye');
       for (var j = 0; j < btns.length; j++) {
         btns[j].addEventListener('click', function () {
@@ -10576,29 +10609,18 @@
         if (rec.loading) {
           right = '<span style="opacity:0.7;font-size:12px">Loading…</span>';
         } else if (rec.group) {
-          right = '<button class="enable-model-clip" data-idx="' + i + '" title="Clip to crop box (' + (rec.clipped !== false ? 'on' : 'off') + ')" style="background:none;border:0;cursor:pointer;font-size:14px;padding:0 2px;opacity:' + (rec.clipped !== false ? '1' : '0.35') + '">✂️</button>' +
-                  '<button class="enable-model-eye" data-idx="' + i + '" title="Show / hide" style="background:none;border:0;cursor:pointer;font-size:15px;color:inherit;padding:0 2px">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
-                  '<button class="enable-model-unload" data-idx="' + i + '" title="Unload" style="background:none;border:0;cursor:pointer;color:#f66;font-size:14px;padding:0 2px">✕</button>';
+          right = '<button class="enable-model-clip enable-cp-eye" data-idx="' + i + '" title="Clip to crop box (' + (rec.clipped !== false ? 'on' : 'off') + ')" style="opacity:' + (rec.clipped !== false ? '0.85' : '0.4') + '">✂️</button>' +
+                  '<button class="enable-model-eye enable-cp-eye" data-idx="' + i + '" title="Show / hide">' + (rec.visible ? '\u{1F441}' : '\u{1F6AB}') + '</button>' +
+                  '<button class="enable-model-unload enable-cp-eye" data-idx="' + i + '" title="Unload" style="color:#f66">✕</button>';
         } else {
           right = '<button class="enable-model-load" data-idx="' + i + '" title="Load this model" style="font-size:12px;padding:2px 10px">Load</button>';
         }
-        rows += '<div class="enable-models-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">' +
-          '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + rec.name + '">' + rec.name + '</span>' + right + '</div>';
+        rows += '<div class="enable-models-row">' +
+          '<span title="' + rec.name + '">' + rec.name + '</span>' + right + '</div>';
       }
       var anyLoaded = models.some(function(m) { return m.group; });
-      // Point-cloud opacity: fades the cloud so a loaded model reads clearly
-      // "inside" it. Drives viewer.edlOpacity (the EDL composite pass blends the
-      // point-cloud image over the already-rendered model, depth-tested — so
-      // points in front of the model fade while points behind stay occluded).
-      var _pcOpacityPct = Math.round((viewer.edlOpacity != null ? viewer.edlOpacity : 1) * 100);
       p.innerHTML =
-        '<div style="font-weight:600;margin:2px 0 6px">Models</div>' +
-        '<div style="margin:2px 0 10px">' +
-          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
-            '<span>Point cloud opacity</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
-          '</div>' +
-          '<input type="range" id="pc-opacity-slider" min="0" max="100" value="' + _pcOpacityPct + '" style="width:100%">' +
-        '</div>' +
+        '<div class="enable-cp-title">' + _cpIcon('box') + '<span>Models</span></div>' +
         (models.length ? rows : '<div style="opacity:0.6;font-size:12px;margin:2px 0 8px">No model loaded.</div>') +
         (anyLoaded ? '<div style="margin-top:8px"><button id="btn-toggle-edges" style="width:100%">' + (showModelEdges ? 'Hide' : 'Show') + ' snappable edges</button></div>' : '') +
         '<div style="margin-top:8px"><button id="btn-load-model" style="width:100%">Load model from file (.glb)…</button></div>' +
@@ -10613,14 +10635,6 @@
       if (lb) lb.addEventListener('click', function() { p.querySelector('#model-file-input').click(); });
       var fi = p.querySelector('#model-file-input');
       if (fi) fi.addEventListener('change', function(e) { var f = e.target.files[0]; if (f) loadModelFile(f); e.target.value = ''; });
-      var os = p.querySelector('#pc-opacity-slider');
-      if (os) os.addEventListener('input', function() {
-        var v = Math.max(0, Math.min(100, +this.value));
-        viewer.edlOpacity = v / 100;   // EDL composite reads this each frame
-        var lbl = p.querySelector('#pc-opacity-val');
-        if (lbl) lbl.textContent = v + '%';
-        if (viewer.repaint) viewer.repaint();
-      });
     }
 
     function injectMarkButtons() {

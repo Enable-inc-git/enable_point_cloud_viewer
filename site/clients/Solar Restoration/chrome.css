@@ -18,6 +18,7 @@
   --panel-fg:        #e6e6e6;
   --panel-fg-dim:    #9a9a9a;
   --panel-border:    #2e2e2e;
+  --panel-divider-faint: rgba(255,255,255,0.05);
   --btn-hover:       #2a2a2a;
   --btn-active-bg:   #2f4a32;
   --btn-active-fg:   #ffffff;
@@ -41,6 +42,7 @@
   --panel-fg:        #1a1a1a;
   --panel-fg-dim:    #6b6b6b;
   --panel-border:    #e3e3e6;
+  --panel-divider-faint: rgba(0,0,0,0.05);
   --btn-hover:       #f2f2f4;
   --btn-active-bg:   #e8f5ea;
   --btn-active-fg:   #1a1a1a;
@@ -600,6 +602,73 @@ html, body {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* ---------- Scans / Models context-panel lists ----------
+   Group titles mimic the left toolbar's section headers (uppercase + icon).
+   A major divider (like .dev2-sb-section) separates the Scans and Models
+   groups; individual rows get a fainter divider between them. */
+.enable-cp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 2px 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--panel-fg-dim);
+}
+.enable-cp-title svg { width: 14px; height: 14px; flex: 0 0 auto; }
+
+/* Major divider between the Scans group and the Models group — mirrors the
+   left sidebar's .dev2-sb-section border (var(--panel-border)). The space
+   above the line (end of Scans) is made symmetric with the space below it
+   (line → Models title): neutralise the last child's trailing space and use a
+   matching 12px on each side. */
+#enable-scans-panel > *:last-child { margin-bottom: 0; }
+.enable-scans-row:last-child { padding-bottom: 0; }
+#enable-scans-panel { padding-bottom: 12px; }
+#enable-models-panel {
+  border-top: 1px solid var(--panel-border);
+  margin-top: 0;
+  padding-top: 12px;
+}
+
+/* Rows: comfortable spacing, with a faint divider between individual items
+   (fainter than the group divider above). */
+.enable-scans-row,
+.enable-models-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+}
+.enable-scans-row + .enable-scans-row,
+.enable-models-row + .enable-models-row {
+  border-top: 1px solid var(--panel-divider-faint);
+}
+.enable-scans-row > span,
+.enable-models-row > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Plain icon toggle (eye / clip / unload) — just the glyph, no box. */
+.enable-cp-eye {
+  background: none;
+  border: 0;
+  padding: 2px;
+  cursor: pointer;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.85;
+  transition: opacity 0.12s ease;
+}
+.enable-cp-eye:hover { opacity: 1; }
 
 /* ---------- Tooltip-ish title text ---------- */
 [data-tooltip] { position: relative; }
