@@ -6,7 +6,37 @@
 ==============================================================================
 
 #############################################################################
-# *** MAJOR UPDATE 2026-07-01 — READ THIS FIRST (supersedes parts of below) ***
+# *** MAJOR UPDATE 2026-07-08 — READ THIS FIRST (latest state) ***
+#############################################################################
+- NO CLIENT IS LOGIN-GATED ANYMORE. MurrayFranks and Pomerleau both migrated to
+  the no-login R2 stack 2026-07-06. The Firebase login portal is dormant.
+  (Supersedes the "MurrayFranks may still be gated" line in the 07-01 block.)
+- LIVE CLIENT VIEWERS (7), all on the same no-login stack, kept IN SYNC:
+  HRI, BDA, MurrayFranks, Pomerleau, Solar Restoration, WJ Properties, demo.
+  Dev2 = internal UI sandbox, DIVERGED/STALE — usually EXCLUDED from syncs.
+- HOW CHANGES SHIP: edit one viewer, eyeball on the local server, then PROPAGATE
+  the same change to the other client viewers (they are clones — a `git diff`
+  patch of the edited file usually `git apply`s cleanly to each; always dry-run
+  --check per file), then commit + push to `main` -> Netlify auto-deploys.
+  Shared files: libs/potree/potree.js affects ALL viewers; each client also has
+  its own chrome.js / chrome.css / icons.js / custom.css that get synced.
+- viewer.html = the custom app (ONE big inline <script> IIFE). projects.js =
+  per-client registry mapping ?p=<id> -> R2 folder URL.
+- Local dev server: `cd site && python -m http.server 8080` then
+  http://localhost:8080/clients/<Client>/viewer.html?p=<project>. Hard-refresh
+  (Ctrl+Shift+R) — browser caching is aggressive.
+- R2 upload creds persisted at repo-root `.r2creds.json` (gitignored).
+- FULL DETAIL for every feature lives in the ~/.claude memory for this repo
+  (MEMORY.md index + topic files). That memory dir is NOT in the repo/backup,
+  so THIS brief is the durable fallback — keep both current.
+- Recent UI (2026-07): units switch; top-right eye dropdown (clip box / panoramas
+  / notes); saved views; elevation contour-map DXF export; orbit-first navigation;
+  point-cloud OPACITY slider living in the "Scans" group (fades the cloud so a
+  loaded GLB model reads inside it; driven by viewer.edlOpacity, NOT
+  material.opacity, because these viewers run EDL).
+
+#############################################################################
+# *** MAJOR UPDATE 2026-07-01 (supersedes parts of below) ***
 #############################################################################
 Big architectural shift over 2026-06-29..07-01. Sections below are still mostly
 right but predate these changes:
