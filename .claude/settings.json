@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"PROJECT ONBOARDING (Enable Point Cloud Viewer). Before starting work: (1) read AI_HANDOFF_BRIEF.txt in the repo root; (2) the MEMORY.md index is auto-loaded — OPEN the specific linked topic files relevant to the task, do not rely on the one-line hooks alone. OPERATING RULES: 7 live client viewers are kept IN SYNC — HRI, BDA, MurrayFranks, Pomerleau, Solar Restoration, WJ Properties, demo; Dev2 is a stale sandbox, EXCLUDE it unless told otherwise. Each viewer = site/clients/<Client>/{viewer.html (one big inline <script> IIFE), chrome.js, chrome.css, icons.js, custom.css}; libs/potree/potree.js is shared by ALL. Workflow: make a change in ONE viewer first, let the user eyeball it on the local server (cd site && python -m http.server 8080), then propagate the same git diff to the other viewers via git apply (dry-run --check first) and commit + push to main ONLY after approval. Data is on Cloudflare R2 (creds at repo-root .r2creds.json); deploy is Netlify on push to main. When finishing notable work, update BOTH the ~/.claude MEMORY.md index (keep it under ~24KB so it fully auto-loads) plus the relevant topic file, AND AI_HANDOFF_BRIEF.txt.\"}}'",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash|PowerShell",
