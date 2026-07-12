@@ -54221,9 +54221,10 @@
 
 				{ // coordinate labels
 					let coordinateLabel = this.coordinateLabels[0];
-					
-					let msg = position.toArray().map(p => Utils.addCommas(p.toFixed(2))).join(" / ");
-					coordinateLabel.setText(msg);
+
+					let cf1 = (v) => (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.len)
+						? window.__unitFmt.len(v) : Utils.addCommas(v.toFixed(2));
+					coordinateLabel.setText(`X: ${cf1(position.x)}   Y: ${cf1(position.y)}   Z: ${cf1(position.z)}`);
 
 					coordinateLabel.visible = this.showCoordinates;
 				}
@@ -54305,20 +54306,27 @@
 						unitCode = this.lengthUnitDisplay.code;
 					}
 
+					// Measures flagged only3D (perpendicular / plane-bound dimensions)
+					// show just the single 3D distance — the XY/Z split is meaningless
+					// there. No other viewer sets this flag, so their labels are
+					// unchanged.
+					let only3D = !!(this.userData && this.userData.only3D);
 					let text;
 					if (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.len) {
 						// Custom app unit formatter (mm / feet-inches). len* are in metres
 						// here because lengthUnit/lengthUnitDisplay are left at METER.
-						text =
-							`3D: ${window.__unitFmt.len(len3D)}\n` +
-							`XY: ${window.__unitFmt.len(lenXY)}\n` +
-							`Z : ${window.__unitFmt.len(lenZ)} (${signZ})`;
+						text = only3D
+							? `${window.__unitFmt.len(len3D)}`
+							: `3D: ${window.__unitFmt.len(len3D)}\n` +
+							  `XY: ${window.__unitFmt.len(lenXY)}\n` +
+							  `Z : ${window.__unitFmt.len(lenZ)} (${signZ})`;
 					} else {
 						const fmt = v => Utils.addCommas(v.toFixed(3));
-						text =
-							`3D: ${fmt(len3D)} ${unitCode}\n` +
-							`XY: ${fmt(lenXY)} ${unitCode}\n` +
-							`Z : ${fmt(lenZ)} ${unitCode} (${signZ})`;
+						text = only3D
+							? `${fmt(len3D)} ${unitCode}`
+							: `3D: ${fmt(len3D)} ${unitCode}\n` +
+							  `XY: ${fmt(lenXY)} ${unitCode}\n` +
+							  `Z : ${fmt(lenZ)} ${unitCode} (${signZ})`;
 					}
 
 					edgeLabel.setText(text);
@@ -54346,6 +54354,19 @@
 					angleLabel.setText(msg);
 
 					angleLabel.visible = this.showAngles && (index < lastIndex || this.closed) && this.points.length >= 3 && angle > 0;
+				}
+
+				{ // coordinate labels — Potree only handled the 1-point case, so for
+				  // multi-point coordinate ("Point") measures every label past the
+				  // first was never given text or made visible. Update them all.
+					let coordinateLabel = this.coordinateLabels[index];
+					if (coordinateLabel) {
+						let cp = point.position;
+						let cf = (v) => (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.len)
+							? window.__unitFmt.len(v) : Utils.addCommas(v.toFixed(2));
+						coordinateLabel.setText(`X: ${cf(cp.x)}   Y: ${cf(cp.y)}   Z: ${cf(cp.z)}`);
+						coordinateLabel.visible = this.showCoordinates;
+					}
 				}
 			}
 
@@ -61118,8 +61139,14 @@ void main() {
 				pickMaterial.activeAttributeName = "indices";
 
 				pickMaterial.size = pointSize;
-				pickMaterial.uniforms.minSize.value = this.material.uniforms.minSize.value;
-				pickMaterial.uniforms.maxSize.value = this.material.uniforms.maxSize.value;
+				// Depth-priority picking: render pick points at a minimum SCREEN size
+				// so a near surface's points occlude points far behind them. With
+				// small display points, far points otherwise peek through the gaps
+				// between near points and get picked ("snapping to points behind").
+				// This only affects the offscreen pick buffer, not the visible cloud.
+				let PICK_MIN_SIZE = 8;
+				pickMaterial.uniforms.minSize.value = Math.max(this.material.uniforms.minSize.value, PICK_MIN_SIZE);
+				pickMaterial.uniforms.maxSize.value = Math.max(this.material.uniforms.maxSize.value, pickMaterial.uniforms.minSize.value);
 				pickMaterial.classification = this.material.classification;
 				pickMaterial.recomputeClassification();
 
@@ -61134,6 +61161,16 @@ void main() {
 					pickMaterial.clipMethod = this.material.clipMethod;
 				}else {
 					pickMaterial.clipBoxes = [];
+				}
+
+				// Honor custom exclusion (cut-out) boxes so the pick never hits points
+				// that have been excluded from the visible cloud (these use a custom
+				// shader path, separate from Potree's standard clip boxes).
+				{
+					let _excl = this.material.exclusionBoxes;
+					if (pickMaterial.setExclusionBoxes && ((_excl && _excl.length) || (pickMaterial.exclusionBoxes && pickMaterial.exclusionBoxes.length))) {
+						pickMaterial.setExclusionBoxes(_excl || []);
+					}
 				}
 
 				this.updateMaterial(pickMaterial, nodes, camera, renderer);
@@ -62301,8 +62338,14 @@ void main() {
 				pickMaterial.shape = this.material.shape;
 
 				pickMaterial.size = pointSize;
-				pickMaterial.uniforms.minSize.value = this.material.uniforms.minSize.value;
-				pickMaterial.uniforms.maxSize.value = this.material.uniforms.maxSize.value;
+				// Depth-priority picking: render pick points at a minimum SCREEN size
+				// so a near surface's points occlude points far behind them. With
+				// small display points, far points otherwise peek through the gaps
+				// between near points and get picked ("snapping to points behind").
+				// This only affects the offscreen pick buffer, not the visible cloud.
+				let PICK_MIN_SIZE = 8;
+				pickMaterial.uniforms.minSize.value = Math.max(this.material.uniforms.minSize.value, PICK_MIN_SIZE);
+				pickMaterial.uniforms.maxSize.value = Math.max(this.material.uniforms.maxSize.value, pickMaterial.uniforms.minSize.value);
 				pickMaterial.classification = this.material.classification;
 				if(params.pickClipped){
 					pickMaterial.clipBoxes = this.material.clipBoxes;
@@ -62315,6 +62358,16 @@ void main() {
 					pickMaterial.clipBoxes = [];
 				}
 				
+				// Honor custom exclusion (cut-out) boxes so the pick never hits points
+				// that have been excluded from the visible cloud (these use a custom
+				// shader path, separate from Potree's standard clip boxes).
+				{
+					let _excl = this.material.exclusionBoxes;
+					if (pickMaterial.setExclusionBoxes && ((_excl && _excl.length) || (pickMaterial.exclusionBoxes && pickMaterial.exclusionBoxes.length))) {
+						pickMaterial.setExclusionBoxes(_excl || []);
+					}
+				}
+
 				this.updateMaterial(pickMaterial, nodes, camera, renderer);
 			}
 
