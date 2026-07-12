@@ -9,6 +9,12 @@ window.PROJECTS = {
   },
   "stjoseph": {
     name: "St. Joseph's Hamilton",
-    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/scan"
+    // Primary cloud (loaded by the main flow). clouds[] lists every cloud shown
+    // in the right-hand "Scans" panel with per-scan show/hide toggles.
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/scan",
+    clouds: [
+      { id: "scan",    name: "Main Scan", folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/scan",    visible: true },
+      { id: "columns", name: "Columns",   folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/columns", visible: true }
+    ]
   }
 };
