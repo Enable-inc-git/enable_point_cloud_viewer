@@ -114,6 +114,8 @@ site/clients/BDA/222 Jarvis Elevator 4/stations/
 site/clients/Pomerleau/pointclouds/
 site/clients/Pomerleau/stations/
 site/clients/Pomerleau/Hart House/
+# "Shoring" GLB model served from R2 (pomerleau/harthouse/models/shoring.glb + models.json) — 2026-07-13.
+site/clients/Pomerleau/*.glb
 
 # ---------- MurrayFranks 1531 Dupont: octree + panoramas + Tekla model served from R2 (2026-07-06) ----------
 # All data (pointclouds/stations/models) now in R2 bucket 'enable-pointclouds'
