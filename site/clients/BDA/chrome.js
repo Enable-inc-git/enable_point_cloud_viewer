@@ -312,11 +312,14 @@
         ]
       },
       {
-        id: 'clip', label: 'Clip', iconName: 'scissors',
+        id: 'clip', label: 'Isolate', iconName: 'scissors',
         items: [
           // Clip-box outline visibility moved to the top-right "eye" dropdown.
           { label: 'Add cut-out box',         iconName: 'plus',    action: function () { clickLegacy('btn-add-cutout'); } },
-          { label: 'Clear all cut-outs',      iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-cutouts'); } }
+          { label: 'Clear all cut-outs',      iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-cutouts'); } },
+          { kind: 'sep' },
+          { label: 'Add focus box',           iconName: 'plus',    action: function () { clickLegacy('btn-add-focus'); } },
+          { label: 'Clear all focus boxes',   iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-focus'); } }
         ]
       },
       {
@@ -856,7 +859,7 @@
     { id: 'constraints',  title: 'Constraints',   iconName: 'axis-3d',      slotIds: ['enable-constraint-list'],    defaultOpen: true  },
     { id: 'members',      title: 'Members',       iconName: 'pencil',       slotIds: ['enable-member-list'],        defaultOpen: false },
     { id: 'measurements', title: 'Measurements',  iconName: 'ruler',        slotIds: ['enable-measurement-list', 'enable-point-list', 'enable-area-list', 'enable-angle-list', 'enable-volume-list'], defaultOpen: false },
-    { id: 'clip',         title: 'Clip / cut-outs', iconName: 'scissors',   slotIds: ['enable-global-crop-list', 'exclusion-list'],  defaultOpen: false },
+    { id: 'clip',         title: 'Isolate',       iconName: 'scissors',   slotIds: ['enable-global-crop-list', 'enable-focus-list', 'exclusion-list'],  defaultOpen: false },
     { id: 'elevation',    title: 'Elevation boxes', iconName: 'mountain',   slotIds: ['enable-elevation-box-list'], defaultOpen: false },
     { id: 'scene',        title: 'Scene tree',    iconName: 'list-tree',    slotIds: ['enable-scene-slot'],         defaultOpen: false }
   ];
@@ -910,6 +913,7 @@
 
   var CONTEXT_SLOTS = [
     'enable-scans-panel',
+    'enable-focus-panel',
     'enable-models-panel',
     'enable-plane-depth-controls',
     'enable-elevation-status',
@@ -2619,6 +2623,18 @@
       }
       if (e.touches.length === 0) {
         var t = (e.changedTouches && e.changedTouches[0]) || { clientX: 0, clientY: 0 };
+        // A clean tap = one finger that stayed within the tap slop, so
+        // oneTapStart survived touchmove. For those, commit the synthesized
+        // mouseup at the touch-DOWN position, not the finger-lift position.
+        // Android digitizers report several px of finger-roll between
+        // touchstart and touchend, and viewer.html's click guards (box-select,
+        // note-pin, station-pin) reject a "tap" whose mouseup moved >5px from
+        // its mousedown — so on Android taps were read as tiny drags and
+        // nothing selected. Anchoring to the down position makes down==up
+        // (0px), so every guard passes regardless of jitter. iPad reports
+        // near-zero roll, so down≈up there already → behavior unchanged.
+        // Real drags clear oneTapStart (>slop) and still end at the lift point.
+        var _tapAnchor = oneTapStart ? { x: oneTapStart.x, y: oneTapStart.y } : null;
         // 1-finger tap detection — if no motion and short duration, this
         // is a tap. Double-tap normally zooms-to-cursor, BUT during a
         // multi-point measurement insertion (area, angle) double-tap
@@ -2654,7 +2670,8 @@
           }
         }
         oneTapStart = null;
-        endOneFinger(t.clientX, t.clientY);
+        if (_tapAnchor) endOneFinger(_tapAnchor.x, _tapAnchor.y);
+        else endOneFinger(t.clientX, t.clientY);
         _spheredragSphere = null;
         _spheredragOrigPos = null;
         two = null;

@@ -83,6 +83,12 @@
     }
 
     /* ===== Mark list rows ===== */
+    .mark-entry { margin: 2px 0; }
+    .mark-entry .mark-row { margin: 0; }
+    .mark-coords {
+      padding: 1px 8px 3px; font: 11px/1.3 sans-serif; color: rgba(251,251,251,0.6);
+      font-variant-numeric: tabular-nums;
+    }
     .mark-row {
       display: flex; align-items: center; gap: 4px;
       padding: 3px 6px; border-radius: 3px; margin: 2px 0;
@@ -123,10 +129,32 @@
       transition: outline 0.15s;
     }
     #enable-constraint-buttons button:hover { outline: 1px solid var(--accent, #4db6ff); }
+    #enable-constraint-buttons button:disabled {
+      opacity: 0.4; cursor: not-allowed;
+    }
+    #enable-constraint-buttons button:disabled:hover { outline: none; }
     #enable-constraint-buttons button.active {
       background: var(--accent, #4db6ff) !important;
       color: #000 !important; border-color: var(--accent, #4db6ff) !important;
     }
+
+    /* ===== Plane move / copy controls ===== */
+    .plane-move-controls {
+      margin: 6px 0 2px; padding: 6px; border: 1px solid var(--border, #333);
+      border-radius: 4px; background: rgba(255,255,255,0.03);
+    }
+    .plane-move-controls .pm-label { font: 11px sans-serif; color: var(--muted, #9aa3b2); margin-bottom: 5px; }
+    .plane-move-controls .pm-row { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+    .plane-move-controls .pm-unit { font: 11px sans-serif; color: var(--muted, #9aa3b2); }
+    .plane-move-controls input {
+      width: 64px; padding: 3px 5px; border: 1px solid var(--border, #333); border-radius: 3px;
+      background: var(--panel-bg, #2a2a2a); color: var(--sidebar-text, #fbfbfb); font: 12px sans-serif;
+    }
+    .plane-move-controls button {
+      flex: 1; padding: 4px 6px; border: 1px solid var(--border, #333); border-radius: 3px; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb); font: 12px sans-serif;
+    }
+    .plane-move-controls button:hover { outline: 1px solid var(--accent, #3EAD4A); }
 
     /* ===== Constraint list ===== */
     #enable-constraint-list { margin: 4px 0; }
@@ -415,6 +443,7 @@
 
     /* ===== Persistent measurement list ===== */
     #enable-measurement-list,
+    #enable-point-list,
     #enable-area-list,
     #enable-angle-list,
     #enable-volume-list { margin: 4px 0; }
@@ -457,6 +486,13 @@
       background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
     }
     .enable-meas-item .meas-delete:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .enable-meas-item .btn-vis {
+      padding: 1px 5px; border: 1px solid var(--border, #555); border-radius: 3px;
+      font: 11px/1.2 sans-serif; cursor: pointer;
+      background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
+    }
+    .enable-meas-item .btn-vis:hover { outline: 1px solid var(--accent, #4db6ff); }
+    .enable-meas-item .btn-vis.hidden { opacity: 0.35; }
     .enable-meas-seg {
       display: flex; gap: 6px; padding: 1px 0; font-variant-numeric: tabular-nums;
     }
@@ -685,6 +721,8 @@
       try { if (typeof rebuildAllMeasurementLists === 'function') rebuildAllMeasurementLists(); } catch (e) {}
       try { (viewer.scene.measurements || []).forEach(function (m) { if (m && m.update) m.update(); }); } catch (e) {}
       try { if (typeof rebuildElevationBoxList === 'function') rebuildElevationBoxList(); } catch (e) {}
+      try { if (typeof rebuildConstraintList === 'function') rebuildConstraintList(); } catch (e) {} // refresh the plane move/copy unit
+      try { if (typeof rebuildMarkList === 'function') rebuildMarkList(); } catch (e) {} // refresh mark X/Y/Z readouts
       try { _refreshElevationUnitDisplays(); } catch (e) {}
     }
     // Elevation status text is stored raw so it can be re-rendered on unit change.
@@ -783,6 +821,18 @@
           rightDragPrev = null;
         }
       }, true);
+    })();
+
+    // -- Broadcast Potree volume-selection changes so the chrome can drive a
+    //    box's right-panel tool settings off the ACTUAL selection (shows on
+    //    select, hides on deselect / Esc / selecting something else). --
+    (function() {
+      if (!viewer.inputHandler || !viewer.inputHandler.addEventListener) return;
+      viewer.inputHandler.addEventListener('selection_changed', function() {
+        var sel = viewer.inputHandler.selection || [];
+        var name = (sel.length === 1 && sel[0]) ? sel[0].name : null;
+        try { document.dispatchEvent(new CustomEvent('enable:selection-changed', { detail: { name: name } })); } catch (e) {}
+      });
     })();
 
     // -- Click-without-drag on an elevation box = toggle selection (gizmo) --
@@ -1019,33 +1069,20 @@
 
     // -- Create a text label sprite for a marker point --
     function createMarkLabel(text) {
-      var canvas = document.createElement('canvas');
-      canvas.width = 128; canvas.height = 48;
-      var ctx = canvas.getContext('2d');
-      // Semi-transparent dark background pill
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-      ctx.beginPath();
-      if (ctx.roundRect) { ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 8); }
-      else { ctx.rect(2, 2, canvas.width - 4, canvas.height - 4); }
-      ctx.fill();
-      // White text
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 28px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-      var texture = new THREE.CanvasTexture(canvas);
-      texture.minFilter = THREE.LinearFilter;
-      var material = new THREE.SpriteMaterial({
-        map: texture, depthTest: false, depthWrite: false,
-        transparent: true, sizeAttenuation: true
-      });
-      var sprite = new THREE.Sprite(material);
-      // Position offset to the right of the dot
-      sprite.scale.set(ringOuterRadius * 2.5, ringOuterRadius * 1.0, 1);
-      sprite.position.set(ringOuterRadius * 2.0, ringOuterRadius * 0.5, 0);
-      sprite.userData.isMarkLabel = true;
-      return sprite;
+      // Use Potree's TextSprite (same as the D# dimension labels) so P# labels
+      // render at the same constant screen size. Per-frame scaling (70/pr) lives
+      // in the markerScene render pass. White text on a semi-transparent pill.
+      var label = new Potree.TextSprite(text);
+      label.setTextColor({ r: 255, g: 255, b: 255, a: 1.0 });
+      label.setBorderColor({ r: 0, g: 0, b: 0, a: 0.0 });
+      label.setBackgroundColor({ r: 0, g: 0, b: 0, a: 0.55 });
+      label.fontsize = 16;   // match D# dimension labels
+      label.update();
+      label.material.depthTest = false;
+      label.material.depthWrite = false;
+      label.material.transparent = true;
+      label.userData.isMarkLabel = true;
+      return label;
     }
 
     // -- Update label sprite on an existing marker --
@@ -1085,6 +1122,17 @@
         markerScene.children[i].traverse(function (obj) {
           if (obj.userData && obj.userData.isMarkerSphere) {
             _scaleMarkerSphere(obj, camera, _mkRSize);
+          }
+          if (obj.userData && obj.userData.isMarkLabel) {
+            // Constant screen size + constant-pixel offset above the dot, matching
+            // the D# dimension labels (70/pr scale).
+            var lwp = (obj.parent ? obj.parent.getWorldPosition(new THREE.Vector3()) : obj.getWorldPosition(new THREE.Vector3()));
+            var ld = camera.position.distanceTo(lwp);
+            var lpr = Potree.Utils.projectedRadius(1, camera, ld, _mkRSize.width, _mkRSize.height);
+            if (!lpr || !isFinite(lpr) || lpr < 0.001) lpr = 1;
+            var ls = 70 / lpr;
+            obj.scale.set(ls, ls, ls);
+            obj.position.set(0, 34 / lpr, 0); // ~34px above the dot (group is billboarded)
           }
         });
       }
@@ -1616,7 +1664,7 @@
 
       markerScene.add(group);
       markedPoints.push(mark);
-      undoStack.push({ type: 'mark', id: mark.id });
+      pushUndoCmd(_cmdAddMark(mark));
       rebuildMarkList();
       showToast(mark.name + " placed (" + markedPoints.length + " total)");
     }
@@ -1720,7 +1768,17 @@
           });
           row.appendChild(deleteBtn);
 
-          listEl.appendChild(row);
+          var entry = document.createElement('div');
+          entry.className = 'mark-entry';
+          entry.appendChild(row);
+          var pos = m.visual ? m.visual.position : null;
+          if (pos) {
+            var coords = document.createElement('div');
+            coords.className = 'mark-coords';
+            coords.textContent = 'X: ' + fmtLenVal(pos.x) + '   Y: ' + fmtLenVal(pos.y) + '   Z: ' + fmtLenVal(pos.z);
+            entry.appendChild(coords);
+          }
+          listEl.appendChild(entry);
         })(markedPoints[i]);
       }
     }
@@ -1902,7 +1960,7 @@
       noteScene.add(note.visual);
       notes.push(note);
       if (optId != null && optId >= nextNoteId) nextNoteId = optId + 1;
-      undoStack.push({ type: 'note', id: note.id });
+      pushUndoCmd(_cmdAddNote(note));
       rebuildNoteList();
       showToast(note.name + ' placed — click the icon to edit text');
       // Auto-open the popover so the user can immediately type.
@@ -1985,9 +2043,14 @@
       if (mesh.geometry) mesh.geometry.dispose();
       if (mesh.material) mesh.material.dispose();
     }
-    function _updatePreviewSphereAt(mesh, mousePixel) {
+    function _updatePreviewSphereAt(mesh, mousePixel, usePatched) {
       if (!mesh) return;
-      var pick = _origPick(mousePixel, viewer.scene.getActiveCamera(), viewer, viewer.scene.pointclouds);
+      // usePatched routes through the snapping/axis-inference picker so the preview
+      // sphere matches where the point will actually land (used by Mark mode so
+      // the red preview follows the drawing-axis snap). Notes/constraints stay raw.
+      var pick = usePatched
+        ? Potree.Utils.getMousePointCloudIntersection(mousePixel, viewer.scene.getActiveCamera(), viewer, viewer.scene.pointclouds, { pickClipped: true })
+        : _origPick(mousePixel, viewer.scene.getActiveCamera(), viewer, viewer.scene.pointclouds);
       if (pick && pick.location) {
         mesh.position.copy(pick.location);
         mesh.visible = true;
@@ -2280,15 +2343,25 @@
     // -- State --
     const constraints = [];
     let nextConstraintId = 1;
-    let activeConstraintId = null;
+    let activeConstraintId = null;   // BOUND plane — measurement picks snap to it
+    let selectedConstraintId = null; // SELECTED plane — highlighted + shows stretch handles (separate from binding)
+    let _perpRefConstraintId = null; // reference plane captured when starting a perpendicular-plane pick
     let constraintPickMode = false;
     let constraintPickPoints = [];
     let constraintPickTarget = 0;
     let constraintPickType = null;
     const constraintScene = new THREE.Scene();
     constraintScene.name = "EnableConstraintScene";
+    // Plane fill sheets render here in the depth_overlay pass (which has the point
+    // cloud's depth restored), so points IN FRONT of a plane occlude its sheet.
+    const planeFillScene = new THREE.Scene();
+    planeFillScene.name = "EnablePlaneFillScene";
     let constraintDragActive = false;
     let constraintDragInfo = null; // { constraint, pointIndex }
+    // Plane stretch handles (visibility-only resize of the plane quad).
+    let planeHandleDragActive = false;
+    let planeHandleDragInfo = null; // { constraint, edge } edge: xMin|xMax|yMin|yMax
+    let _planeDragEdit = null; // { c, before } snapshot captured at drag-start for undo
     let constraintPickMarkers = []; // temporary markers shown while picking
     // After a plane is fit, we hold it here while the user picks the 2 X-axis
     // points; only then is the basis populated and the constraint pushed to
@@ -2308,6 +2381,22 @@
     // measurement point's elevation (drawing plane = active plane offset by
     // the prior pick's signed distance) instead of the active plane itself.
     let _orthoParallelMode = false;
+    // Normal-dimension mode: while ON for a plane, a single click in the cloud
+    // creates a perpendicular dimension from that point straight to the plane
+    // (the point is projected onto the plane and a distance measurement is drawn
+    // between the two). Toggled per-plane via each row's "Norm" button, or "d".
+    // _normDimMode = the persistent modifier (the "Norm" button). While it's on,
+    // the distance measuring tool adopts point-to-plane behaviour. _normDimArmed
+    // = whether the measuring tool is currently active: turning Norm on (or
+    // (re)starting the distance tool) arms it; Esc disarms it WITHOUT turning off
+    // the Norm modifier (only the button does that).
+    let _normDimMode = false;
+    let _normDimArmed = false;
+    let _normDimRefId = null; // the plane the normal dimensions drop onto
+    // Plane move/copy along normal: distance stored in METRES (the field renders
+    // it in the current unit) + the one-shot "move/copy to point" pick state.
+    let _planeMoveMeters = 0;
+    let _planeMovePick = null; // { planeId, doCopy } while picking a target point
 
     // ===== MEMBER SKETCHING TOOL =====
     const members = [];
@@ -2319,6 +2408,301 @@
     memberScene.name = "EnableMemberScene";
     let memberDragActive = false;
     let memberDragInfo = null; // { member, pointIndex }
+
+    // ===== CUSTOM DRAWING AXES (SketchUp-style inference) =====
+    // A user-set origin + right-handed X/Y/Z frame. Tools (measure, member,
+    // mark) auto-snap onto the nearest axis LINE through the current anchor when
+    // the cursor is within a few screen pixels of it — snaps when close, free
+    // otherwise, exactly like SketchUp. Arrow keys lock an axis. World by default.
+    const axesGizmoScene = new THREE.Scene();
+    axesGizmoScene.name = "EnableAxesScene";
+    let _customAxes = null;         // { origin, x, y, z } unit vectors, or null = world (no inference)
+    let _customAxesVisible = true;  // eye-dropdown show/hide of the gizmo
+    let _axisLock = null;           // 'x' | 'y' | 'z' | null  (arrow-key inference lock)
+    let _axesPickMode = false;      // running the 3-click set flow
+    let _axesPickPts = [];          // points collected during the set flow
+    let _axesGizmoGroup = null;     // THREE.Group with the 3 coloured lines
+    let _activeInferAxis = null;    // 'x'|'y'|'z' snapped this frame (for colouring/tag)
+    const AXIS_COLORS = { x: 0xff3b30, y: 0x34c759, z: 0x0a84ff }; // red / green / blue
+    const AXIS_NAMES  = { x: 'Red',  y: 'Green', z: 'Blue' };
+    const AXIS_SNAP_PX = 10;        // cursor within this many px of an axis line snaps
+    const _AXIS_YUP = new THREE.Vector3(0, 1, 0);
+    // Thick axis lines as cylinders — LineBasicMaterial.linewidth is ignored by
+    // WebGL, so cylinders are the only reliable way to get a visible thickness.
+    function _makeAxisCylinder(a, b, color, radius, opacity) {
+      var dir = b.clone().sub(a), len = dir.length();
+      if (len < 1e-9) return null;
+      var geo = new THREE.CylinderGeometry(radius, radius, len, 10);
+      geo.translate(0, len / 2, 0);                 // base at local origin, extends +Y
+      var mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        color: color, depthTest: false, transparent: (opacity != null && opacity < 1), opacity: (opacity == null ? 1 : opacity) }));
+      mesh.position.copy(a);
+      mesh.quaternion.setFromUnitVectors(_AXIS_YUP, dir.normalize());
+      mesh.renderOrder = 9999;
+      return mesh;
+    }
+
+    // -- (Re)build the coloured gizmo for the current frame (nothing for world). --
+    function rebuildAxesGizmo() {
+      if (_axesGizmoGroup) {
+        axesGizmoScene.remove(_axesGizmoGroup);
+        _axesGizmoGroup.traverse(function (o) { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+        _axesGizmoGroup = null;
+      }
+      if (!_customAxes) return;
+      var f = _customAxes, g = new THREE.Group();
+      g.userData.isAxesGizmo = true;
+      var L = 1; // local unit length; per-frame scale sets the real screen size
+      var O = new THREE.Vector3(0, 0, 0);
+      [['x', f.x], ['y', f.y], ['z', f.z]].forEach(function (pair) {
+        var key = pair[0], dir = pair[1], col = AXIS_COLORS[key];
+        // Solid thick cylinder in +dir (LOCAL space; group is positioned at origin).
+        var c1 = _makeAxisCylinder(O, dir.clone().multiplyScalar(L), col, 0.02);
+        if (c1) g.add(c1);
+        // Thinner, faded stub in -dir so the full axis reads both ways.
+        var c2 = _makeAxisCylinder(O, dir.clone().multiplyScalar(-L * 0.4), col, 0.012, 0.5);
+        if (c2) g.add(c2);
+      });
+      var od = new THREE.Mesh(new THREE.SphereGeometry(0.055, 14, 14), new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
+      od.renderOrder = 10000; g.add(od);
+      g.position.copy(f.origin);
+      _axesGizmoGroup = g;
+      axesGizmoScene.add(g);
+      _scaleAxesGizmo();
+    }
+    // Keep the gizmo a roughly constant fraction of the viewport.
+    function _scaleAxesGizmo() {
+      if (!_axesGizmoGroup) return;
+      var cam = viewer.scene.getActiveCamera();
+      var s;
+      if (cam.isOrthographicCamera) s = ((cam.top - cam.bottom) / cam.zoom) * 0.12;
+      else s = cam.position.distanceTo(_axesGizmoGroup.position) * 0.12;
+      _axesGizmoGroup.scale.setScalar(Math.max(s, 1e-3));
+    }
+
+    // -- The 3-click set flow: click ORIGIN, then +X (red), then +Y (green). --
+    function startAxesPick() {
+      if (typeof MARK_MODE !== 'undefined' && MARK_MODE) toggleMarkMode(true);
+      if (memberPickMode) cancelMemberPick();
+      if (constraintPickMode) cancelConstraintPick();
+      _axesPickMode = true; _axesPickPts = [];
+      document.body.classList.add('member-pick-mode'); // reuse crosshair cursor
+      showToast('Set axes — click the ORIGIN (1/3)', 6000);
+      var b = document.getElementById('btn-set-axes'); if (b) b.classList.add('active');
+    }
+    function cancelAxesPick() {
+      _axesPickMode = false; _axesPickPts = [];
+      _clearAxesPreview();
+      document.body.classList.remove('member-pick-mode');
+      var b = document.getElementById('btn-set-axes'); if (b) b.classList.remove('active');
+    }
+    function handleAxesPick(position) {
+      _axesPickPts.push(position.clone());
+      var n = _axesPickPts.length;
+      if (n === 1) { showToast('Set axes — click along +X (RED) (2/3)', 6000); return; }
+      if (n === 2) { showToast('Set axes — click the +Y (GREEN) side (3/3)', 6000); return; }
+      buildCustomAxes(_axesPickPts[0], _axesPickPts[1], _axesPickPts[2]);
+      cancelAxesPick();
+    }
+    function buildCustomAxes(origin, xPoint, yHint) {
+      var x = xPoint.clone().sub(origin);
+      if (x.lengthSq() < 1e-9) { showToast('Axes: +X point too close to origin'); return; }
+      x.normalize();
+      var y = yHint.clone().sub(origin);
+      y.addScaledVector(x, -y.dot(x));           // Gram-Schmidt: make Y ⟂ X
+      if (y.lengthSq() < 1e-9) { showToast('Axes: +Y point is colinear with X'); return; }
+      y.normalize();
+      var z = new THREE.Vector3().crossVectors(x, y).normalize();
+      var prev = _customAxes;
+      var next = { origin: origin.clone(), x: x, y: y, z: z };
+      _customAxes = next; _axisLock = null;
+      rebuildAxesGizmo(); updateAxesUiState();
+      pushUndoCmd({ label: 'set axes', tag: 'axes',
+        undo: function () { _customAxes = prev; rebuildAxesGizmo(); updateAxesUiState(); },
+        redo: function () { _customAxes = next; rebuildAxesGizmo(); updateAxesUiState(); } });
+      showToast('Custom drawing axes set');
+    }
+    function resetCustomAxes() {
+      if (!_customAxes) { showToast('Already using world axes'); return; }
+      var prev = _customAxes;
+      _customAxes = null; _axisLock = null;
+      rebuildAxesGizmo(); updateAxesUiState();
+      pushUndoCmd({ label: 'reset axes', tag: 'axes',
+        undo: function () { _customAxes = prev; rebuildAxesGizmo(); updateAxesUiState(); },
+        redo: function () { _customAxes = null; rebuildAxesGizmo(); updateAxesUiState(); } });
+      showToast('Axes reset to world');
+    }
+    function updateAxesUiState() {
+      var b = document.getElementById('btn-reset-axes'); if (b) b.disabled = !_customAxes;
+      if (!_customAxes) _updateAxisTag(null);
+    }
+    function setAxesGizmoVisible(v) {
+      _customAxesVisible = !!v;
+      if (_axesGizmoGroup) _axesGizmoGroup.visible = _customAxesVisible;
+      // Scene stays visible so the set-preview shows even if the committed gizmo
+      // is hidden; the render pass gates the committed gizmo on _customAxesVisible.
+    }
+
+    // -- Live SketchUp-style preview while SETTING the axes. Stage 0: white dot at
+    // the hover point (choosing origin). Stage 1: red rubber-band from origin to
+    // the cursor (choosing +X). Stage 2: full red/green/blue tripod that rotates
+    // as you move (choosing +Y). Runs the SAME pick+snap as placement so the white
+    // hover indicator lights up on snappable points, exactly like the dimension tool.
+    let _axesPreviewGroup = null;
+    function _clearAxesPreview() {
+      if (!_axesPreviewGroup) return;
+      axesGizmoScene.remove(_axesPreviewGroup);
+      _axesPreviewGroup.traverse(function (o) { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+      _axesPreviewGroup = null;
+    }
+    let _axesPrevWR = 0.02;   // world radius for preview cylinders (set per update ≈ 3px)
+    function _axesPreviewLine(a, b, color) {
+      return _makeAxisCylinder(a, b, color, _axesPrevWR) || new THREE.Object3D();
+    }
+    function _axesPreviewDot(pos, color, px) {
+      var m = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 12), new THREE.MeshBasicMaterial({ color: color, depthTest: false }));
+      m.position.copy(pos); m.renderOrder = 10000; m.userData.axesPreviewDotPx = px || 6;
+      return m;
+    }
+    function _updateAxesPreview(e) {
+      if (!_axesPickMode) { _clearAxesPreview(); return; }
+      var rect = renderArea.getBoundingClientRect();
+      var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      var cam = viewer.scene.getActiveCamera();
+      // Match placement exactly: raw pick + node snap (SNAP_THRESHOLD_MEMBER).
+      var pick = _origPick(mouse, cam, viewer, viewer.scene.pointclouds, { pickClipped: true });
+      var loc = (pick && pick.location) ? pick.location.clone() : null;
+      _clearAxesPreview();
+      if (!loc) return;
+      var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
+      if (snap) { loc = snap.position.clone(); _snapTargetPos = snap.position.clone(); _snapTargetTime = performance.now(); }
+      // Size preview cylinders to ~3px on screen at the origin's depth.
+      var _pvSz = viewer.renderer.getSize(new THREE.Vector2());
+      var _pvRef = _axesPickPts.length ? _axesPickPts[0] : loc;
+      var _pvPr = Potree.Utils.projectedRadius(1, cam, cam.position.distanceTo(_pvRef), _pvSz.x, _pvSz.y);
+      _axesPrevWR = (_pvPr > 0.0001) ? (3.2 / _pvPr) : 0.02;
+      var g = new THREE.Group();
+      var n = _axesPickPts.length;
+      if (n === 0) {
+        g.add(_axesPreviewDot(loc, 0xffffff));
+      } else if (n === 1) {
+        var o = _axesPickPts[0];
+        g.add(_axesPreviewLine(o, loc, AXIS_COLORS.x));
+        g.add(_axesPreviewDot(o, 0xffffff));
+        g.add(_axesPreviewDot(loc, 0xffffff));
+      } else if (n === 2) {
+        var o2 = _axesPickPts[0], px = _axesPickPts[1];
+        var x = px.clone().sub(o2), Lx = x.length();
+        if (Lx < 1e-6) { g.add(_axesPreviewDot(loc, 0xffffff)); }
+        else {
+          x.normalize();
+          var y = loc.clone().sub(o2); y.addScaledVector(x, -y.dot(x));
+          if (y.lengthSq() < 1e-9) y.set(0, 0, 1);
+          y.normalize();
+          var z = new THREE.Vector3().crossVectors(x, y).normalize();
+          g.add(_axesPreviewLine(o2, o2.clone().addScaledVector(x, Lx), AXIS_COLORS.x));
+          g.add(_axesPreviewLine(o2, o2.clone().addScaledVector(y, Lx), AXIS_COLORS.y));
+          g.add(_axesPreviewLine(o2, o2.clone().addScaledVector(z, Lx), AXIS_COLORS.z));
+          g.add(_axesPreviewDot(o2, 0xffffff));
+          g.add(_axesPreviewDot(loc, 0xffffff));
+        }
+      }
+      _axesPreviewGroup = g;
+      axesGizmoScene.add(g);
+    }
+
+    // -- Inference: which point is the current placement measuring FROM? --
+    function _axisInferAnchor() {
+      if (pendingMeasurement && pendingMeasurement.points && pendingMeasurement.points.length >= 2) {
+        var pm = pendingMeasurement.points[pendingMeasurement.points.length - 2];
+        return (pm && pm.position) ? pm.position : pm;
+      }
+      if (memberPickMode && memberPickPoints.length >= 1) return memberPickPoints[memberPickPoints.length - 1];
+      if (typeof MARK_MODE !== 'undefined' && MARK_MODE && _customAxes) return _customAxes.origin;
+      return null;
+    }
+    // Screen-space snap onto the nearest axis line through the anchor (or the
+    // locked axis). Returns { location, key } or null. Same math as ortho-measure:
+    // proximity in PIXELS decides whether to snap; along-axis pixels decide where.
+    function applyAxisInference(rawLoc, mousePx) {
+      if (!_customAxes) return null;
+      var anchor = _axisInferAnchor();
+      if (!anchor) return null;
+      var cam = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var aN = anchor.clone().project(cam);
+      var aX = (aN.x + 1) * 0.5 * rect.width;
+      var aY = (1 - aN.y) * 0.5 * rect.height;
+      var cdx = mousePx.x - aX, cdy = mousePx.y - aY;
+      var cand = [['x', _customAxes.x], ['y', _customAxes.y], ['z', _customAxes.z]];
+      var best = null;
+      for (var i = 0; i < cand.length; i++) {
+        var key = cand[i][0], axis = cand[i][1];
+        if (_axisLock && _axisLock !== key) continue;   // locked → only that axis
+        var tip = anchor.clone().add(axis).project(cam);
+        var sx = ((tip.x + 1) * 0.5 * rect.width) - aX;
+        var sy = ((1 - tip.y) * 0.5 * rect.height) - aY;
+        var slen = Math.sqrt(sx * sx + sy * sy);
+        if (slen < 1e-3) continue;
+        var ux = sx / slen, uy = sy / slen;
+        var along = cdx * ux + cdy * uy;              // px along the axis
+        var perp = Math.abs(cdx * uy - cdy * ux);     // px perpendicular to it
+        var locked = (_axisLock === key);
+        if (!locked && perp > AXIS_SNAP_PX) continue;
+        var t = along / slen;                         // world units along the axis
+        var score = locked ? -1 : perp;
+        if (!best || score < best.score) best = { location: anchor.clone().addScaledVector(axis, t), key: key, score: score };
+      }
+      return best;
+    }
+
+    // -- Small on-screen tag ("On Red Axis" / "Locked to Z") near the cursor. --
+    var _axisTagEl = null;
+    function _updateAxisTag(clientX, clientY) {
+      if (!_axisTagEl) {
+        _axisTagEl = document.createElement('div');
+        _axisTagEl.id = 'enable-axis-tag';
+        _axisTagEl.style.cssText = 'position:fixed;pointer-events:none;z-index:10000;display:none;' +
+          'padding:2px 7px;border-radius:3px;font:600 11px/1.4 sans-serif;color:#fff;' +
+          'background:rgba(0,0,0,0.72);white-space:nowrap;transform:translate(14px,14px)';
+        document.body.appendChild(_axisTagEl);
+      }
+      var key = _axisLock || _activeInferAxis;
+      if (!key || clientX == null) { _axisTagEl.style.display = 'none'; return; }
+      _axisTagEl.textContent = (_axisLock ? 'Locked to ' : 'On ') + AXIS_NAMES[key] + ' Axis';
+      _axisTagEl.style.color = '#' + ('000000' + AXIS_COLORS[key].toString(16)).slice(-6);
+      _axisTagEl.style.left = clientX + 'px';
+      _axisTagEl.style.top = clientY + 'px';
+      _axisTagEl.style.display = 'block';
+    }
+
+    // -- Arrow-key axis locks (→ X, ← Y, ↑ Z; press same again / ↓ / Esc release).
+    // Only while a placement tool is active and custom axes are set. --
+    window.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (!_customAxes) return;
+      if (!(pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) return;
+      var want = null;
+      if (e.key === 'ArrowRight') want = 'x';
+      else if (e.key === 'ArrowLeft') want = 'y';
+      else if (e.key === 'ArrowUp') want = 'z';
+      else if (e.key === 'ArrowDown') want = '__clear';
+      else return;
+      e.preventDefault(); e.stopPropagation();
+      if (want === '__clear') { _axisLock = null; showToast('Axis lock released'); }
+      else if (_axisLock === want) { _axisLock = null; showToast('Axis lock released'); }
+      else { _axisLock = want; showToast('Locked to ' + AXIS_NAMES[want] + ' axis'); }
+    }, true);
+    // Position the on-screen axis tag while a placement tool is active. Reads the
+    // axis chosen by the most recent pick (one-frame lag is imperceptible).
+    renderArea.addEventListener('mousemove', function (e) {
+      if (_customAxes && (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) {
+        _updateAxisTag(e.clientX, e.clientY);
+      } else {
+        _updateAxisTag(null);
+      }
+    });
 
     // ===== ELEVATION MAP TOOL =====
     const elevationScene = new THREE.Scene();
@@ -3104,157 +3488,160 @@
     const redoStack = [];   // box/volume-transform redo (Ctrl+Y / Ctrl+Shift+Z)
 
     // Attach undo tracking to a volume — captures transform before gizmo interaction, pushes on mouseup
+    // Volumes whose transforms (move/rotate/scale) are undoable. A SINGLE pair of
+    // global mousedown/mouseup handlers snapshots the true pre-drag state of every
+    // tracked box on mousedown and commits an undo entry on mouseup if anything
+    // changed — so rotation, position AND scale are all captured reliably,
+    // regardless of which Potree events fire.
+    var _trackedVolumes = [];
+    var _volSnapshots = null;
     function trackVolumeUndo(volume) {
-      var savedPos = null, savedRot = null, savedScale = null;
-      var armed = false; // skip the initial insertion drag
-
-      // After a short delay, arm the tracker (avoids capturing the initial sizing drag)
-      setTimeout(function() { armed = true; }, 1500);
-
-      function captureState() {
-        if (!armed) return;
-        if (!savedPos) {
-          savedPos = volume.position.clone();
-          savedRot = volume.rotation.clone();
-          savedScale = volume.scale.clone();
-        }
+      if (_trackedVolumes.indexOf(volume) !== -1) return;
+      volume._undoArmed = false;
+      // Skip the initial insertion sizing drag.
+      setTimeout(function() { volume._undoArmed = true; }, 1500);
+      _trackedVolumes.push(volume);
+    }
+    function _untrackVolumeUndo(volume) {
+      var i = _trackedVolumes.indexOf(volume);
+      if (i !== -1) _trackedVolumes.splice(i, 1);
+    }
+    document.addEventListener('mousedown', function() {
+      _volSnapshots = [];
+      for (var i = 0; i < _trackedVolumes.length; i++) {
+        var v = _trackedVolumes[i];
+        if (!v._undoArmed) continue;
+        _volSnapshots.push({ vol: v, pos: v.position.clone(), rot: v.rotation.clone(), scale: v.scale.clone() });
       }
-
-      function pushUndo() {
-        if (!savedPos) return;
-        var posChanged = !volume.position.equals(savedPos);
-        var rotChanged = volume.rotation.x !== savedRot.x || volume.rotation.y !== savedRot.y || volume.rotation.z !== savedRot.z;
-        var scaleChanged = !volume.scale.equals(savedScale);
-        if (posChanged || rotChanged || scaleChanged) {
-          undoStack.push({
-            type: 'volume-transform',
-            vol: volume,
-            before: { pos: savedPos.clone(), rot: savedRot.clone(), scale: savedScale.clone() },
-            after:  { pos: volume.position.clone(), rot: volume.rotation.clone(), scale: volume.scale.clone() }
-          });
-          redoStack.length = 0;   // a fresh transform invalidates the redo chain
+    }, true);
+    document.addEventListener('mouseup', function() {
+      var snaps = _volSnapshots; _volSnapshots = null;
+      if (!snaps || snaps.length === 0) return;
+      // Delay so the final transform is applied before we compare.
+      setTimeout(function() {
+        for (var i = 0; i < snaps.length; i++) {
+          var s = snaps[i], v = s.vol;
+          if (_trackedVolumes.indexOf(v) === -1) continue; // removed since
+          var posChanged = !v.position.equals(s.pos);
+          var rotChanged = v.rotation.x !== s.rot.x || v.rotation.y !== s.rot.y || v.rotation.z !== s.rot.z;
+          var scaleChanged = !v.scale.equals(s.scale);
+          if (posChanged || rotChanged || scaleChanged) {
+            (function(vol, before, after) {
+              pushUndoCmd({ label: 'box transform',
+                undo: function(){ vol.position.copy(before.pos); vol.rotation.copy(before.rot); vol.scale.copy(before.scale); if (typeof vol.update==='function') vol.update(); },
+                redo: function(){ vol.position.copy(after.pos); vol.rotation.copy(after.rot); vol.scale.copy(after.scale); if (typeof vol.update==='function') vol.update(); } });
+            })(v,
+              { pos: s.pos.clone(), rot: s.rot.clone(), scale: s.scale.clone() },
+              { pos: v.position.clone(), rot: v.rotation.clone(), scale: v.scale.clone() });
+          }
         }
-        savedPos = null;
-        savedRot = null;
-        savedScale = null;
-      }
+      }, 50);
+    });
 
-      // Listen for transform changes from Potree's TransformationTool gizmo
-      volume.addEventListener('position_changed', captureState);
-      volume.addEventListener('orientation_changed', captureState);
-      volume.addEventListener('scale_changed', captureState);
-
-      // Also capture on raw drag events (body drag, not gizmo)
-      volume.addEventListener('drag', captureState);
-      volume.addEventListener('drop', pushUndo);
-
-      // Push undo when mouse is released (covers gizmo handle drops)
-      document.addEventListener('mouseup', function() {
-        if (savedPos) {
-          // Delay slightly so the final transform is applied before we compare
-          setTimeout(pushUndo, 50);
-        }
-      });
+    if (viewer.scene && viewer.scene.addEventListener) {
+      viewer.scene.addEventListener('volume_removed', function(e) { if (e && e.volume) _untrackVolumeUndo(e.volume); });
     }
 
-    // -- Undo last action --
+    // ===== UNDO / REDO (command pattern) =====
+    // Every undoable action pushes a command { label, undo, redo, tag? }.
+    // performUndo pops it, runs .undo(), and moves it to the redo stack;
+    // performRedo runs .redo() and moves it back. This makes undo AND redo
+    // uniform across all action types.
+    function pushUndoCmd(cmd) {
+      undoStack.push(cmd);
+      redoStack.length = 0;
+    }
     function performUndo() {
       if (undoStack.length === 0) { showToast('Nothing to undo'); return; }
-      var action = undoStack.pop();
-
-      if (action.type === 'mark') {
-        // Remove the specific marker by id
-        deleteMarker(action.id);
-        showToast('Undid mark (' + markedPoints.length + ' remaining)');
-      } else if (action.type === 'constraint-point') {
-        // Remove last picked constraint point
-        if (constraintPickMode && constraintPickPoints.length > 0) {
-          constraintPickPoints.pop();
-          if (constraintPickMarkers.length > 0) {
-            var m = constraintPickMarkers.pop();
-            m.traverse(function(obj) {
-              if (obj.geometry) obj.geometry.dispose();
-              if (obj.material) obj.material.dispose();
-            });
-            constraintScene.remove(m);
-          }
-          if (constraintPickPoints.length === 0) {
-            cancelConstraintPick();
-            showToast('Undid constraint pick — cancelled');
-          } else {
-            showToast('Pick point (' + (constraintPickPoints.length + 1) + '/' + constraintPickTarget + ') for ' + constraintPickType, 5000);
-          }
-        }
-      } else if (action.type === 'constraint') {
-        deleteConstraint(action.id);
-        showToast('Undid constraint');
-      } else if (action.type === 'member-point') {
-        // Remove last picked member point
-        if (memberPickMode && memberPickPoints.length > 0) {
-          memberPickPoints.pop();
-          if (memberPickMarkers.length > 0) {
-            var m = memberPickMarkers.pop();
-            m.traverse(function(obj) {
-              if (obj.geometry) obj.geometry.dispose();
-              if (obj.material) obj.material.dispose();
-            });
-            memberScene.remove(m);
-          }
-          if (memberPickPoints.length === 0) {
-            cancelMemberPick();
-            showToast('Undid member pick — cancelled');
-          } else {
-            showToast('Pick endpoint (2/2) for member', 5000);
-          }
-        }
-      } else if (action.type === 'member') {
-        deleteMember(action.id);
-        showToast('Undid member');
-      } else if (action.type === 'measurement-point') {
-        var meas = action.measure;
-        if (meas && meas.points && meas.points.length > 0) {
-          var minReq = _measureMinPoints(meas);
-          // If removing the last point would leave the measurement below its
-          // required minimum, remove the entire measurement (no orphan
-          // 1-point distance/height or <3-point area/angle measurements).
-          if (meas.points.length - 1 < minReq) {
-            // If this measurement is in-progress, also cancel the Potree tool
-            // so we don't leave a dangling cursor-follow sphere + drag.
-            if (pendingMeasurement === meas) cancelPotreeInsertion();
-            viewer.scene.removeMeasurement(meas);
-            showToast('Undid measurement');
-          } else {
-            meas.removeMarker(meas.points.length - 1);
-            showToast('Undid measurement point');
-          }
-        }
-      } else if (action.type === 'volume-transform') {
-        if (action.vol) {
-          action.vol.position.copy(action.before.pos);
-          action.vol.rotation.copy(action.before.rot);
-          action.vol.scale.copy(action.before.scale);
-        }
-        redoStack.push(action);
-        showToast('Undid box transform');
-      }
-      // Any non-redoable undo invalidates the redo chain (redo currently
-      // supports box/volume transforms only).
-      if (action.type !== 'volume-transform') redoStack.length = 0;
+      var cmd = undoStack.pop();
+      try { if (cmd.undo) cmd.undo(); } catch (e) { console.warn('[undo]', e); }
+      redoStack.push(cmd);
+      showToast('Undid ' + (cmd.label || 'action'));
     }
-
-    // -- Redo last undone action (box/volume transforms only for now) --
     function performRedo() {
       if (redoStack.length === 0) { showToast('Nothing to redo'); return; }
-      var action = redoStack.pop();
-      if (action.type === 'volume-transform') {
-        if (action.vol) {
-          action.vol.position.copy(action.after.pos);
-          action.vol.rotation.copy(action.after.rot);
-          action.vol.scale.copy(action.after.scale);
-        }
-        undoStack.push(action);
-        showToast('Redid box transform');
-      }
+      var cmd = redoStack.pop();
+      try { if (cmd.redo) cmd.redo(); } catch (e) { console.warn('[redo]', e); }
+      undoStack.push(cmd);
+      showToast('Redid ' + (cmd.label || 'action'));
+    }
+
+    // ---- Command factories. "Add" commands soft-detach/attach the SAME object
+    //      (+ its visual) so undo/redo never rebuild it from scratch. ----
+    function _cmdAddMark(mark) {
+      return { label: 'mark ' + mark.name, tag: 'mark',
+        undo: function(){ var i=markedPoints.indexOf(mark); if(i>=0)markedPoints.splice(i,1); if(mark.visual)markerScene.remove(mark.visual); rebuildMarkList(); },
+        redo: function(){ if(markedPoints.indexOf(mark)<0)markedPoints.push(mark); if(mark.visual)markerScene.add(mark.visual); rebuildMarkList(); } };
+    }
+    function _cmdAddNote(note) {
+      return { label: 'note', tag: 'note',
+        undo: function(){ var i=notes.indexOf(note); if(i>=0)notes.splice(i,1); if(note.visual)noteScene.remove(note.visual); },
+        redo: function(){ if(notes.indexOf(note)<0)notes.push(note); if(note.visual)noteScene.add(note.visual); } };
+    }
+    function _cmdAddConstraint(c) {
+      return { label: c.name || 'constraint', tag: 'constraint',
+        undo: function(){ var i=constraints.indexOf(c); if(i>=0)constraints.splice(i,1); if(c.visual)constraintScene.remove(c.visual); _disposePlaneFill(c);
+          if(activeConstraintId===c.id)activeConstraintId=null; if(selectedConstraintId===c.id)selectedConstraintId=null;
+          if(_normDimRefId===c.id){_normDimMode=false;_normDimArmed=false;_normDimRefId=null;_disposeNormPreview();}
+          rebuildConstraintList(); updateConstraintVisuals(); },
+        redo: function(){ if(constraints.indexOf(c)<0)constraints.push(c); if(c.visual)constraintScene.add(c.visual); rebuildConstraintList(); updateConstraintVisuals(); } };
+    }
+    function _cmdAddMember(m) {
+      return { label: m.name || 'member', tag: 'member',
+        undo: function(){ var i=members.indexOf(m); if(i>=0)members.splice(i,1); if(m.visual)memberScene.remove(m.visual); rebuildMemberList(); },
+        redo: function(){ if(members.indexOf(m)<0)members.push(m); if(m.visual)memberScene.add(m.visual); rebuildMemberList(); } };
+    }
+    function _cmdAddMeasurement(m) {
+      return { label: 'measurement', tag: 'measurement',
+        undo: function(){ try{ if(pendingMeasurement===m)cancelPotreeInsertion(); viewer.scene.removeMeasurement(m); }catch(e){} try{rebuildAllMeasurementLists();}catch(e){} },
+        redo: function(){ try{ viewer.scene.addMeasurement(m); }catch(e){} try{rebuildAllMeasurementLists();}catch(e){} } };
+    }
+
+    // ---- Plane geometry snapshot / restore (for move / copy / cycle / stretch /
+    //      point-drag). Captures every mutable field and rebuilds the visual. ----
+    function _snapshotPlane(c) {
+      return {
+        points: c.points.map(function(p){ return p.clone(); }),
+        centroid: c.centroid ? c.centroid.clone() : null,
+        normal: c.normal ? c.normal.clone() : null,
+        perpCycle: c.perpCycle,
+        rectExtent: c.rectExtent ? { xMin:c.rectExtent.xMin, xMax:c.rectExtent.xMax, yMin:c.rectExtent.yMin, yMax:c.rectExtent.yMax } : null,
+        aA: c.xAxisAnchorA ? c.xAxisAnchorA.clone() : null,
+        aB: c.xAxisAnchorB ? c.xAxisAnchorB.clone() : null,
+        up: c.xAxisCamUp ? c.xAxisCamUp.clone() : null
+      };
+    }
+    function _restorePlane(c, s) {
+      c.points = s.points.map(function(p){ return p.clone(); });
+      if (s.centroid) c.centroid = s.centroid.clone();
+      if (s.normal) c.normal = s.normal.clone();
+      if (s.perpCycle != null) c.perpCycle = s.perpCycle;
+      c.rectExtent = s.rectExtent ? { xMin:s.rectExtent.xMin, xMax:s.rectExtent.xMax, yMin:s.rectExtent.yMin, yMax:s.rectExtent.yMax } : c.rectExtent;
+      if (s.aA) c.xAxisAnchorA = s.aA.clone();
+      if (s.aB) c.xAxisAnchorB = s.aB.clone();
+      if (s.up) c.xAxisCamUp = s.up.clone();
+      if (c.normal && c.centroid) c.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(c.normal, c.centroid);
+      c.basis = computePlaneBasis(c);
+      rebuildConstraintVisual(c);
+    }
+    function _planeSnapEqual(a, b) {
+      if (a.perpCycle !== b.perpCycle) return false;
+      if (a.points.length !== b.points.length) return false;
+      for (var i = 0; i < a.points.length; i++) if (!a.points[i].equals(b.points[i])) return false;
+      if (a.centroid && b.centroid && !a.centroid.equals(b.centroid)) return false;
+      var ra = a.rectExtent, rb = b.rectExtent;
+      if (!!ra !== !!rb) return false;
+      if (ra && rb && (ra.xMin !== rb.xMin || ra.xMax !== rb.xMax || ra.yMin !== rb.yMin || ra.yMax !== rb.yMax)) return false;
+      return true;
+    }
+    // Push a before/after plane-mutation command (grab `before` before mutating).
+    // No-op edits (drag that didn't move) are skipped.
+    function _pushPlaneEdit(label, c, before) {
+      var after = _snapshotPlane(c);
+      if (_planeSnapEqual(before, after)) return;
+      pushUndoCmd({ label: label,
+        undo: function(){ _restorePlane(c, before); },
+        redo: function(){ _restorePlane(c, after); } });
     }
 
     // ============================================================
@@ -3269,7 +3656,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] Pomerleau / Hart House — HRI viewer stack (no login)'); } catch (e) {}
+    try { console.info('[Enable] Pomerleau build 2026-07-13 — plane/focus tools + android touch'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -3553,11 +3940,49 @@
       el.querySelectorAll('.view-del').forEach(function(x) { x.addEventListener('click', function() { deleteView(parseInt(this.getAttribute('data-vid'), 10)); }); });
     }
 
+    // -- Fit views to the CLIP BOX region, not the whole cloud --
+    // Every view toggle (Top/Bottom/Front/…) and Fit-to-screen funnels through
+    // viewer.fitToScreen, which frames the entire point cloud. Override it to
+    // frame the persistent clip/crop box instead, so cropping controls how far
+    // the camera zooms out (the model can be far larger than the box).
+    function _clipBoxWorldBox3() {
+      if (typeof initialClipBox === 'undefined' || !initialClipBox) return null;
+      initialClipBox.updateMatrixWorld(true);
+      var m = initialClipBox.matrixWorld;
+      var box = new THREE.Box3(); box.makeEmpty();
+      var c = [-0.5, 0.5];
+      for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) for (var k = 0; k < 2; k++) {
+        box.expandByPoint(new THREE.Vector3(c[i], c[j], c[k]).applyMatrix4(m));
+      }
+      return box;
+    }
+    (function() {
+      if (!viewer || viewer._fitToClipPatched || typeof viewer.fitToScreen !== 'function') return;
+      var _origFit = viewer.fitToScreen.bind(viewer);
+      viewer.fitToScreen = function(factor, animationDuration) {
+        var box = _clipBoxWorldBox3();
+        if (!box || box.isEmpty()) return _origFit(factor, animationDuration);
+        var node = new THREE.Object3D();
+        node.boundingBox = box;
+        node.updateMatrixWorld(true);
+        this.zoomTo(node, (factor == null ? 1 : factor), animationDuration || 0);
+        if (this.controls && this.controls.stop) this.controls.stop();
+      };
+      viewer._fitToClipPatched = true;
+    })();
+
     // -- Monkey-patch point picking to apply active constraint --
     const _origPick = Potree.Utils.getMousePointCloudIntersection;
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
+      // ALWAYS respect the clip/crop boxes when picking. Potree's own tools (e.g.
+      // the distance tool) pick without this flag, so they would otherwise snap to
+      // points that have been clipped out of view. Forcing it here makes every
+      // pick that routes through this wrapper ignore clipped-away points.
+      params = params ? Object.assign({}, params, { pickClipped: true }) : { pickClipped: true };
       let result = _origPick.call(this, mouse, camera, viewer, pointclouds, params);
-      if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive) {
+      var _pointSnapped = false; // set true if we snap to an existing node this call
+
+      if (result && result.location && activeConstraintId && !constraintPickMode && !constraintDragActive && !planeHandleDragActive) {
         var _ac0 = constraints.find(function(con) { return con.id === activeConstraintId; });
         var _hasPrior0 = !!(pendingMeasurement && pendingMeasurement.points.length >= 2);
         if (!_ac0) {
@@ -3656,6 +4081,7 @@
         }
         if (snap) {
           _snapTargetTime = performance.now();
+          _pointSnapped = true;
           if (result && result.location) { result.location = snap.position; }
           else {
             var _scam = viewer.scene.getActiveCamera();
@@ -3664,8 +4090,164 @@
           showToast('Snapped to ' + snap.label, 1000);
         }
       }
+      // ---- Plane-plane intersection snap (SketchUp-style proximity inference): if
+      // the cursor is near where two planes cross, snap onto that line — even where
+      // it runs through empty space. An exact endpoint/vertex snap (above) wins.
+      if (_snapPlaneIntersections && mouse && typeof mouse.x === 'number' && !_pointSnapped &&
+          !constraintPickMode && !constraintDragActive && !memberDragActive && !planeHandleDragActive) {
+        var _cam3 = viewer.scene.getActiveCamera();
+        var _isnap = snapToIntersectionLineScreen(mouse, _cam3, PLANE_INTERSECT_SNAP_PX);
+        if (_isnap) {
+          if (result && result.location) { result.location = _isnap; }
+          else { result = { location: _isnap.clone(), distance: _cam3 ? _cam3.position.distanceTo(_isnap) : 0, pointcloud: null, point: { position: _isnap.clone() } }; }
+          _pointSnapped = true;
+        }
+      }
+      // ---- Custom drawing-axis inference (SketchUp-style). Snap the pick onto
+      // the nearest custom axis line through the current anchor when the cursor
+      // is within a few px (or an axis is arrow-locked). Applies to the measure,
+      // member, and mark tools. A locked axis overrides a point snap; otherwise
+      // an exact point snap (endpoint/vertex, above) wins over the axis. ----
+      if (result && result.location && _customAxes && mouse && typeof mouse.x === 'number' &&
+          !constraintPickMode && !constraintDragActive && !memberDragActive &&
+          !markerDragActive && !planeHandleDragActive &&
+          (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) {
+        var _inf = applyAxisInference(result.location, mouse);
+        if (_inf && (_axisLock || !_pointSnapped)) { result.location = _inf.location; _activeInferAxis = _inf.key; }
+        else _activeInferAxis = null;
+      } else if (!_axesPickMode) {
+        _activeInferAxis = null;
+      }
       return result;
     };
+
+    // ===== ORBIT AROUND THE CURSOR =====
+    // Stock OrbitControls orbits around the look-at pivot (screen centre), so
+    // orbiting only feels "centred on the cursor" by accident. Pick the point
+    // under the cursor at drag-start and tumble the camera around THAT point
+    // (the same rigid rotation EarthControls uses), so left-drag orbit is always
+    // centred on the cursor. Over empty space, fall back to the cursor ray at
+    // the current look-at depth so it still pivots under the cursor.
+    var _ORBIT_UP = new THREE.Vector3(0, 0, 1);
+    function _pickOrbitPivot(mousePixel) {
+      var cam = viewer.scene.getActiveCamera();
+      var hit = _origPick(mousePixel, cam, viewer, viewer.scene.pointclouds, { pickClipped: true });
+      if (hit && hit.location) return hit.location.clone();
+      var view = viewer.scene.view;
+      var rect = renderArea.getBoundingClientRect();
+      var ndc = new THREE.Vector2((mousePixel.x / rect.width) * 2 - 1, -(mousePixel.y / rect.height) * 2 + 1);
+      var ray = new THREE.Raycaster(); ray.setFromCamera(ndc, cam);
+      var depth = cam.position.distanceTo(view.getPivot());
+      return ray.ray.origin.clone().addScaledVector(ray.ray.direction, depth);
+    }
+    // Set the pivot on every left-mousedown; clear on mouseup. If the gesture
+    // ends up grabbing something instead of orbiting, the orbit deltas stay 0 and
+    // the pivot is simply unused.
+    renderArea.addEventListener('mousedown', function(e) {
+      if (e.button !== 0 || !viewer.orbitControls) return;
+      var rect = renderArea.getBoundingClientRect();
+      try { viewer.orbitControls._cursorPivot = _pickOrbitPivot({ x: e.clientX - rect.left, y: e.clientY - rect.top }); }
+      catch (err) { viewer.orbitControls._cursorPivot = null; }
+    }, true);
+    window.addEventListener('mouseup', function() {
+      if (viewer.orbitControls) viewer.orbitControls._cursorPivot = null;
+    }, true);
+    // Reimplement OrbitControls.update: rotation tumbles around _cursorPivot;
+    // pan / zoom / decay copied verbatim from the stock control.
+    (function() {
+      var oc = viewer.orbitControls;
+      if (!oc || oc._cursorTumblePatched) return;
+      oc._cursorTumblePatched = true;
+      oc.update = function(delta) {
+        var view = this.scene.view;
+        var progression = Math.min(1, this.fadeFactor * delta);
+        var attenuation = Math.max(0, 1 - this.fadeFactor * delta);
+
+        // rotation — tumble around the cursor pivot (fallback: look-at pivot)
+        if (this.yawDelta !== 0 || this.pitchDelta !== 0) {
+          var dYaw = -progression * this.yawDelta;
+          var dPitch = -progression * this.pitchDelta;
+          var eps = 0.001;
+          var clamped = Math.max(-Math.PI / 2 + eps, Math.min(Math.PI / 2 - eps, view.pitch + dPitch));
+          dPitch = clamped - view.pitch;
+          var pivot = this._cursorPivot || view.getPivot();
+          var side = view.getSide();
+          var pivotToCam = new THREE.Vector3().subVectors(view.position, pivot);
+          pivotToCam.applyAxisAngle(side, dPitch);
+          pivotToCam.applyAxisAngle(_ORBIT_UP, dYaw);
+          view.position.copy(pivot).add(pivotToCam);
+          view.yaw += dYaw;
+          view.pitch += dPitch;
+        }
+
+        // pan (verbatim)
+        {
+          var speedMul = this.viewer._speedLocked ? (this.viewer.getMoveSpeed() / Math.max(view.radius, 0.001)) : 1;
+          var panDistance = progression * view.radius * 3 * speedMul;
+          view.pan(-this.panDelta.x * panDistance, this.panDelta.y * panDistance);
+        }
+
+        // zoom (verbatim, with zoom-to-cursor)
+        {
+          var zoomAmount = progression * this.radiusDelta;
+          var oldRadius = view.radius;
+          var radius = oldRadius + zoomAmount;
+          var zpivot = view.getPivot();
+          var V = view.direction.multiplyScalar(-radius);
+          var position = new THREE.Vector3().addVectors(zpivot, V);
+          view.radius = radius;
+          view.position.copy(position);
+          if (this._zoomTarget && zoomAmount !== 0 && oldRadius > 0) {
+            var fraction = Math.abs(zoomAmount) / oldRadius;
+            var sign = zoomAmount < 0 ? 1 : -1;
+            view.position.add(new THREE.Vector3().subVectors(this._zoomTarget, zpivot).multiplyScalar(fraction * sign));
+          }
+          if (Math.abs(this.radiusDelta) < 0.001) this._zoomTarget = null;
+        }
+
+        // auto move speed (verbatim)
+        if (!this.viewer._speedLocked) {
+          var cap = this.viewer._autoSpeedMax || 10;
+          this.viewer.setMoveSpeed(Math.min(view.radius, cap));
+        }
+
+        // decelerate (verbatim)
+        this.yawDelta *= attenuation;
+        this.pitchDelta *= attenuation;
+        this.panDelta.multiplyScalar(attenuation);
+        this.radiusDelta -= progression * this.radiusDelta;
+      };
+    })();
+
+    // ===== BOX WIREFRAME BRIGHTNESS =====
+    // Every Potree BoxVolume (clip/crop box, cut-outs, elevation, exclusion,
+    // volume measures) draws a BLACK wireframe, hard to see on low-contrast /
+    // older screens. Expose an adjustable brightness (0 = black … 1 = white)
+    // applied to all box frames, persisted in localStorage.
+    var _boxWireBright = (function() {
+      var v = parseFloat(localStorage.getItem('enable.boxWireBrightness'));
+      return isNaN(v) ? 0 : Math.max(0, Math.min(1, v));
+    })();
+    function _applyBoxWireToVolume(vol) {
+      if (vol && vol.frame && vol.frame.material && vol.frame.material.color) {
+        vol.frame.material.color.setScalar(_boxWireBright);
+        vol.frame.material.needsUpdate = true;
+      }
+    }
+    function applyBoxWireBrightnessAll() {
+      var vols = (viewer.scene && viewer.scene.volumes) ? viewer.scene.volumes : [];
+      for (var i = 0; i < vols.length; i++) _applyBoxWireToVolume(vols[i]);
+      if (typeof initialClipBox !== 'undefined' && initialClipBox) _applyBoxWireToVolume(initialClipBox);
+    }
+    function setBoxWireBrightness(v) {
+      _boxWireBright = Math.max(0, Math.min(1, isNaN(v) ? 0 : v));
+      try { localStorage.setItem('enable.boxWireBrightness', String(_boxWireBright)); } catch (e) {}
+      applyBoxWireBrightnessAll();
+    }
+    function getBoxWireBrightness() { return _boxWireBright; }
+    if (viewer.scene && viewer.scene.addEventListener) {
+      viewer.scene.addEventListener('volume_added', function(e) { if (e && e.volume) _applyBoxWireToVolume(e.volume); });
+    }
 
     // -- Project a point onto the active constraint --
     function projectPoint(point) {
@@ -3712,6 +4294,18 @@
         showToast('Pick points for best-fit plane (Enter to finalize, min 3)', 5000);
         var btn = document.getElementById('btn-fit-plane');
         if (btn) btn.classList.add('active');
+      } else if (type === 'perp-plane') {
+        var refSel = constraints.find(function(c) { return c.id === selectedConstraintId && c.type === 'plane'; });
+        if (!refSel) {
+          showToast('Select a plane first to make one perpendicular to it', 4000);
+          cancelConstraintPick();
+          return;
+        }
+        _perpRefConstraintId = refSel.id;
+        constraintPickTarget = 1;
+        showToast('Click a point to place a plane ⟂ and square to "' + refSel.name + '" (unlock afterward to rotate/stretch)', 6000);
+        var btnP = document.getElementById('btn-perp-plane');
+        if (btnP) btnP.classList.add('active');
       } else {
         constraintPickTarget = 2;
         showToast('Pick point (1/' + constraintPickTarget + ') for ' + type, 5000);
@@ -3803,7 +4397,21 @@
       // onto the plane happens only inside computePlaneBasis when deriving X/Y.
       constraintPickPoints.push(position.clone());
       placePickMarker(position);
-      undoStack.push({ type: 'constraint-point' });
+      (function(pos) {
+        pushUndoCmd({ label: 'constraint pick', tag: 'constraint-point',
+          undo: function(){
+            if (constraintPickMode && constraintPickPoints.length > 0) {
+              constraintPickPoints.pop();
+              if (constraintPickMarkers.length > 0) {
+                var mk = constraintPickMarkers.pop();
+                mk.traverse(function(o){ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); });
+                constraintScene.remove(mk);
+              }
+              if (constraintPickPoints.length === 0) cancelConstraintPick();
+            }
+          },
+          redo: function(){ if (constraintPickMode) { constraintPickPoints.push(pos.clone()); placePickMarker(pos); } } });
+      })(position.clone());
       var count = constraintPickPoints.length;
       if (constraintPickType === 'fit-plane') {
         var status = count + ' point' + (count === 1 ? '' : 's') + ' picked';
@@ -3828,6 +4436,7 @@
       var wasXAxis = (constraintPickType === 'plane-x-axis');
       var wasEdit = wasXAxis && _pendingPlaneConstraint && constraints.indexOf(_pendingPlaneConstraint) !== -1;
       _pendingPlaneConstraint = null;
+      _perpRefConstraintId = null;
       constraintPickMode = false;
       constraintPickPoints = [];
       constraintPickType = null;
@@ -3966,6 +4575,75 @@
           visible: true,
           locked: true
         };
+      } else if (type === 'perp-plane') {
+        if (pts.length < 1) { showToast('Need a point'); cancelConstraintPick(); return; }
+        var refC = constraints.find(function(c) { return c.id === _perpRefConstraintId && c.type === 'plane'; });
+        if (!refC) {
+          showToast('Reference plane is gone — cannot build perpendicular plane');
+          cancelConstraintPick();
+          return;
+        }
+        var refN = refC.normal.clone().normalize();
+        // "Square to the reference": the new plane's in-plane direction follows
+        // the reference plane's own X axis, so the new plane is orthogonal to the
+        // reference AND aligned with its axes (not rotated by an arbitrary line).
+        var refBasis = refC.basis || computePlaneBasis(refC);
+        var refX = (refBasis && refBasis.X) ? refBasis.X.clone().normalize() : null;
+        if (!refX) {
+          var tmpRef = (Math.abs(refN.z) < 0.9) ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+          refX = new THREE.Vector3().crossVectors(tmpRef, refN).normalize();
+        }
+        var refYv = (refBasis && refBasis.Y) ? refBasis.Y.clone().normalize()
+                                             : new THREE.Vector3().crossVectors(refN, refX).normalize();
+        // Initial size from the reference plane's own extent.
+        var refSize = 0;
+        for (var ri = 0; ri < refC.points.length; ri++) {
+          for (var rj = ri + 1; rj < refC.points.length; rj++) {
+            refSize = Math.max(refSize, refC.points[ri].distanceTo(refC.points[rj]));
+          }
+        }
+        if (!(refSize > 0.3)) refSize = 1;
+        var perpHalf = refSize / 2;
+        var pClick = pts[0].clone();
+        // Two def-points straddling the click along refX → the plane is centered
+        // on the click, and the user can still drag these to rotate/reposition.
+        var pp0 = pClick.clone().addScaledVector(refX, -perpHalf);
+        var pp1 = pClick.clone().addScaledVector(refX, perpHalf);
+        var perpN = new THREE.Vector3().crossVectors(refX, refN);
+        if (perpN.length() < 1e-4) {
+          showToast('Reference plane basis is degenerate — cannot build perpendicular plane', 5000);
+          cancelConstraintPick();
+          return;
+        }
+        perpN.normalize();
+        var perpPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(perpN, pClick);
+        constraint = {
+          id: nextConstraintId++,
+          type: 'plane',
+          name: 'Perp Plane ' + (nextConstraintId - 1),
+          plane: perpPlane,
+          normal: perpN,
+          centroid: pClick,
+          points: [pp0, pp1],
+          visual: null,
+          visible: true,
+          // Created UNLOCKED so the user can immediately rotate it 90° (⟳) or
+          // drag its points before locking it down.
+          locked: false,
+          // Snapshot of the reference normal (legacy) + full reference basis and
+          // the current orientation cycle state. Orientation is derived from
+          // these (see applyPerpCycle), not from the point positions.
+          perpRefNormal: refN.clone(),
+          perpRef: { X: refX.clone(), Y: refYv.clone(), N: refN.clone() },
+          perpCycle: 0,
+          // Auto-basis: X along the reference X axis, Y along the reference normal.
+          xAxisAnchorA: pp0.clone(),
+          xAxisAnchorB: pp1.clone(),
+          xAxisCamUp: refN.clone()
+        };
+        // Normalize orientation/points through the cycle machinery (state 0 =
+        // ⊥ ref, X-aligned — identical to what we just built).
+        applyPerpCycle(constraint);
       }
 
       clearPickMarkers();
@@ -3974,12 +4652,19 @@
         buildConstraintVisual(constraint);
         constraints.push(constraint);
         rebuildConstraintList();
-        // Replace constraint-point undo entries with a single constraint entry
-        while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'constraint-point') {
+        // Replace constraint-point pick entries with a single constraint entry
+        while (undoStack.length > 0 && undoStack[undoStack.length - 1].tag === 'constraint-point') {
           undoStack.pop();
         }
-        undoStack.push({ type: 'constraint', id: constraint.id });
-        showToast(constraint.name + ' created');
+        pushUndoCmd(_cmdAddConstraint(constraint));
+        if (constraint.perpRefNormal) {
+          // Perp plane: select it (unlocked) so the user can click ⟳ to rotate
+          // 90° until the alignment is right, then lock it.
+          selectConstraint(constraint.id);
+          showToast(constraint.name + ' created — click ⟳ in its row to cycle orientation (5 presets), then lock when correct', 6000);
+        } else {
+          showToast(constraint.name + ' created');
+        }
       }
 
       constraintPickMode = false;
@@ -4042,10 +4727,10 @@
         buildConstraintVisual(c);
         constraints.push(c);
         rebuildConstraintList();
-        while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'constraint-point') {
+        while (undoStack.length > 0 && undoStack[undoStack.length - 1].tag === 'constraint-point') {
           undoStack.pop();
         }
-        undoStack.push({ type: 'constraint', id: c.id });
+        pushUndoCmd(_cmdAddConstraint(c));
         showToast(c.name + ' created with custom X axis');
       }
 
@@ -4119,29 +4804,68 @@
           }
         }
         var quadSize = Math.max(maxDist * 3, 1);
-        var planeGeo = new THREE.PlaneGeometry(quadSize, quadSize);
+
+        // Quad orientation frame. We draw the rectangle in the plane's LOCAL
+        // basis (X = red arrow, Y = green arrow) so the outline and the stretch
+        // handles line up with the axes the user set — instead of the old
+        // world-level frame. Falls back to a world-Z-projected frame only when
+        // the plane has no basis (shouldn't happen for current planes).
+        var n = constraint.normal;
+        var quadBasis = constraint.basis || computePlaneBasis(constraint);
+        var localX, localY;
+        if (quadBasis && quadBasis.X && quadBasis.Y) {
+          localX = quadBasis.X.clone().normalize();
+          localY = quadBasis.Y.clone().normalize();
+        } else {
+          var worldRef = (Math.abs(n.z) < 0.9)
+            ? new THREE.Vector3(0, 0, 1)
+            : new THREE.Vector3(1, 0, 0);
+          localX = new THREE.Vector3().crossVectors(worldRef, n).normalize();
+          localY = new THREE.Vector3().crossVectors(n, localX).normalize();
+        }
+        // localZ from X×Y guarantees a proper (right-handed) rotation even if the
+        // basis Z was flipped relative to the fit normal. Fill is DoubleSide, so
+        // the face-normal direction is irrelevant visually.
+        var localZ = new THREE.Vector3().crossVectors(localX, localY).normalize();
+        var rotMat = new THREE.Matrix4().makeBasis(localX, localY, localZ);
+        var quat = new THREE.Quaternion().setFromRotationMatrix(rotMat);
+        // Persist the quad frame so stretch-handle drags use identical axes.
+        constraint._quadX = localX.clone();
+        constraint._quadY = localY.clone();
+
+        // Rectangle extents = local-frame distances from centroid along X/Y.
+        // Default = symmetric square; the user stretch handles mutate these.
+        // Purely visual — they do NOT affect the plane math.
+        if (!constraint.rectExtent) {
+          var half = quadSize / 2;
+          constraint.rectExtent = { xMin: -half, xMax: half, yMin: -half, yMax: half };
+        }
+        var ex = constraint.rectExtent;
+        var rectW = Math.max(ex.xMax - ex.xMin, 0.01);
+        var rectH = Math.max(ex.yMax - ex.yMin, 0.01);
+        var rectCx = (ex.xMin + ex.xMax) / 2;
+        var rectCy = (ex.yMin + ex.yMax) / 2;
+        var rectCenter = constraint.centroid.clone()
+          .addScaledVector(localX, rectCx)
+          .addScaledVector(localY, rectCy);
+
+        var planeGeo = new THREE.PlaneGeometry(rectW, rectH);
         var planeMat = new THREE.MeshBasicMaterial({
-          color: 0x39ff14, transparent: true, opacity: 0.15,
-          side: THREE.DoubleSide, depthTest: false, depthWrite: false
+          color: 0x39ff14, transparent: true, opacity: 0.22,
+          side: THREE.DoubleSide, depthTest: true, depthWrite: false
         });
         var planeMesh = new THREE.Mesh(planeGeo, planeMat);
-        planeMesh.position.copy(constraint.centroid);
-        // Build rotation so quad edges stay aligned with world axes.
-        // PlaneGeometry face normal is local Z; local X/Y are the quad edges.
-        var n = constraint.normal;
-        // Project world-Z onto the plane to get a vertical-ish "up" edge.
-        // If the plane is nearly horizontal (normal ~ Z), use world-X instead.
-        var worldRef = (Math.abs(n.z) < 0.9)
-          ? new THREE.Vector3(0, 0, 1)
-          : new THREE.Vector3(1, 0, 0);
-        // localX = horizontal edge in the plane
-        var localX = new THREE.Vector3().crossVectors(worldRef, n).normalize();
-        // localY = vertical edge in the plane
-        var localY = new THREE.Vector3().crossVectors(n, localX).normalize();
-        var rotMat = new THREE.Matrix4().makeBasis(localX, localY, n);
-        var quat = new THREE.Quaternion().setFromRotationMatrix(rotMat);
+        planeMesh.position.copy(rectCenter);
         planeMesh.quaternion.copy(quat);
-        group.add(planeMesh);
+        planeMesh.renderOrder = 1;
+        planeMesh.userData.isPlaneFill = true;          // also the click target for plane selection
+        planeMesh.userData.constraintId = constraint.id;
+        // Render the fill in planeFillScene (drawn in the depth_overlay pass, which
+        // has the point cloud's depth) so it depth-tests correctly: points IN FRONT
+        // of the plane occlude the green sheet, points BEHIND show through it — the
+        // classic section-plane look. Lifecycle is managed via constraint._fillMesh.
+        planeFillScene.add(planeMesh);
+        constraint._fillMesh = planeMesh;
 
         var edgeGeo = new THREE.EdgesGeometry(planeGeo);
         var edgeMat = new THREE.LineBasicMaterial({
@@ -4149,9 +4873,44 @@
           depthTest: false, depthWrite: false
         });
         var edgeLine = new THREE.LineSegments(edgeGeo, edgeMat);
-        edgeLine.position.copy(constraint.centroid);
+        edgeLine.position.copy(rectCenter);
         edgeLine.quaternion.copy(quat);
         group.add(edgeLine);
+
+        // Stretch handles: 4 at the edge midpoints (move one edge) + 4 at the
+        // corners (move two edges diagonally). Visible/pickable only when the
+        // plane is unlocked; purely visual.
+        var handleDefs = [
+          { edge: 'xMin', u: ex.xMin, v: rectCy },
+          { edge: 'xMax', u: ex.xMax, v: rectCy },
+          { edge: 'yMin', u: rectCx, v: ex.yMin },
+          { edge: 'yMax', u: rectCx, v: ex.yMax },
+          { edge: 'xMin,yMin', u: ex.xMin, v: ex.yMin, corner: true },
+          { edge: 'xMax,yMin', u: ex.xMax, v: ex.yMin, corner: true },
+          { edge: 'xMin,yMax', u: ex.xMin, v: ex.yMax, corner: true },
+          { edge: 'xMax,yMax', u: ex.xMax, v: ex.yMax, corner: true }
+        ];
+        for (var hIdx = 0; hIdx < handleDefs.length; hIdx++) {
+          var hd = handleDefs[hIdx];
+          var hPos = constraint.centroid.clone()
+            .addScaledVector(localX, hd.u)
+            .addScaledVector(localY, hd.v);
+          var hSize = hd.corner ? 0.68 : 0.55;
+          var hMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(hSize, hSize, hSize),
+            new THREE.MeshBasicMaterial({
+              color: hd.corner ? 0xffa000 : 0xffd400,
+              depthTest: false, depthWrite: false,
+              transparent: true, opacity: 0.95
+            })
+          );
+          hMesh.position.copy(hPos);
+          hMesh.userData.isPlaneStretchHandle = true;
+          hMesh.userData.isMarkerSphere = true; // reuse constant-screen scaling
+          hMesh.userData.handleEdge = hd.edge;
+          hMesh.visible = (constraint.id === selectedConstraintId);
+          group.add(hMesh);
+        }
 
         // +X (red) and +Y (green) basis arrows from centroid. Anchored from
         // the user-defined basis if present, falling back to auto-basis.
@@ -4231,21 +4990,164 @@
       for (var ci = 0; ci < constraints.length; ci++) {
         var c = constraints[ci];
         if (!c.visual) continue;
-        var isActive = c.id === activeConstraintId;
+        var isSel = c.id === selectedConstraintId;
         c.visual.traverse(function(obj) {
           if (obj.material) {
             if (obj.userData && obj.userData.isDefPointRing) {
               obj.material.opacity = 0.9;
+            } else if (obj.userData && obj.userData.isPlaneStretchHandle) {
+              // Stretch handles keep their own bright opacity (never dimmed).
+              obj.material.opacity = 0.95;
             } else if (obj.userData && obj.userData.isBasisArrow) {
               // Basis arrows manage their own opacity (always visible).
             } else if (obj.isMesh) {
-              obj.material.opacity = isActive ? 0.2 : 0.08;
+              obj.material.opacity = isSel ? 0.2 : 0.08;
             } else if (obj.isLine || obj.isLineSegments) {
-              obj.material.opacity = isActive ? 0.7 : 0.25;
+              obj.material.opacity = isSel ? 0.7 : 0.25;
             }
           }
         });
       }
+    }
+
+    // -- Select / deselect a constraint (highlight + stretch handles). This is
+    //    SEPARATE from binding (activeConstraintId), which drives measurement snap. --
+    function selectConstraint(id) {
+      selectedConstraintId = id;
+      rebuildConstraintList();
+      updateConstraintVisuals();
+    }
+    function deselectConstraint() {
+      if (selectedConstraintId === null) return false;
+      selectedConstraintId = null;
+      rebuildConstraintList();
+      updateConstraintVisuals();
+      return true;
+    }
+
+    // -- Enable the plane-selection-dependent buttons only when a PLANE is selected --
+    function updatePerpPlaneButton() {
+      var selectedPlane = selectedConstraintId !== null && constraints.some(function(c) {
+        return c.id === selectedConstraintId && c.type === 'plane';
+      });
+      var btn = document.getElementById('btn-perp-plane');
+      if (btn) {
+        btn.disabled = !selectedPlane;
+        btn.title = selectedPlane
+          ? 'New plane perpendicular and square to the selected plane (single click to place; unlock to rotate/stretch)'
+          : 'Select a plane first, then create a plane perpendicular to it';
+      }
+    }
+
+    // -- Normal-dimension hover preview: a red dot on the cloud point under the
+    //    cursor + an elastic line back to its perpendicular foot on the plane
+    //    (mirrors the distance tool's red-dot cue instead of a crosshair). --
+    var _normPreviewSphere = null;
+    var _normPreviewLine = null;
+    function _ensureNormPreview() {
+      if (!_normPreviewSphere) {
+        _normPreviewSphere = _makePreviewSphere(0xff2020);
+        constraintScene.add(_normPreviewSphere);
+      }
+      if (!_normPreviewLine) {
+        var g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+        _normPreviewLine = new THREE.Line(g, new THREE.LineBasicMaterial({
+          color: 0xff2020, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9
+        }));
+        _normPreviewLine.renderOrder = 1;
+        _normPreviewLine.visible = false;
+        constraintScene.add(_normPreviewLine);
+      }
+    }
+    function _disposeNormPreview() {
+      if (_normPreviewSphere) {
+        constraintScene.remove(_normPreviewSphere);
+        if (_normPreviewSphere.geometry) _normPreviewSphere.geometry.dispose();
+        if (_normPreviewSphere.material) _normPreviewSphere.material.dispose();
+        _normPreviewSphere = null;
+      }
+      if (_normPreviewLine) {
+        constraintScene.remove(_normPreviewLine);
+        if (_normPreviewLine.geometry) _normPreviewLine.geometry.dispose();
+        if (_normPreviewLine.material) _normPreviewLine.material.dispose();
+        _normPreviewLine = null;
+      }
+    }
+    function _updateNormPreview(e) {
+      if (!_normDimArmed || !_normPreviewSphere) return;
+      var ref = constraints.find(function(c) { return c.id === _normDimRefId && c.type === 'plane'; });
+      var rect = renderArea.getBoundingClientRect();
+      var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      var pick = _origPick(mouse, viewer.scene.getActiveCamera(), viewer, viewer.scene.pointclouds, { pickClipped: true });
+      if (ref && pick && pick.location) {
+        var foot = new THREE.Vector3();
+        ref.plane.projectPoint(pick.location, foot);
+        _normPreviewSphere.position.copy(pick.location);
+        _normPreviewSphere.visible = true;
+        var pos = _normPreviewLine.geometry.attributes.position;
+        pos.setXYZ(0, pick.location.x, pick.location.y, pick.location.z);
+        pos.setXYZ(1, foot.x, foot.y, foot.z);
+        pos.needsUpdate = true;
+        _normPreviewLine.visible = true;
+      } else {
+        _normPreviewSphere.visible = false;
+        _normPreviewLine.visible = false;
+      }
+    }
+
+    // -- Toggle normal-dimension mode for a plane. With planeId, targets that
+    //    plane (row "Norm" button); without, uses the selected plane ("d" key).
+    //    While ON, a single cloud click drops a perpendicular dimension onto the
+    //    plane. Toggling the active plane again (or a different plane) switches. --
+    function toggleNormDim(planeId) {
+      var id = (planeId != null) ? planeId : selectedConstraintId;
+      var target = constraints.find(function(c) { return c.id === id && c.type === 'plane'; });
+      if (_normDimMode && target && _normDimRefId === target.id) {
+        _normDimMode = false; _normDimArmed = false; _normDimRefId = null;
+        _disposeNormPreview();
+        showToast('Normal dimension OFF', 2000);
+        rebuildConstraintList(); updateConstraintStatus();
+        return;
+      }
+      if (!target) {
+        showToast('Select a plane first to dimension normal to it', 3000);
+        return;
+      }
+      if (MARK_MODE) toggleMarkMode(true);
+      if (memberPickMode) cancelMemberPick();
+      if (constraintPickMode) cancelConstraintPick();
+      cancelPotreeInsertion();
+      // Norm and Bind are mutually exclusive — turn off any bound plane.
+      if (activeConstraintId !== null) activeConstraintId = null;
+      _normDimMode = true; _normDimArmed = true; _normDimRefId = target.id;
+      _ensureNormPreview();
+      showToast('Normal dimension ON — click cloud points to measure ⟂ distance to ' + target.name + ' (Esc = stop measuring; Norm button = exit)', 5000);
+      rebuildConstraintList(); updateConstraintStatus();
+    }
+
+    // -- Create a perpendicular dimension from a cloud point to the norm plane --
+    function placeNormDimension(cloudPoint) {
+      var ref = constraints.find(function(c) { return c.id === _normDimRefId && c.type === 'plane'; });
+      if (!ref) { showToast('Normal-dimension plane is gone'); return; }
+      var foot = new THREE.Vector3();
+      ref.plane.projectPoint(cloudPoint, foot);
+      if (cloudPoint.distanceTo(foot) < 1e-4) {
+        showToast('That point is already on the plane', 2000);
+        return;
+      }
+      var measure = new Potree.Measure();
+      measure.showDistances = true;
+      measure.showArea = false;
+      measure.showAngles = false;
+      measure.showHeight = false;
+      measure.closed = false;
+      measure.userData.only3D = true; // perpendicular gap — XY/Z breakdown isn't meaningful (set before markers so labels build 3D-only)
+      measure.addMarker(cloudPoint.clone());
+      measure.addMarker(foot);
+      viewer.scene.addMeasurement(measure);
+      pushUndoCmd(_cmdAddMeasurement(measure)); // one undo entry per perpendicular dimension
+      try { rebuildAllMeasurementLists(); } catch (e) {}
     }
 
     // -- Rebuild constraint sidebar list --
@@ -4258,11 +5160,17 @@
       for (var ci = 0; ci < constraints.length; ci++) {
         (function(c) {
           var row = document.createElement('div');
-          row.className = 'constraint-row' + (c.id === activeConstraintId ? ' active' : '');
+          row.className = 'constraint-row' + (c.id === selectedConstraintId ? ' active' : '');
 
           var nameSpan = document.createElement('span');
           nameSpan.className = 'constraint-name';
-          nameSpan.textContent = c.name;
+          nameSpan.textContent = c.name + (c.id === activeConstraintId ? ' 🔗' : '');
+          nameSpan.style.cursor = 'pointer';
+          // Clicking the name selects/deselects the plane (highlight + handles).
+          nameSpan.addEventListener('click', function() {
+            if (selectedConstraintId === c.id) deselectConstraint();
+            else selectConstraint(c.id);
+          });
           row.appendChild(nameSpan);
 
           var visBtn = document.createElement('button');
@@ -4285,6 +5193,8 @@
             lockBtn.textContent = c.locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
             lockBtn.title = c.locked ? 'Unlock points' : 'Lock points';
             lockBtn.classList.toggle('locked', c.locked);
+            // Refresh the row so the X / rotate button's enabled state tracks lock.
+            rebuildConstraintList();
           });
           row.appendChild(lockBtn);
 
@@ -4300,26 +5210,61 @@
 
             var setXBtn = document.createElement('button');
             setXBtn.className = 'btn-set-x';
-            setXBtn.textContent = 'X';
-            setXBtn.title = 'Re-pick +X axis for this plane';
-            setXBtn.addEventListener('click', function() {
-              startPlaneXAxisEdit(c);
-            });
+            var isPerp = !!c.perpRefNormal;
+            if (isPerp) {
+              // Perp planes: cycle through the 5 preset orientations.
+              setXBtn.textContent = '⟳';
+              setXBtn.title = 'Cycle orientation: Perpendicular (X) → Perpendicular (Y) → Level → Plumb (X) → Plumb (Y) (unlock to use)';
+              setXBtn.addEventListener('click', function() { if (!c.locked) rotatePerpPlaneCycle(c); });
+            } else {
+              setXBtn.textContent = 'X';
+              setXBtn.title = 'Re-pick +X axis for this plane (unlock to use)';
+              setXBtn.addEventListener('click', function() { if (!c.locked) startPlaneXAxisEdit(c); });
+            }
+            // Both are only usable when the plane is unlocked.
+            setXBtn.disabled = !!c.locked;
+            if (c.locked) { setXBtn.style.opacity = '0.4'; setXBtn.style.cursor = 'not-allowed'; }
             row.appendChild(setXBtn);
           }
 
           var activateBtn = document.createElement('button');
-          activateBtn.textContent = c.id === activeConstraintId ? 'Active' : 'Activate';
+          activateBtn.textContent = c.id === activeConstraintId ? 'Bound' : 'Bind';
+          activateBtn.title = 'Bind measurements to snap onto this plane (separate from selection)';
+          if (c.id === activeConstraintId) {
+            activateBtn.classList.add('bound');
+            activateBtn.style.background = 'var(--accent, #3EAD4A)';
+            activateBtn.style.color = '#fff';
+            activateBtn.style.fontWeight = '600';
+          }
           activateBtn.addEventListener('click', function() {
             if (activeConstraintId === c.id) {
               activeConstraintId = null;
             } else {
               activeConstraintId = c.id;
+              // Bind and Norm are mutually exclusive — turn off Norm mode.
+              if (_normDimMode) { _normDimMode = false; _normDimArmed = false; _normDimRefId = null; _disposeNormPreview(); }
             }
             rebuildConstraintList();
             updateConstraintVisuals();
           });
           row.appendChild(activateBtn);
+
+          if (c.type === 'plane') {
+            var normBtn = document.createElement('button');
+            var normOn = _normDimMode && _normDimRefId === c.id;
+            normBtn.textContent = 'Norm';
+            normBtn.title = normOn
+              ? 'Normal-dimension mode ON \u2014 click cloud points to drop \u27c2 dimensions onto this plane. Click to turn off.'
+              : 'Normal-dimension mode: click cloud points to measure their perpendicular distance to this plane';
+            if (normOn) {
+              normBtn.classList.add('bound');
+              normBtn.style.background = 'var(--accent, #3EAD4A)';
+              normBtn.style.color = '#fff';
+              normBtn.style.fontWeight = '600';
+            }
+            normBtn.addEventListener('click', function() { toggleNormDim(c.id); });
+            row.appendChild(normBtn);
+          }
 
           var deleteBtn = document.createElement('button');
           deleteBtn.textContent = '\u00d7';
@@ -4332,7 +5277,32 @@
           listEl.appendChild(row);
         })(constraints[ci]);
       }
+
+      // Move / Copy along-normal controls for the selected plane.
+      var selPlane = constraints.find(function(c) { return c.id === selectedConstraintId && c.type === 'plane'; });
+      if (selPlane) {
+        (function(sp) {
+          var mv = document.createElement('div');
+          mv.className = 'plane-move-controls';
+          mv.innerHTML =
+            '<div class="pm-label">Move / copy “' + sp.name + '” along its normal</div>' +
+            '<div class="pm-row"><input id="pm-dist" type="number" step="any" value="' + lenToInputStr(_planeMoveMeters) + '"><span class="pm-unit">' + inputUnitLabel() + '</span>' +
+            '<button id="pm-move" title="Move this plane by the distance along +normal (negative = other way)">Move</button>' +
+            '<button id="pm-copy" title="Create a copy offset by the distance along the normal">Copy</button></div>' +
+            '<div class="pm-row"><button id="pm-move-pt">Move to point…</button>' +
+            '<button id="pm-copy-pt">Copy to point…</button></div>';
+          listEl.appendChild(mv);
+          var distEl = document.getElementById('pm-dist');
+          if (distEl) distEl.addEventListener('input', function() { var m = lenFromInput(this.value); _planeMoveMeters = isNaN(m) ? 0 : m; });
+          document.getElementById('pm-move').addEventListener('click', function() { offsetPlaneAlongNormal(sp, _planeMoveMeters, false); });
+          document.getElementById('pm-copy').addEventListener('click', function() { offsetPlaneAlongNormal(sp, _planeMoveMeters, true); });
+          document.getElementById('pm-move-pt').addEventListener('click', function() { startPlaneMovePick(sp.id, false); });
+          document.getElementById('pm-copy-pt').addEventListener('click', function() { startPlaneMovePick(sp.id, true); });
+        })(selPlane);
+      }
+
       updateConstraintStatus();
+      updatePerpPlaneButton();
     }
 
     // -- Delete a constraint --
@@ -4350,7 +5320,10 @@
         });
         constraintScene.remove(c.visual);
       }
+      _disposePlaneFill(c);
       if (activeConstraintId === id) activeConstraintId = null;
+      if (selectedConstraintId === id) selectedConstraintId = null;
+      if (_normDimRefId === id) { _normDimMode = false; _normDimArmed = false; _normDimRefId = null; _disposeNormPreview(); }
       constraints.splice(idx, 1);
       rebuildConstraintList();
       updateConstraintVisuals();
@@ -4360,13 +5333,19 @@
     function updateConstraintStatus() {
       var el = document.getElementById('enable-constraint-status');
       if (!el) return;
+      // Normal-dimension mode is independent of binding (its own plane ref), so
+      // surface it in both branches.
+      var normRef = _normDimMode
+        ? constraints.find(function(cc) { return cc.id === _normDimRefId; })
+        : null;
+      var normLabel = normRef ? ('Norm dim ON (' + normRef.name + ')' + (_normDimArmed ? ' — measuring' : ' — paused')) : '';
+      var normTxt = normLabel ? ' | ' + normLabel : '';
       if (!activeConstraintId) {
         var orphanBits = [];
         if (_orthoMeasureMode) orphanBits.push('Ortho ON');
         if (_orthoParallelMode) orphanBits.push('Parallel ON');
-        el.textContent = orphanBits.length
-          ? orphanBits.join(', ') + ' (no plane active — inactive)'
-          : '';
+        var orphanTxt = orphanBits.length ? orphanBits.join(', ') + ' (no plane active — inactive)' : '';
+        el.textContent = (orphanTxt + (normLabel ? (orphanTxt ? ' ' : '') + normLabel : '')).trim();
         return;
       }
       var c = null;
@@ -4379,7 +5358,7 @@
           if (_orthoMeasureMode) txt += ' | Ortho ON (' + (_orthoParallelMode ? 'X/Y/Z' : 'X/Y') + ')';
           if (_orthoParallelMode) txt += ' | Parallel';
         }
-        el.textContent = txt;
+        el.textContent = txt + normTxt;
       }
     }
 
@@ -4408,6 +5387,56 @@
       return bestResult;
     }
 
+    // -- Find nearest plane stretch handle to mouse (unlocked planes only) --
+    function findNearestPlaneHandle(mousePixel) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var bestDist = 14; // pixel threshold
+      var bestResult = null;
+      for (var ci = 0; ci < constraints.length; ci++) {
+        var c = constraints[ci];
+        if (c.type !== 'plane' || c.visible === false || !c.visual) continue;
+        if (c.id !== selectedConstraintId) continue; // handles only on the selected plane
+        c.visual.traverse(function(obj) {
+          if (!obj.userData || !obj.userData.isPlaneStretchHandle) return;
+          var wp = obj.getWorldPosition(new THREE.Vector3()).project(camera);
+          if (wp.z < -1 || wp.z > 1) return;
+          var sx = (wp.x * 0.5 + 0.5) * rect.width;
+          var sy = (1 - (wp.y * 0.5 + 0.5)) * rect.height;
+          var dx = sx - mousePixel.x, dy = sy - mousePixel.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestResult = { constraint: c, edge: obj.userData.handleEdge };
+          }
+        });
+      }
+      return bestResult;
+    }
+
+    // -- Raycast the plane quads; return the nearest plane constraint hit (or null) --
+    function pickPlaneConstraintAt(mousePixel) {
+      var camera = viewer.scene.getActiveCamera();
+      var rect = renderArea.getBoundingClientRect();
+      var ndc = new THREE.Vector2(
+        (mousePixel.x / rect.width) * 2 - 1,
+        -(mousePixel.y / rect.height) * 2 + 1
+      );
+      var ray = new THREE.Raycaster();
+      ray.setFromCamera(ndc, camera);
+      var best = null, bestDist = Infinity;
+      for (var ci = 0; ci < constraints.length; ci++) {
+        var c = constraints[ci];
+        if (c.type !== 'plane' || c.visible === false || !c._fillMesh) continue;
+        var hits = ray.intersectObjects([c._fillMesh], false);
+        if (hits.length && hits[0].distance < bestDist) {
+          bestDist = hits[0].distance;
+          best = c;
+        }
+      }
+      return best;
+    }
+
     // -- Find nearest X-axis pick marker to mouse (during plane-x-axis pick) --
     function findNearestXAxisPickMarker(mousePixel) {
       if (constraintPickType !== 'plane-x-axis') return -1;
@@ -4431,7 +5460,28 @@
     function recomputeConstraint(c) {
       if (c.type === 'plane') {
         var pts = c.points;
-        if (pts.length === 3) {
+        if (pts.length === 2 && c.perpRef && c.perpCycle != null) {
+          // Cycled perp plane: orientation comes from the cycle state; the points
+          // only set the anchor. Centroid = midpoint, then re-apply the cycle.
+          c.centroid = new THREE.Vector3().addVectors(pts[0], pts[1]).multiplyScalar(0.5);
+          applyPerpCycle(c);
+        } else if (pts.length === 2 && c.perpRefNormal) {
+          // Legacy 2-point perp: re-derive from the 2 points + snapshot ref normal.
+          var ld = new THREE.Vector3().subVectors(pts[1], pts[0]);
+          if (ld.length() < 1e-4) return false;
+          ld.normalize();
+          var rn = c.perpRefNormal.clone().normalize();
+          var pn = new THREE.Vector3().crossVectors(ld, rn);
+          if (pn.length() < 1e-4) return false;
+          pn.normalize();
+          c.normal = pn;
+          c.centroid = new THREE.Vector3().addVectors(pts[0], pts[1]).multiplyScalar(0.5);
+          c.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(pn, c.centroid);
+          c.xAxisAnchorA = pts[0].clone();
+          c.xAxisAnchorB = pts[1].clone();
+          c.xAxisCamUp = rn;
+          c.basis = computePlaneBasis(c);
+        } else if (pts.length === 3) {
           var v1 = new THREE.Vector3().subVectors(pts[1], pts[0]);
           var v2 = new THREE.Vector3().subVectors(pts[2], pts[0]);
           var normal = new THREE.Vector3().crossVectors(v1, v2);
@@ -4490,6 +5540,17 @@
       return true;
     }
 
+    // Dispose a plane's depth-correct fill mesh (lives in viewer.scene.scene, not
+    // the constraint group). Call wherever c.visual is disposed.
+    function _disposePlaneFill(c) {
+      if (c && c._fillMesh) {
+        planeFillScene.remove(c._fillMesh);
+        if (c._fillMesh.geometry) c._fillMesh.geometry.dispose();
+        if (c._fillMesh.material) c._fillMesh.material.dispose();
+        c._fillMesh = null;
+      }
+    }
+
     // -- Rebuild visual for a single constraint (dispose old, build new) --
     function rebuildConstraintVisual(c) {
       if (c.visual) {
@@ -4500,7 +5561,210 @@
         constraintScene.remove(c.visual);
         c.visual = null;
       }
+      _disposePlaneFill(c);
       buildConstraintVisual(c);
+    }
+
+    // ===== PERPENDICULAR-PLANE ORIENTATION CYCLE =====
+    // A perp plane can step through 5 preset orientations, all pivoting on its
+    // placement point. States 0/1 stay perpendicular to the reference plane
+    // (aligned to its X / Y axes); states 2/3/4 use GLOBAL Z directly (world is
+    // Z-up here) — horizontal, and two true-vertical planes facing the
+    // reference's X / Y horizontal directions. Orientation is derived from the
+    // reference-basis snapshot (c.perpRef) + c.perpCycle, NOT from the points —
+    // so dragging a point translates the anchor without changing orientation.
+    // Plain-language names: "Perpendicular" = square to the reference surface
+    // (two ways, along its X / Y); "Level" = world-horizontal; "Plumb" =
+    // world-vertical (two ways, along the reference's X / Y directions).
+    var PERP_STATE_NAMES = [
+      'Perpendicular (X)',
+      'Perpendicular (Y)',
+      'Level',
+      'Plumb (X)',
+      'Plumb (Y)'
+    ];
+    var PERP_STATE_COUNT = 5;
+
+    // Orthonormal right-handed basis {X,Y,Z} from a desired normal (Z) and a
+    // preferred in-plane X (Gram-Schmidt; falls back if preferX ∥ normal).
+    function _orthoBasis(normal, preferX) {
+      var Z = normal.clone(); if (Z.length() < 1e-6) Z.set(0, 0, 1); Z.normalize();
+      var X = preferX.clone();
+      X.addScaledVector(Z, -X.dot(Z));
+      if (X.length() < 1e-6) {
+        X.copy(Math.abs(Z.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0));
+        X.addScaledVector(Z, -X.dot(Z));
+      }
+      X.normalize();
+      var Y = new THREE.Vector3().crossVectors(Z, X).normalize();
+      return { X: X, Y: Y, Z: Z };
+    }
+
+    // Compute the {X,Y,Z} basis for a perp plane's cycle state from the
+    // reference-basis snapshot ref = {X,Y,N}.
+    function _perpBasisForState(ref, state) {
+      var worldZ = new THREE.Vector3(0, 0, 1);
+      var X = ref.X.clone().normalize();
+      var Y = ref.Y.clone().normalize();
+      var N = ref.N.clone().normalize();
+      function horiz(v) { var h = v.clone(); h.z = 0; return (h.length() < 1e-4) ? null : h.normalize(); }
+      var normal, preferX;
+      // Two horizontal directions 90° apart: H1 = reference X horizontalized,
+      // H2 ⊥ H1. States 3 & 4 are two DIFFERENT vertical (plumb) planes 90°
+      // apart — one running along H1, one along H2 — so cycling between them
+      // genuinely rotates the plane 90° about global Z. Both keep Y = world up.
+      var H1 = horiz(X) || horiz(Y) || new THREE.Vector3(1, 0, 0);
+      var H2 = new THREE.Vector3().crossVectors(worldZ, H1);
+      if (H2.length() < 1e-4) H2.set(0, 1, 0); else H2.normalize();
+      if (state === 0) { normal = new THREE.Vector3().crossVectors(X, N); preferX = X; }
+      else if (state === 1) { normal = new THREE.Vector3().crossVectors(Y, N); preferX = Y; }
+      else if (state === 2) { normal = worldZ.clone(); preferX = H1.clone(); }
+      else if (state === 3) { normal = new THREE.Vector3().crossVectors(H1, worldZ); preferX = H1.clone(); }
+      else { normal = new THREE.Vector3().crossVectors(H2, worldZ); preferX = H2.clone(); }
+      if (normal.length() < 1e-4) normal = worldZ.clone();
+      return _orthoBasis(normal, preferX);
+    }
+
+    // Apply the current cycle state's orientation to a perp plane: sets normal /
+    // plane / basis from perpRef+perpCycle and repositions the 2 def-points
+    // symmetric about the centroid along the new local X (preserving size).
+    function applyPerpCycle(c) {
+      if (!c.perpRef || c.perpCycle == null) return;
+      var half = (c.points && c.points.length === 2) ? 0.5 * c.points[0].distanceTo(c.points[1]) : 1;
+      if (!(half > 0.05)) half = 1;
+      if (!c.centroid) c.centroid = new THREE.Vector3();
+      var b = _perpBasisForState(c.perpRef, c.perpCycle);
+      c.normal = b.Z.clone();
+      c.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(c.normal, c.centroid);
+      c.basis = { X: b.X.clone(), Y: b.Y.clone(), Z: b.Z.clone(), origin: c.centroid.clone() };
+      c.points = [
+        c.centroid.clone().addScaledVector(b.X, -half),
+        c.centroid.clone().addScaledVector(b.X, half)
+      ];
+      c.xAxisAnchorA = c.points[0].clone();
+      c.xAxisAnchorB = c.points[1].clone();
+      c.xAxisCamUp = b.Y.clone();
+    }
+
+    // Translate a cycled perp plane so its dragged point follows the cursor,
+    // keeping the cycled orientation and size fixed.
+    function translatePerpPlane(c, idx, newLoc) {
+      var half = 0.5 * c.points[0].distanceTo(c.points[1]);
+      if (!(half > 0.05)) half = 1;
+      var X = c.basis.X.clone();
+      var sign = (idx === 1) ? 1 : -1;
+      var centroid = newLoc.clone().addScaledVector(X, -sign * half);
+      c.centroid = centroid;
+      c.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(c.normal, centroid);
+      c.basis.origin = centroid.clone();
+      c.points = [ centroid.clone().addScaledVector(X, -half), centroid.clone().addScaledVector(X, half) ];
+      c.xAxisAnchorA = c.points[0].clone();
+      c.xAxisAnchorB = c.points[1].clone();
+    }
+
+    // Advance a perp plane to the next of the 5 cycle orientations. The user's
+    // stretch (rectExtent) is snapshotted and restored so cycling never resets
+    // the plane's size back to the insertion square.
+    function rotatePerpPlaneCycle(c) {
+      if (!c || !c.perpRef || c.perpCycle == null || !c.points || c.points.length < 2) return;
+      var before = _snapshotPlane(c);
+      var savedExtent = c.rectExtent ? {
+        xMin: c.rectExtent.xMin, xMax: c.rectExtent.xMax,
+        yMin: c.rectExtent.yMin, yMax: c.rectExtent.yMax
+      } : null;
+      c.perpCycle = (c.perpCycle + 1) % PERP_STATE_COUNT;
+      applyPerpCycle(c);
+      if (savedExtent) c.rectExtent = savedExtent; // keep the current stretch
+      rebuildConstraintVisual(c);
+      _pushPlaneEdit('cycle ' + c.name, c, before);
+      showToast(c.name + ': ' + PERP_STATE_NAMES[c.perpCycle] + ' (' + (c.perpCycle + 1) + '/' + PERP_STATE_COUNT + ')', 2000);
+    }
+
+    // ===== MOVE / COPY A PLANE ALONG ITS NORMAL =====
+    // Rigidly translate a plane constraint by a world vector (all points +
+    // centroid + anchors), then recompute so orientation is preserved.
+    function _translatePlane(c, vec) {
+      for (var i = 0; i < c.points.length; i++) c.points[i].add(vec);
+      if (c.centroid) c.centroid.add(vec);
+      if (c.xAxisAnchorA) c.xAxisAnchorA.add(vec);
+      if (c.xAxisAnchorB) c.xAxisAnchorB.add(vec);
+      if (recomputeConstraint(c)) rebuildConstraintVisual(c);
+      else rebuildConstraintVisual(c);
+    }
+
+    // Deep-clone a plane constraint (new id/name), build + register it.
+    function duplicatePlane(c) {
+      var nc = {
+        id: nextConstraintId++,
+        type: c.type,
+        name: c.name + ' copy',
+        normal: c.normal.clone(),
+        centroid: c.centroid.clone(),
+        points: c.points.map(function(p) { return p.clone(); }),
+        plane: new THREE.Plane().copy(c.plane),
+        visual: null,
+        visible: true,
+        locked: c.locked
+      };
+      if (c.rectExtent) nc.rectExtent = { xMin: c.rectExtent.xMin, xMax: c.rectExtent.xMax, yMin: c.rectExtent.yMin, yMax: c.rectExtent.yMax };
+      if (c.xAxisAnchorA) nc.xAxisAnchorA = c.xAxisAnchorA.clone();
+      if (c.xAxisAnchorB) nc.xAxisAnchorB = c.xAxisAnchorB.clone();
+      if (c.xAxisCamUp) nc.xAxisCamUp = c.xAxisCamUp.clone();
+      if (c.perpRefNormal) nc.perpRefNormal = c.perpRefNormal.clone();
+      if (c.perpRef) nc.perpRef = { X: c.perpRef.X.clone(), Y: c.perpRef.Y.clone(), N: c.perpRef.N.clone() };
+      if (c.perpCycle != null) nc.perpCycle = c.perpCycle;
+      nc.basis = c.basis
+        ? { X: c.basis.X.clone(), Y: c.basis.Y.clone(), Z: c.basis.Z.clone(), origin: c.basis.origin.clone() }
+        : computePlaneBasis(nc);
+      buildConstraintVisual(nc);
+      constraints.push(nc);
+      rebuildConstraintList();
+      return nc;
+    }
+
+    // Offset a plane by a signed distance (metres) along its normal. doCopy →
+    // leave the original and offset a duplicate instead.
+    function offsetPlaneAlongNormal(c, signedMeters, doCopy) {
+      if (!c || c.type !== 'plane') return;
+      var vec = c.normal.clone().normalize().multiplyScalar(signedMeters);
+      if (doCopy) {
+        var target = duplicatePlane(c);
+        _translatePlane(target, vec);
+        selectConstraint(target.id);
+        pushUndoCmd(_cmdAddConstraint(target)); // undo removes the copy
+      } else {
+        var before = _snapshotPlane(c);
+        _translatePlane(c, vec);
+        _pushPlaneEdit('move ' + c.name, c, before);
+      }
+      showToast((doCopy ? 'Copied ' : 'Moved ') + c.name + ' ' + fmtLen(Math.abs(signedMeters)) + ' along normal');
+    }
+
+    // Move/copy a plane so it lands at a picked point, plus an extra signed
+    // distance from that point along the normal (Tekla reference+distance).
+    function movePlaneToPoint(c, worldPoint, extraMeters, doCopy) {
+      if (!c || c.type !== 'plane') return;
+      var n = c.normal.clone().normalize();
+      var signedToPoint = new THREE.Vector3().subVectors(worldPoint, c.centroid).dot(n);
+      offsetPlaneAlongNormal(c, signedToPoint + (extraMeters || 0), doCopy);
+    }
+
+    // Begin a one-shot "move/copy to point" pick for a plane.
+    function startPlaneMovePick(planeId, doCopy) {
+      if (MARK_MODE) toggleMarkMode(true);
+      if (memberPickMode) cancelMemberPick();
+      if (constraintPickMode) cancelConstraintPick();
+      if (_normDimArmed) { _normDimArmed = false; _disposeNormPreview(); }
+      cancelPotreeInsertion();
+      _planeMovePick = { planeId: planeId, doCopy: !!doCopy };
+      document.body.classList.add('constraint-pick-mode'); // crosshair cue
+      showToast((doCopy ? 'Copy' : 'Move') + ' to point — click a cloud point' +
+        (_planeMoveMeters ? (' (plane will sit ' + fmtLen(Math.abs(_planeMoveMeters)) + ' from it)') : ' (plane passes through it)') +
+        '. Esc to cancel.', 5000);
+    }
+    function cancelPlaneMovePick() {
+      _planeMovePick = null;
+      document.body.classList.remove('constraint-pick-mode');
     }
 
     // -- Plane ortho depth slab state --
@@ -4676,7 +5940,21 @@
     function handleMemberPick(position) {
       memberPickPoints.push(position.clone());
       placeMemberPickMarker(position);
-      undoStack.push({ type: 'member-point' });
+      (function(pos) {
+        pushUndoCmd({ label: 'member pick', tag: 'member-point',
+          undo: function(){
+            if (memberPickMode && memberPickPoints.length > 0) {
+              memberPickPoints.pop();
+              if (memberPickMarkers.length > 0) {
+                var mk = memberPickMarkers.pop();
+                mk.traverse(function(o){ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); });
+                memberScene.remove(mk);
+              }
+              if (memberPickPoints.length === 0) cancelMemberPick();
+            }
+          },
+          redo: function(){ if (memberPickMode) { memberPickPoints.push(pos.clone()); placeMemberPickMarker(pos); } } });
+      })(position.clone());
       if (memberPickPoints.length < 2) {
         _startMemberRubberLine(position);
         showToast('Pick endpoint (2/2) for member', 5000);
@@ -4773,7 +6051,7 @@
       var cam = viewer.scene.getActiveCamera();
       var pick = Potree.Utils.getMousePointCloudIntersection(mouse, cam, viewer, viewer.scene.pointclouds, { pickClipped: true });
       var loc = (pick && pick.location) ? pick.location.clone() : null;
-      if (loc) {
+      if (loc && !_axisLock) {              // a locked axis overrides node snapping
         var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
         if (snap) loc = snap.position.clone();
       }
@@ -4803,11 +6081,11 @@
       buildMemberVisual(member);
       members.push(member);
       rebuildMemberList();
-      // Replace member-point undo entries with a single member entry
-      while (undoStack.length > 0 && undoStack[undoStack.length - 1].type === 'member-point') {
+      // Replace member-point pick entries with a single member entry
+      while (undoStack.length > 0 && undoStack[undoStack.length - 1].tag === 'member-point') {
         undoStack.pop();
       }
-      undoStack.push({ type: 'member', id: member.id });
+      pushUndoCmd(_cmdAddMember(member));
       showToast(member.name + ' created');
 
       memberPickMode = false;
@@ -5178,6 +6456,18 @@
       showToast('Exported ' + members.length + ' member(s) to DXF');
     }
 
+    // Plane fills render in the depth_overlay pass so they depth-test against the
+    // point cloud (points in front occlude the sheet; points behind show through).
+    viewer.addEventListener("render.pass.depth_overlay", function() {
+      if (planeFillScene.children.length > 0) {
+        var _r = viewer.renderer;
+        var _prevAutoClear = _r.autoClear;
+        _r.autoClear = false;   // composite over the cloud, don't wipe it
+        _r.render(planeFillScene, viewer.scene.getActiveCamera());
+        _r.autoClear = _prevAutoClear;
+      }
+    });
+
     // -- Render constraint + member visuals in overlay pass --
     viewer.addEventListener("render.pass.perspective_overlay", function(e) {
       var camera = viewer.scene.getActiveCamera();
@@ -5191,6 +6481,16 @@
           c.visual.traverse(function(obj) {
             if (obj.userData && obj.userData.isDefinitionPoint) {
               obj.quaternion.copy(camera.quaternion);
+            }
+            if (obj.userData && obj.userData.isPlaneStretchHandle) {
+              // Handles are visibility-only (don't affect the plane math), so they
+              // show whenever the plane is SELECTED — independent of lock state.
+              obj.visible = (c.id === selectedConstraintId) && c.visible !== false;
+            }
+            if (obj.userData && obj.userData.isBasisArrow) {
+              // X/Y (red/green) axis arrows show only when the plane is selected,
+              // same as the stretch handles.
+              obj.visible = (c.id === selectedConstraintId) && c.visible !== false;
             }
             if (obj.userData && obj.userData.isMarkerSphere) {
               _scaleMarkerSphere(obj, camera, _defRSize);
@@ -5208,6 +6508,10 @@
         // Hover-preview sphere lives as a direct child of constraintScene.
         if (_constraintPreviewSphere && _constraintPreviewSphere.userData.isMarkerSphere) {
           _scaleMarkerSphere(_constraintPreviewSphere, camera, _defRSize);
+        }
+        // Normal-dimension preview dot (also a direct child of constraintScene).
+        if (_normPreviewSphere && _normPreviewSphere.userData.isMarkerSphere) {
+          _scaleMarkerSphere(_normPreviewSphere, camera, _defRSize);
         }
         // Keep the rubber-band line's endpoints synced to any markers that
         // exist (final positions after second pick is placed, etc.).
@@ -5253,6 +6557,28 @@
           _scaleMarkerSphere(_memberPreviewSphere, camera, _mbRSize);
         }
         viewer.renderer.render(memberScene, camera);
+      }
+
+      // Custom drawing-axes gizmo (committed) + live set-preview (red/green/blue).
+      if (axesGizmoScene.children.length > 0) {
+        if (_axesGizmoGroup) {
+          _axesGizmoGroup.visible = _customAxesVisible;
+          if (_customAxesVisible) _scaleAxesGizmo();
+        }
+        // Scale the preview's white/coloured dots to a constant px size.
+        if (_axesPreviewGroup) {
+          var _apSz = viewer.renderer.getSize(new THREE.Vector2());
+          _axesPreviewGroup.traverse(function (o) {
+            if (o.userData && o.userData.axesPreviewDotPx) {
+              var _apPr = Potree.Utils.projectedRadius(1, camera, camera.position.distanceTo(o.position), _apSz.x, _apSz.y);
+              var _aps = (_apPr > 0.0001) ? (o.userData.axesPreviewDotPx / _apPr) : 0.05;
+              o.scale.set(_aps, _aps, _aps);
+            }
+          });
+        }
+        if ((_axesGizmoGroup && _customAxesVisible) || _axesPreviewGroup) {
+          viewer.renderer.render(axesGizmoScene, camera);
+        }
       }
 
       // Elevation contours moved to render.pass.depth_overlay (depth-tested against point cloud)
@@ -5454,6 +6780,9 @@
 
     // -- Sync labels for a measurement (create/remove/update) --
     function syncMeasurePointLabels(measure) {
+      // Point (coordinate) measures show Potree's own x/y/z labels in 3D and
+      // their coords in the sidebar list — skip the D# sprite labels.
+      if (typeof _isPointMeasure === 'function' && _isPointMeasure(measure)) return;
       var labels = measurePointLabels.get(measure);
       if (!labels) { labels = []; measurePointLabels.set(measure, labels); }
       var nums = measurePointNumbers.get(measure);
@@ -5603,6 +6932,8 @@
     function _measureMinPoints(m) {
       if (!m) return 2;
       if (m.showArea || m.showAngles) return 3;
+      // Coordinate ("Point") measures are valid down to a single point.
+      if (m.showCoordinates && !m.showDistances && !m.showHeight) return 1;
       return 2;
     }
 
@@ -5663,11 +6994,29 @@
         if (viewer.measuringTool && !viewer.measuringTool._enableWrapped) {
           var origMS = viewer.measuringTool.startInsertion.bind(viewer.measuringTool);
           viewer.measuringTool.startInsertion = function(args) {
+            // While the Norm modifier is on, the distance tool ADOPTS point-to-
+            // plane behaviour: starting it (re)arms Norm's own click handler
+            // instead of a chaining Potree insertion. Esc later disarms it.
+            if (_normDimMode) {
+              cancelPotreeInsertion();
+              _normDimArmed = true;
+              _ensureNormPreview();
+              updateConstraintStatus();
+              showToast('Distance tool armed (Norm) — click points to dimension ⟂ to the plane; Esc to stop', 3000);
+              return null;
+            }
             // Cancel any previous insertion first to avoid orphan cursor spheres
             cancelPotreeInsertion();
             lastMeasurementToolArgs = args || {};
             var m = origMS(args);
             pendingMeasurement = m;
+            // Measurements taken while a plane is BOUND are projected onto that
+            // plane (all points coplanar), so the XY/Z breakdown is meaningless —
+            // flag them to display the 3D distance only.
+            if (m) {
+              var _bp = constraints.find(function(con) { return con.id === activeConstraintId && con.type === 'plane'; });
+              if (_bp) m.userData.only3D = true;
+            }
             return m;
           };
           viewer.measuringTool._enableWrapped = true;
@@ -5721,7 +7070,27 @@
         m.addEventListener('marker_added', function() {
           syncMeasurePointLabels(m);
           debouncedRebuildMeasList();
-          undoStack.push({ type: 'measurement-point', measure: m });
+          pushUndoCmd({ label: 'measurement point', tag: 'measurement-point',
+            undo: function(){
+              if (!m.points || m.points.length === 0) return;
+              var minReq = _measureMinPoints(m);
+              if (m.points.length - 1 < minReq) {
+                if (pendingMeasurement === m) cancelPotreeInsertion();
+                this._whole = true; this._pos = null;
+                viewer.scene.removeMeasurement(m);
+              } else {
+                var li = m.points.length - 1;
+                this._pos = (m.points[li].position || m.points[li]).clone();
+                this._whole = false;
+                m.removeMarker(li);
+              }
+              try { rebuildAllMeasurementLists(); } catch(e){}
+            },
+            redo: function(){
+              if (this._whole) { try { viewer.scene.addMeasurement(m); } catch(e){} }
+              else if (this._pos) { m.addMarker(this._pos.clone()); }
+              try { rebuildAllMeasurementLists(); } catch(e){}
+            } });
           // If the in-progress measurement reaches its maxMarkers, the Potree
           // tool ends insertion automatically; clear our pending tracker and
           // re-sync so the (now-committed) last label appears immediately.
@@ -5819,9 +7188,76 @@
 
     function rebuildAllMeasurementLists() {
       rebuildMeasurementList();
+      rebuildPointList();
       rebuildAreaList();
       rebuildAngleList();
       rebuildVolumeList();
+    }
+
+    function _isPointMeasure(m) {
+      return m.showCoordinates && !m.showDistances && !m.showHeight && !m.showArea && !m.showAngles;
+    }
+    function clearAllPointMeasurements() {
+      (viewer.scene.measurements || []).slice().forEach(function(m) {
+        if (_isPointMeasure(m)) viewer.scene.removeMeasurement(m);
+      });
+    }
+    // ===== POINT (coordinate) LIST =====
+    function rebuildPointList() {
+      var listEl = document.getElementById('enable-point-list');
+      if (!listEl) return;
+      var ptMeasures = (viewer.scene.measurements || []).filter(_isPointMeasure);
+      if (ptMeasures.length === 0) { listEl.innerHTML = ''; return; }
+
+      var html = '<div class="enable-list-section-label">Points' +
+        '<button id="btn-clear-point-meas" title="Delete all point measurements" style="float:right;background:none;border:none;color:var(--muted,#9aa3b2);cursor:pointer;font:11px sans-serif">Delete all</button>' +
+        '</div>';
+      for (var mi = 0; mi < ptMeasures.length; mi++) {
+        var measure = ptMeasures[mi];
+        var nums = measurePointNumbers.get(measure);
+        var pts = measure.points || [];
+        html += '<div class="enable-meas-item">' +
+          '<div class="meas-header">' +
+          '<span class="meas-title">Points (' + pts.length + ')</span>' +
+          '<button class="btn-vis meas-vis' + (measure.visible === false ? ' hidden' : '') + '" data-point-meas-idx="' + mi + '" title="Show/hide">👁</button>' +
+          '<button class="meas-delete" data-point-idx="' + mi + '" title="Delete point measurement">×</button>' +
+          '</div>';
+        for (var ci = 0; ci < pts.length; ci++) {
+          var p = pts[ci].position ? pts[ci].position : pts[ci];
+          var cName = (nums && ci < nums.length) ? 'D' + nums[ci] : ('P' + (ci + 1));
+          html += '<div class="enable-meas-seg">' +
+            '<span class="seg-name">' + cName +
+              ' <button data-pt-list="point" data-pt-mi="' + mi + '" data-pt-idx="' + ci + '" title="Delete this point" style="background:none;border:none;color:var(--muted,#9aa3b2);cursor:pointer;padding:0">×</button></span>' +
+            '<span class="seg-vals">X: ' + fmtLenVal(p.x) + '  Y: ' + fmtLenVal(p.y) + '  Z: ' + fmtLenVal(p.z) + '</span>' +
+            '</div>';
+        }
+        html += '</div>';
+      }
+      listEl.innerHTML = html;
+
+      listEl.querySelectorAll('.meas-delete').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var idx = parseInt(btn.getAttribute('data-point-idx'));
+          if (ptMeasures[idx]) viewer.scene.removeMeasurement(ptMeasures[idx]);
+        });
+      });
+      listEl.querySelectorAll('.meas-vis').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var m = ptMeasures[parseInt(btn.getAttribute('data-point-meas-idx'))];
+          if (!m) return;
+          _setMeasureVisible(m, m.visible === false);
+          btn.classList.toggle('hidden', m.visible === false);
+        });
+      });
+      var _cpa = listEl.querySelector('#btn-clear-point-meas');
+      if (_cpa) _cpa.addEventListener('click', clearAllPointMeasurements);
+      listEl.querySelectorAll('button[data-pt-list="point"]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var mi = parseInt(btn.getAttribute('data-pt-mi'));
+          var pi = parseInt(btn.getAttribute('data-pt-idx'));
+          if (ptMeasures[mi]) deleteMeasurementPoint(ptMeasures[mi], pi);
+        });
+      });
     }
 
     // ===== PERSISTENT MEASUREMENT SIDEBAR LIST =====
@@ -5879,6 +7315,7 @@
         html += chipsHtml;
 
         var isHeight = measure.showHeight && !measure.showDistances;
+        var only3D = !!(measure.userData && measure.userData.only3D);
         var total3D = 0, totalXY = 0, totalZ = 0;
         for (var si = 0; si < pts.length - 1; si++) {
           var a = pts[si].position ? pts[si].position : pts[si];
@@ -5892,7 +7329,9 @@
 
           var segVals = isHeight
             ? 'Vert:' + fmtLen(absZ) + '(' + zSign + ')'
-            : '3D:' + fmtLen(d3d) + ' XY:' + fmtLen(dxy) + ' Z:' + fmtLen(absZ) + '(' + zSign + ')';
+            : (only3D
+                ? '3D:' + fmtLen(d3d)
+                : '3D:' + fmtLen(d3d) + ' XY:' + fmtLen(dxy) + ' Z:' + fmtLen(absZ) + '(' + zSign + ')');
           html += '<div class="enable-meas-seg">' +
             '<span class="seg-name">D' + nums[si] + '\u2192D' + nums[si + 1] + '</span>' +
             '<span class="seg-vals">' + segVals + '</span>' +
@@ -5902,7 +7341,9 @@
         if (pts.length > 2) {
           var totalVals = isHeight
             ? 'Vert:' + fmtLen(totalZ)
-            : '3D:' + fmtLen(total3D) + ' XY:' + fmtLen(totalXY) + ' Z:' + fmtLen(totalZ);
+            : (only3D
+                ? '3D:' + fmtLen(total3D)
+                : '3D:' + fmtLen(total3D) + ' XY:' + fmtLen(totalXY) + ' Z:' + fmtLen(totalZ));
           html += '<div class="enable-meas-seg seg-total">' +
             '<span class="seg-name">Total</span>' +
             '<span class="seg-vals">' + totalVals + '</span>' +
@@ -6324,6 +7765,19 @@
             out.xAxisAnchorB = v3toObj(c.xAxisAnchorB);
             if (c.xAxisCamUp) out.xAxisCamUp = v3toObj(c.xAxisCamUp);
           }
+          if (c.type === 'plane' && c.rectExtent) {
+            out.rectExtent = {
+              xMin: c.rectExtent.xMin, xMax: c.rectExtent.xMax,
+              yMin: c.rectExtent.yMin, yMax: c.rectExtent.yMax
+            };
+          }
+          if (c.type === 'plane' && c.perpRefNormal) {
+            out.perpRefNormal = v3toObj(c.perpRefNormal);
+          }
+          if (c.type === 'plane' && c.perpRef && c.perpCycle != null) {
+            out.perpRef = { X: v3toObj(c.perpRef.X), Y: v3toObj(c.perpRef.Y), N: v3toObj(c.perpRef.N) };
+            out.perpCycle = c.perpCycle;
+          }
           return out;
         }),
         activeConstraintId: activeConstraintId,
@@ -6353,7 +7807,8 @@
               points: pts,
               pointNumbers: nums.slice(),
               showDistances: !!m.showDistances,
-              showHeight: !!m.showHeight
+              showHeight: !!m.showHeight,
+              only3D: !!(m.userData && m.userData.only3D)
             });
           }
           return arr;
@@ -6538,12 +7993,30 @@
               c.xAxisCamUp = new THREE.Vector3(0, 0, 1);
             }
           }
+          if (sc.rectExtent) {
+            c.rectExtent = {
+              xMin: sc.rectExtent.xMin, xMax: sc.rectExtent.xMax,
+              yMin: sc.rectExtent.yMin, yMax: sc.rectExtent.yMax
+            };
+          }
+          if (sc.perpRefNormal) {
+            c.perpRefNormal = new THREE.Vector3(sc.perpRefNormal.x, sc.perpRefNormal.y, sc.perpRefNormal.z);
+          }
+          if (sc.perpRef && sc.perpCycle != null) {
+            c.perpRef = {
+              X: new THREE.Vector3(sc.perpRef.X.x, sc.perpRef.X.y, sc.perpRef.X.z),
+              Y: new THREE.Vector3(sc.perpRef.Y.x, sc.perpRef.Y.y, sc.perpRef.Y.z),
+              N: new THREE.Vector3(sc.perpRef.N.x, sc.perpRef.N.y, sc.perpRef.N.z)
+            };
+            c.perpCycle = sc.perpCycle;
+          }
           recomputeConstraint(c);
           buildConstraintVisual(c);
           constraints.push(c);
         }
       }
       activeConstraintId = data.activeConstraintId || null;
+      selectedConstraintId = null;
       nextConstraintId = data.nextConstraintId || (constraints.length + 1);
       rebuildConstraintList();
       updateConstraintVisuals();
@@ -6580,6 +8053,7 @@
           measure.showArea = false;
           measure.showAngles = false;
           measure.closed = false;
+          if (sm2.only3D) measure.userData.only3D = true; // set before markers so labels build 3D-only
           for (var pi = 0; pi < sm2.points.length; pi++) {
             var pp = sm2.points[pi];
             measure.addMarker(new THREE.Vector3(pp.x, pp.y, pp.z));
@@ -8595,8 +10069,9 @@
         vol.box.raycast = function() {};
       }
       if (vol.frame) {
-        vol.frame.material.color.setHex(0x44cc44);
-        vol.frame.material.needsUpdate = true;
+        // Consistent with every other box: honor the box-wireframe brightness
+        // (default black) instead of a special green frame.
+        _applyBoxWireToVolume(vol);
       }
       if (vol.label) vol.label.visible = false;
     }
@@ -9812,6 +11287,14 @@
       if (cutoutBoxes.length > 0) {
         syncExclusionBoxes();
       }
+      if (focusBoxes.length > 0) {
+        syncFocusBoxes();
+      }
+      if (_planeSliceOn) {
+        syncPlaneSlabs();
+      }
+      syncPlaneFills();
+      updateIntersectionLineVisuals();
       if (elevationCropVolumes.length > 0) {
         // Always sync highlights (handles dragging in real-time, including
         // the new "active box transform != computedBoxMatrix" case).
@@ -9902,6 +11385,414 @@
         })(i);
       }
     }
+
+    // ===== Focus Boxes (inverse-clip: keep interior prominent, fade the rest) =====
+    // Inverse of a cut-out box. Everything OUTSIDE all focus boxes fades to the
+    // "Point cloud opacity" slider value; each box's interior gets its own opacity
+    // (surfaced in the right Tool settings panel when the box is selected). Fading
+    // is stable dithered discard in the shared shader (EDL puts depth in the alpha
+    // channel, so true per-point translucency isn't available) — active only while
+    // >=1 focus box exists, so the plain edlOpacity fade is untouched otherwise.
+    var _focusCounter = 0;
+    var focusBoxes = [];
+    // Single source of truth for the global (outside-focus) opacity, mirrored by
+    // the "Point cloud opacity" slider. Initialized from the current edlOpacity.
+    var _pcOpacityLogical = (viewer.edlOpacity != null ? viewer.edlOpacity : 1);
+
+    function styleFocusBox(vol) {
+      if (vol.box) {
+        vol.box.visible = true;
+        vol.box.material.color.setHex(0x000000);
+        vol.box.material.opacity = 0.0;
+        vol.box.material.transparent = true;
+        vol.box.material.needsUpdate = true;
+        // Disable raycast on the invisible fill (same rationale as styleCutoutBox):
+        // selection is via the nearest-edge hit-test, not the fill mesh.
+        vol.box.raycast = function() {};
+      }
+      // Frame honors the shared box-wireframe brightness slider like every other
+      // box (black by default), instead of a custom color.
+      _applyBoxWireToVolume(vol);
+      if (vol.label) vol.label.visible = false;
+    }
+
+    function addFocusBox() {
+      var volume = viewer.volumeTool.startInsertion({ clip: false });
+      _focusCounter++;
+      volume.name = 'Focus ' + _focusCounter;
+      volume.clip = false;
+      volume._focusOpacity = 1.0;   // interior starts fully crisp
+
+      styleFocusBox(volume);
+      setTimeout(function() { styleFocusBox(volume); }, 500);
+
+      focusBoxes.push(volume);
+      // First focus box auto-dims everything OUTSIDE it to 30% so the focus reads
+      // immediately, without touching the opacity slider.
+      if (focusBoxes.length === 1) { _pcOpacityLogical = 0.30; updateScansPanel(); }
+      trackVolumeUndo(volume);
+      syncFocusBoxes();
+      applyGlobalOpacity();   // crossing 0->N switches the outside fade to dithered
+      rebuildFocusList();
+      showToast('Click and drag on the point cloud to place focus box.');
+    }
+
+    function removeFocusBox(index) {
+      if (index < 0 || index >= focusBoxes.length) return;
+      var vol = focusBoxes[index];
+      viewer.scene.removeVolume(vol);
+      focusBoxes.splice(index, 1);
+      if (focusBoxes.length === 0) { _pcOpacityLogical = 1.0; updateScansPanel(); }  // restore full opacity
+      syncFocusBoxes();
+      applyGlobalOpacity();   // crossing N->0 restores the smooth edlOpacity fade
+      rebuildFocusList();
+      showToast('Focus box removed');
+    }
+
+    function clearAllFocusBoxes() {
+      for (var i = 0; i < focusBoxes.length; i++) {
+        viewer.scene.removeVolume(focusBoxes[i]);
+      }
+      focusBoxes = [];
+      _pcOpacityLogical = 1.0; updateScansPanel();   // restore full opacity
+      syncFocusBoxes();
+      applyGlobalOpacity();
+      rebuildFocusList();
+      showToast('All focus boxes removed');
+    }
+
+    // ===== Plane slabs — tint cloud points near planes so their intersection
+    // with the cloud is visible in 3D (helps find where two planes cross). =====
+    var _planeSliceOn = false;         // per-point tint superseded by the depth-correct fill sheet
+    var _planeSliceThickness = 0.10;   // (unused) half-thickness of the tinted band (metres)
+    function syncPlaneSlabs() {
+      var list = [];
+      if (_planeSliceOn) {
+        var cam = viewer.scene.getActiveCamera();
+        var cp = cam ? cam.position : null;
+        for (var i = 0; i < constraints.length; i++) {
+          var c = constraints[i];
+          if (c.type !== 'plane' || c.visible === false || !c.plane || !c.basis) continue;
+          var qx = c._quadX || c.basis.X;
+          var qy = c._quadY || c.basis.Y;
+          var nrm = c.plane.normal.clone();
+          var k = c.plane.constant;
+          // Orient the normal toward the camera so quad-local +z = camera side
+          // (a shaded point is then "behind": local z < 0).
+          if (cp && (nrm.x * cp.x + nrm.y * cp.y + nrm.z * cp.z + k) < 0) nrm.negate();
+          var re = c.rectExtent || { xMin: -1, xMax: 1, yMin: -1, yMax: 1 };
+          var width = Math.max(re.xMax - re.xMin, 1e-3);
+          var height = Math.max(re.yMax - re.yMin, 1e-3);
+          var cx = (re.xMin + re.xMax) / 2, cy = (re.yMin + re.yMax) / 2;
+          var rectCenter = new THREE.Vector3().copy(c.basis.origin)
+            .addScaledVector(qx, cx).addScaledVector(qy, cy);
+          var m = new THREE.Matrix4().makeBasis(qx, qy, nrm);
+          m.scale(new THREE.Vector3(width, height, 1));
+          m.setPosition(rectCenter);
+          list.push({ inverse: m.clone().invert() });
+        }
+      }
+      viewer.scene.pointclouds.forEach(function(pc) {
+        pc.material.setPlaneSlabs(list);
+      });
+    }
+
+    // Keep each plane's depth-correct fill sheet (in viewer.scene.scene) in sync
+    // with the plane's visibility and selection state.
+    function syncPlaneFills() {
+      for (var i = 0; i < constraints.length; i++) {
+        var c = constraints[i];
+        if (c.type !== 'plane' || !c._fillMesh) continue;
+        c._fillMesh.visible = c.visible !== false;
+        if (c._fillMesh.material) {
+          c._fillMesh.material.opacity = (c.id === selectedConstraintId) ? 0.32 : 0.20;
+        }
+      }
+    }
+    function setPlaneSliceEnabled(on) {
+      _planeSliceOn = !!on;
+      syncPlaneSlabs();
+      if (viewer.repaint) viewer.repaint();
+    }
+    function setPlaneSliceThickness(m) {
+      _planeSliceThickness = Math.max(0.001, m);
+      if (_planeSliceOn) { syncPlaneSlabs(); if (viewer.repaint) viewer.repaint(); }
+    }
+
+    // ===== Plane-plane intersection snapping (no binding) =====
+    // Two planes meet in a LINE. When enabled, a pick landing near any pair of
+    // visible planes' intersection line is projected ONTO that line — so marks /
+    // measurement points drop exactly on the intersection at whatever height you
+    // click. Just toggle it on; nothing to bind.
+    var _snapPlaneIntersections = true;  // always on: proximity-inferred, no toggle
+    var PLANE_INTERSECT_SNAP_PX = 18;    // screen-space snap radius to a line (px)
+
+    // Parameter range [tLo, tHi] where line (p + t*d) stays inside plane c's
+    // stretched rectangle, or null if it never does.
+    function _lineRectTRange(p, d, c) {
+      if (!c.basis) return null;
+      var qx = c._quadX || c.basis.X, qy = c._quadY || c.basis.Y, o = c.basis.origin;
+      var re = c.rectExtent || { xMin: -1, xMax: 1, yMin: -1, yMax: 1 };
+      var wx = p.x - o.x, wy = p.y - o.y, wz = p.z - o.z;
+      var u0 = wx * qx.x + wy * qx.y + wz * qx.z, du = d.x * qx.x + d.y * qx.y + d.z * qx.z;
+      var v0 = wx * qy.x + wy * qy.y + wz * qy.z, dv = d.x * qy.x + d.y * qy.y + d.z * qy.z;
+      var lo = -Infinity, hi = Infinity;
+      if (Math.abs(du) > 1e-9) { var ta = (re.xMin - u0) / du, tb = (re.xMax - u0) / du; lo = Math.max(lo, Math.min(ta, tb)); hi = Math.min(hi, Math.max(ta, tb)); }
+      else if (u0 < re.xMin || u0 > re.xMax) return null;
+      if (Math.abs(dv) > 1e-9) { var tc = (re.yMin - v0) / dv, td = (re.yMax - v0) / dv; lo = Math.max(lo, Math.min(tc, td)); hi = Math.min(hi, Math.max(tc, td)); }
+      else if (v0 < re.yMin || v0 > re.yMax) return null;
+      return (lo > hi) ? null : [lo, hi];
+    }
+
+    // Pairwise intersection lines of visible planes, CLIPPED to where both planes'
+    // stretched rectangles overlap: [{ origin, dir(unit), tLo, tHi }].
+    function getIntersectionLines() {
+      var planes = [];
+      for (var i = 0; i < constraints.length; i++) {
+        var c = constraints[i];
+        if (c.type === 'plane' && c.visible !== false && c.plane) planes.push(c);
+      }
+      var lines = [];
+      for (var a = 0; a < planes.length; a++) {
+        for (var b = a + 1; b < planes.length; b++) {
+          var n1 = planes[a].plane.normal, n2 = planes[b].plane.normal;
+          var h1 = -planes[a].plane.constant, h2 = -planes[b].plane.constant;  // THREE.Plane: n·x = -constant
+          var u = new THREE.Vector3().crossVectors(n1, n2);
+          var uLen2 = u.lengthSq();
+          if (uLen2 < 1e-9) continue;   // parallel → no line
+          var p = new THREE.Vector3()
+            .addScaledVector(new THREE.Vector3().crossVectors(n2, u), h1)
+            .addScaledVector(new THREE.Vector3().crossVectors(u, n1), h2)
+            .divideScalar(uLen2);
+          var dir = u.normalize();
+          var rA = _lineRectTRange(p, dir, planes[a]);
+          var rB = _lineRectTRange(p, dir, planes[b]);
+          if (!rA || !rB) continue;              // line misses one rectangle entirely
+          var tLo = Math.max(rA[0], rB[0]), tHi = Math.min(rA[1], rB[1]);
+          if (tLo >= tHi) continue;              // rectangles don't overlap along the line
+          lines.push({ origin: p, dir: dir, tLo: tLo, tHi: tHi });
+        }
+      }
+      return lines;
+    }
+
+    // Screen-space snap: if the cursor is within `thrPx` of an intersection line's
+    // on-screen projection, return the 3D point ON the line nearest the cursor ray
+    // (works even where the line runs through empty space, e.g. a member centreline).
+    function snapToIntersectionLineScreen(mouse, camera, thrPx) {
+      var lines = getIntersectionLines();
+      if (!lines.length || !mouse || typeof mouse.x !== 'number' || !camera) return null;
+      var sz = viewer.renderer.getSize(new THREE.Vector2());
+      var ray = Potree.Utils.mouseToRay(mouse, camera, sz.x, sz.y);
+      var ro = ray.origin, rd = ray.direction.clone().normalize();
+      var best = null, bestPx = thrPx;
+      for (var i = 0; i < lines.length; i++) {
+        var lo = lines[i].origin, ld = lines[i].dir;   // ld is unit
+        var w0 = new THREE.Vector3().subVectors(lo, ro);
+        var b = ld.dot(rd), d = ld.dot(w0), e = rd.dot(w0);
+        var denom = 1 - b * b;
+        if (Math.abs(denom) < 1e-6) continue;           // line ∥ ray
+        var t = (b * e - d) / denom;                    // param on the intersection line
+        t = Math.max(lines[i].tLo, Math.min(lines[i].tHi, t));   // only snap on the visible (clipped) segment
+        var pol = new THREE.Vector3().copy(lo).addScaledVector(ld, t);
+        var sp = pol.clone().project(camera);
+        if (sp.z < -1 || sp.z > 1) continue;            // behind camera / off-frustum
+        var px = (sp.x * 0.5 + 0.5) * sz.x;
+        var py = (1 - (sp.y * 0.5 + 0.5)) * sz.y;
+        var dist = Math.sqrt((px - mouse.x) * (px - mouse.x) + (py - mouse.y) * (py - mouse.y));
+        if (dist < bestPx) { bestPx = dist; best = pol; }
+      }
+      return best;
+    }
+
+    // ---- Green intersection-line visuals (drawn like a plane outline so you can
+    // see the axis where two planes cross, and snap/measure to it). ----
+    var _intersectLineGroup = new THREE.Group();
+    constraintScene.add(_intersectLineGroup);
+    function updateIntersectionLineVisuals() {
+      var lines = getIntersectionLines();
+      while (_intersectLineGroup.children.length < lines.length) {
+        var geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        var mat = new THREE.LineBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+        _intersectLineGroup.add(new THREE.Line(geo, mat));
+      }
+      while (_intersectLineGroup.children.length > lines.length) {
+        var old = _intersectLineGroup.children.pop();
+        if (old.geometry) old.geometry.dispose();
+        if (old.material) old.material.dispose();
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var L = lines[i];
+        var line = _intersectLineGroup.children[i];
+        var pos = line.geometry.attributes.position;
+        pos.setXYZ(0, L.origin.x + L.dir.x * L.tLo, L.origin.y + L.dir.y * L.tLo, L.origin.z + L.dir.z * L.tLo);
+        pos.setXYZ(1, L.origin.x + L.dir.x * L.tHi, L.origin.y + L.dir.y * L.tHi, L.origin.z + L.dir.z * L.tHi);
+        pos.needsUpdate = true;
+        line.geometry.computeBoundingSphere();
+      }
+    }
+
+    // Push focus box transforms + per-box opacity to every point cloud material.
+    function syncFocusBoxes() {
+      var activeBoxes = focusBoxes.filter(function(v) { return !v._disabled; });
+      var list = activeBoxes.map(function(vol) {
+        vol.updateMatrixWorld(true);
+        var inv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
+        return { inverse: inv, opacity: (vol._focusOpacity == null ? 1 : vol._focusOpacity) };
+      });
+      viewer.scene.pointclouds.forEach(function(pc) {
+        pc.material.setFocusBoxes(list);
+        pc.material.setFocusOutsideOpacity(_pcOpacityLogical);
+      });
+    }
+
+    // Route the global "outside" opacity. When focus boxes exist the whole cloud
+    // renders via dithered discard, so the outside value must go through the shader
+    // (uFocusOutsideOpacity) and the smooth post-process fade is disabled to avoid
+    // double-dimming. With no focus boxes, behave exactly as before (edlOpacity).
+    function applyGlobalOpacity() {
+      if (focusBoxes.length > 0) {
+        viewer.edlOpacity = 1.0;
+        viewer.scene.pointclouds.forEach(function(pc) {
+          pc.material.setFocusOutsideOpacity(_pcOpacityLogical);
+        });
+      } else {
+        viewer.edlOpacity = _pcOpacityLogical;
+      }
+      if (viewer.repaint) viewer.repaint();
+    }
+
+    function rebuildFocusList() {
+      var list = document.getElementById('enable-focus-list');
+      if (!list) return;
+      list.innerHTML = '';
+
+      var clearBtn = document.getElementById('btn-clear-all-focus');
+      if (clearBtn) clearBtn.style.display = focusBoxes.length > 0 ? '' : 'none';
+
+      for (var i = 0; i < focusBoxes.length; i++) {
+        (function(idx) {
+          var vol = focusBoxes[idx];
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0;font:12px/1.3 sans-serif;color:var(--sidebar-text,#fbfbfb)';
+
+          var nameSpan = document.createElement('span');
+          nameSpan.style.flex = '1';
+          nameSpan.textContent = vol.name;
+
+          var eyeBtn = document.createElement('button');
+          eyeBtn.textContent = vol._disabled ? '—' : '\u{1F441}';
+          eyeBtn.title = 'Toggle this focus box on/off';
+          eyeBtn.style.cssText = 'background:none;border:none;color:var(--sidebar-text,#fbfbfb);cursor:pointer;font-size:14px;padding:2px 4px';
+          eyeBtn.addEventListener('click', function() {
+            vol._disabled = !vol._disabled;
+            vol.visible = !vol._disabled;
+            styleFocusBox(vol);
+            syncFocusBoxes();
+            rebuildFocusList();
+          });
+
+          var outlineBtn = document.createElement('button');
+          var _outVis = vol.frame ? vol.frame.visible : true;
+          outlineBtn.textContent = _outVis ? '□' : '■';
+          outlineBtn.title = 'Toggle outline visibility';
+          outlineBtn.style.cssText = 'background:none;border:none;color:var(--sidebar-text,#fbfbfb);cursor:pointer;font-size:14px;padding:2px 4px';
+          outlineBtn.addEventListener('click', function() {
+            vol._outlineHidden = !vol._outlineHidden;
+            vol.visible = !vol._outlineHidden;                 // focus effect is shader-driven, unaffected
+            if (!vol._outlineHidden) styleFocusBox(vol);
+            outlineBtn.textContent = vol._outlineHidden ? '■' : '□';
+          });
+
+          var delBtn = document.createElement('button');
+          delBtn.textContent = '✕';
+          delBtn.title = 'Remove this focus box';
+          delBtn.style.cssText = 'background:none;border:none;color:#f44;cursor:pointer;font-size:14px;padding:2px 4px';
+          delBtn.addEventListener('click', function() { removeFocusBox(idx); });
+
+          row.appendChild(nameSpan);
+          row.appendChild(eyeBtn);
+          row.appendChild(outlineBtn);
+          row.appendChild(delBtn);
+          list.appendChild(row);
+        })(i);
+      }
+    }
+
+    // Right-panel per-box opacity, shown on select (satisfies the tool-settings-on-
+    // select rule). chrome.js adopts #enable-focus-panel into the context panel.
+    function ensureFocusPanel() {
+      var p = document.getElementById('enable-focus-panel');
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'enable-focus-panel';
+        p.style.display = 'none';
+        document.body.appendChild(p); // chrome.js reparents this into the context panel
+      }
+      return p;
+    }
+
+    function showFocusBoxSettings(vol) {
+      var p = ensureFocusPanel();
+      var pct = Math.round((vol._focusOpacity == null ? 1 : vol._focusOpacity) * 100);
+      p.dataset.sliderOnly = 'false';
+      p.innerHTML =
+        '<div class="enable-cp-title">' + _cpIcon('box') + '<span>' + vol.name + '</span></div>' +
+        '<div style="margin:2px 0 10px">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
+            '<span>Interior opacity</span><span id="focus-opacity-val">' + pct + '%</span>' +
+          '</div>' +
+          '<input type="range" id="focus-opacity-slider" min="0" max="100" value="' + pct + '" style="width:100%">' +
+        '</div>';
+      p.style.display = '';
+      var os = p.querySelector('#focus-opacity-slider');
+      if (os) os.addEventListener('input', function() {
+        var v = Math.max(0, Math.min(100, +this.value));
+        vol._focusOpacity = v / 100;
+        var lbl = p.querySelector('#focus-opacity-val');
+        if (lbl) lbl.textContent = v + '%';
+        syncFocusBoxes();
+        if (viewer.repaint) viewer.repaint();
+      });
+    }
+
+    function hideFocusBoxSettings() {
+      var p = document.getElementById('enable-focus-panel');
+      if (p) { p.innerHTML = ''; p.style.display = 'none'; }
+    }
+
+    // Selecting a focus box (via its list row or 3D click) routes through Potree
+    // selection_changed -> enable:selection-changed; show/clear its settings panel.
+    document.addEventListener('enable:selection-changed', function(e) {
+      var name = e && e.detail && e.detail.name;
+      var vol = null;
+      if (name) {
+        for (var i = 0; i < focusBoxes.length; i++) {
+          if (focusBoxes[i].name === name) { vol = focusBoxes[i]; break; }
+        }
+      }
+      if (vol) showFocusBoxSettings(vol);
+      else hideFocusBoxSettings();
+    });
+
+    // Create the panel element up front so chrome.js adopts it into the context panel.
+    ensureFocusPanel();
+
+    // Potree removes a volume when the user selects it + presses Delete. Clean up
+    // our focus-box bookkeeping so the box stops focusing points, leaves the list,
+    // and its settings panel clears.
+    viewer.scene.addEventListener('volume_removed', function(e) {
+      var vol = e && e.volume;
+      var idx = focusBoxes.indexOf(vol);
+      if (idx >= 0) {
+        focusBoxes.splice(idx, 1);
+        if (focusBoxes.length === 0) { _pcOpacityLogical = 1.0; updateScansPanel(); }  // restore full opacity
+        syncFocusBoxes();
+        applyGlobalOpacity();
+        rebuildFocusList();
+        hideFocusBoxSettings();
+      }
+    });
 
     // Helper: create a collapsible group
     function createGroup(id, title, expanded) {
@@ -10462,6 +12353,34 @@
       } catch (e) { /* ignore */ }
     }
 
+    // Give each VISIBLE scan its own guaranteed point budget. Potree shares ONE
+    // global budget across clouds by screen-space priority, so a huge scan (55M)
+    // crowds out a small one (5M) — the loser only gets coarse nodes, which
+    // ADAPTIVE sizing balloons into giant splats ("giant + missing" symptom).
+    // We hand each visible cloud a full per-cloud budget (pc.pointBudget, honored
+    // at potree.js updateVisibility) and raise the global cap to their sum
+    // (bounded), so every scan renders as it would on its own.
+    var _perScanBudget = 3000000;       // matches the responsive default set at load
+    var _maxGlobalScanBudget = 9000000; // safety cap so many-cloud projects stay smooth
+    function rebalanceScanBudgets() {
+      try {
+        if (typeof elevationActive !== 'undefined' && elevationActive) return; // elevation owns the budget
+        var visN = 0, i;
+        for (i = 0; i < scanClouds.length; i++) { if (scanClouds[i].visible && scanClouds[i].pc) visN++; }
+        if (visN <= 1) {
+          for (i = 0; i < scanClouds.length; i++) { if (scanClouds[i].pc) scanClouds[i].pc.pointBudget = Infinity; }
+          viewer.setPointBudget(_perScanBudget);
+          return;
+        }
+        var global = Math.min(_perScanBudget * visN, _maxGlobalScanBudget);
+        var per = Math.floor(global / visN);
+        viewer.setPointBudget(global);
+        for (i = 0; i < scanClouds.length; i++) {
+          if (scanClouds[i].pc) scanClouds[i].pc.pointBudget = scanClouds[i].visible ? per : Infinity;
+        }
+      } catch (e) { /* ignore */ }
+    }
+
     function _cloudMetaFor(folder) {
       var cs = (meta && meta.clouds) || [];
       for (var i = 0; i < cs.length; i++) { if (cs[i].folder === folder) return cs[i]; }
@@ -10474,6 +12393,7 @@
       pc.visible = (cm.visible !== false);
       scanClouds.push({ id: cm.id || 'scan', name: cm.name || 'Scan', pc: pc, visible: pc.visible });
       updateScansPanel();
+      rebalanceScanBudgets();
     }
 
     // Load every non-primary cloud listed in meta.clouds and add to the scene.
@@ -10504,6 +12424,7 @@
           pc.visible = (cm.visible === true);
           scanClouds.push({ id: cm.id, name: cm.name || cm.id, pc: pc, visible: pc.visible });
           updateScansPanel();
+          rebalanceScanBudgets();
           console.log('[scans] loaded', cm.id, '(visible=' + pc.visible + ')');
         }).catch(function (err) { console.warn('[scans] failed to load', cm.id, err); });
       });
@@ -10515,6 +12436,7 @@
       s.visible = vis;
       s.pc.visible = vis;
       updateScansPanel();
+      rebalanceScanBudgets();
     }
 
     // Inline SVG string for a context-panel group title, using the shared
@@ -10549,12 +12471,16 @@
       // "inside" it. Drives viewer.edlOpacity (the EDL composite blends the
       // point-cloud image over the already-rendered model, depth-tested — so
       // points in front of the model fade while points behind stay occluded).
-      var _pcOpacityPct = Math.round((viewer.edlOpacity != null ? viewer.edlOpacity : 1) * 100);
+      var _pcOpacityPct = Math.round(_pcOpacityLogical * 100);
+      // With focus boxes active this slider is the "outside focus" opacity (the
+      // bulk of the cloud), routed through the dithered-discard shader path.
+      var _opacityLabel = (typeof focusBoxes !== 'undefined' && focusBoxes.length > 0)
+        ? 'Point cloud opacity (outside focus)' : 'Point cloud opacity';
       var html =
         '<div class="enable-cp-title">' + _cpIcon('layers') + '<span>Scans</span></div>' +
         '<div style="margin:2px 0 10px">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
-            '<span>Point cloud opacity</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
+            '<span>' + _opacityLabel + '</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
           '</div>' +
           '<input type="range" id="pc-opacity-slider" min="0" max="100" value="' + _pcOpacityPct + '" style="width:100%">' +
         '</div>';
@@ -10571,10 +12497,10 @@
       var os = p.querySelector('#pc-opacity-slider');
       if (os) os.addEventListener('input', function () {
         var v = Math.max(0, Math.min(100, +this.value));
-        viewer.edlOpacity = v / 100;   // EDL composite reads this each frame
+        _pcOpacityLogical = v / 100;   // single source of truth for outside opacity
+        applyGlobalOpacity();          // routes to edlOpacity OR dithered-outside
         var lbl = p.querySelector('#pc-opacity-val');
         if (lbl) lbl.textContent = v + '%';
-        if (viewer.repaint) viewer.repaint();
       });
       var btns = p.querySelectorAll('.enable-scan-eye');
       for (var j = 0; j < btns.length; j++) {
@@ -10672,6 +12598,7 @@
         createGroup('measurements', 'Measurements', true) +
           '<div id="enable-meas-tools-slot"></div>' +  // Potree measurement tool buttons moved here
           '<div id="enable-measurement-list"></div>' +
+          '<div id="enable-point-list"></div>' +
           '<div id="enable-area-list"></div>' +
           '<div id="enable-angle-list"></div>' +
           '<div id="enable-volume-list"></div>' +
@@ -10697,6 +12624,9 @@
           '<div id="enable-constraint-buttons">' +
             '<button id="btn-fit-plane" title="Best-fit plane from many points (Enter to finalize)">Fit Plane</button>' +
             '<button id="btn-set-axis" title="Define a constraint axis (2 points)">Set Axis</button>' +
+            '<button id="btn-perp-plane" title="New plane perpendicular and square to the selected plane (single click to place)" disabled>⊥ Plane</button>' +
+            '<button id="btn-set-axes" title="Set custom drawing axes (3 clicks: origin, +X, +Y). Tools snap to these axes.">Set Axes</button>' +
+            '<button id="btn-reset-axes" title="Reset drawing axes back to world" disabled>Reset Axes</button>' +
           '</div>' +
           '<div id="enable-constraint-list"></div>' +
           '<div id="enable-constraint-status"></div>' +
@@ -10710,8 +12640,8 @@
           '<div id="enable-note-list"></div>' +
         closeGroup() +
 
-        // === 5. CLIPPING (collapsed) ===
-        createGroup('clipping', 'Clipping', false) +
+        // === 5. ISOLATE (clip box / cut-outs / focus boxes) (collapsed) ===
+        createGroup('clipping', 'Isolate', false) +
           '<div class="enable-subsection-label">Initial Clip Box</div>' +
           '<div id="enable-clipbox-row" style="display:flex;align-items:center;gap:6px;margin:4px 0;font:12px/1.3 sans-serif;color:var(--sidebar-text,#fbfbfb)">' +
             '<span style="flex:1">Initial clip box</span>' +
@@ -10723,6 +12653,12 @@
             '<button id="btn-clear-all-cutouts" title="Remove all cut-out boxes" style="display:none">Clear All</button>' +
           '</div>' +
           '<div id="enable-global-crop-list"></div>' +
+          '<div class="enable-subsection-label" style="margin-top:10px">Focus Boxes</div>' +
+          '<div id="enable-focus-buttons">' +
+            '<button id="btn-add-focus" title="Keep this region in focus while the rest of the cloud fades">Add Focus Box</button>' +
+            '<button id="btn-clear-all-focus" title="Remove all focus boxes" style="display:none">Clear All</button>' +
+          '</div>' +
+          '<div id="enable-focus-list"></div>' +
         closeGroup() +
 
         // === 6. ELEVATION MAP (collapsed) ===
@@ -10845,6 +12781,9 @@
       document.getElementById('btn-clear-marks').addEventListener('click', function() { clearAllMarkers(); });
       document.getElementById('btn-fit-plane').addEventListener('click', function() { startConstraintPick('fit-plane'); });
       document.getElementById('btn-set-axis').addEventListener('click', function() { startConstraintPick('axis'); });
+      document.getElementById('btn-perp-plane').addEventListener('click', function() { startConstraintPick('perp-plane'); });
+      document.getElementById('btn-set-axes').addEventListener('click', function() { startAxesPick(); });
+      document.getElementById('btn-reset-axes').addEventListener('click', function() { resetCustomAxes(); });
       document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
       document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
       document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
@@ -10885,6 +12824,10 @@
       // Cut-out boxes
       document.getElementById('btn-add-cutout').addEventListener('click', function() { addCutoutBox(); });
       document.getElementById('btn-clear-all-cutouts').addEventListener('click', function() { clearAllCutoutBoxes(); });
+
+      // Focus boxes (inverse cut-out)
+      document.getElementById('btn-add-focus').addEventListener('click', function() { addFocusBox(); });
+      document.getElementById('btn-clear-all-focus').addEventListener('click', function() { clearAllFocusBoxes(); });
 
       // Elevation map buttons
       document.getElementById('btn-add-elev-box').addEventListener('click', function() { addElevationBox(); });
@@ -10971,6 +12914,8 @@
     let _stationCandidate = null;  // { station, downX, downY } set in mousedown if a pin is under cursor
     let _noteCandidate    = null;  // { note,    downX, downY } same pattern for note icons
     let _cropClickCandidate = null; // persistent box (crop box) under cursor at mousedown → click selects it on mouseup
+    let _planeClickCandidate = null; // { constraint, downX, downY } plane quad under cursor at mousedown → click selects it on mouseup
+    let _idleDownForDeselect = null;  // { downX, downY } an idle left-mousedown → a clean click on empty space deselects the plane
 
     // ===== Orbit-first "hold to grab" (model A) =====
     // A left-drag ORBITS by default, even when it starts on a draggable item.
@@ -11102,6 +13047,8 @@
       _stationCandidate = null;
       _noteCandidate = null;
       _cropClickCandidate = null;
+      _planeClickCandidate = null;
+      _idleDownForDeselect = null;
       // While ANY tool workflow is active (placing a measurement / volume, or in
       // a mark / member / constraint / note / z-base pick), a click belongs to
       // that tool — it must NOT also select/highlight the clip box or any other
@@ -11109,10 +13056,10 @@
       // one. (Applies across every tool + feature.)
       if (e.button === 0 && viewer.inputHandler &&
           (pendingMeasurement || pendingVolume || MARK_MODE || memberPickMode ||
-           constraintPickMode || zBasePickMode || notePickMode)) {
+           constraintPickMode || zBasePickMode || notePickMode || _normDimArmed || _planeMovePick || _axesPickMode)) {
         if (viewer.inputHandler.hoveredElements) viewer.inputHandler.hoveredElements = [];
       }
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode && !pendingMeasurement && !pendingVolume) {
+      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode && !pendingMeasurement && !pendingVolume && !_normDimArmed && !_planeMovePick && !_axesPickMode) {
         var rectS = renderArea.getBoundingClientRect();
         var mousePixelS = { x: e.clientX - rectS.left, y: e.clientY - rectS.top };
         // Notes first (they sit on top visually).
@@ -11128,9 +13075,13 @@
       }
 
       // ===== Grab / orbit decision.
-      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode && !pendingMeasurement && !pendingVolume) {
+      if (e.button === 0 && !MARK_MODE && !memberPickMode && !constraintPickMode && !zBasePickMode && !notePickMode && !pendingMeasurement && !pendingVolume && !_normDimArmed && !_planeMovePick && !_axesPickMode) {
         var rectG = renderArea.getBoundingClientRect();
         var mpG = { x: e.clientX - rectG.left, y: e.clientY - rectG.top };
+        // A clean click that ends up selecting nothing will deselect the plane /
+        // any selected box (which clears the box's tool-settings panel).
+        var _hasBoxSel = !!(viewer.inputHandler && viewer.inputHandler.selection && viewer.inputHandler.selection.length);
+        if (selectedConstraintId !== null || _hasBoxSel) _idleDownForDeselect = { downX: e.clientX, downY: e.clientY };
 
         // ---- Nodes grab IMMEDIATELY when you click on one, so adjusting a
         // dimension / mark / member / constraint node is a direct click-drag
@@ -11144,8 +13095,12 @@
           if (_mb) _nodeArm = function () { memberDragActive = true; memberDragInfo = _mb; document.body.classList.add('member-drag'); };
         }
         if (!_nodeArm && constraints.length) {
+          var _ph = findNearestPlaneHandle(mpG);
+          if (_ph) _nodeArm = function () { planeHandleDragActive = true; planeHandleDragInfo = _ph; _planeDragEdit = { c: _ph.constraint, before: _snapshotPlane(_ph.constraint) }; document.body.classList.add('constraint-drag'); };
+        }
+        if (!_nodeArm && constraints.length) {
           var _cn = findNearestDefinitionPoint(mpG);
-          if (_cn) _nodeArm = function () { constraintDragActive = true; constraintDragInfo = _cn; document.body.classList.add('constraint-drag'); };
+          if (_cn) _nodeArm = function () { constraintDragActive = true; constraintDragInfo = _cn; _planeDragEdit = (_cn.constraint.type === 'plane') ? { c: _cn.constraint, before: _snapshotPlane(_cn.constraint) } : null; document.body.classList.add('constraint-drag'); };
         }
         if (!_nodeArm && viewer.inputHandler) {
           var _sph = findNearestMeasurementSphere(mpG);
@@ -11175,6 +13130,12 @@
           _clearHover = true;
           _cropClickCandidate = { vol: _nearBox, downX: e.clientX, downY: e.clientY };
         }
+        // Plane surface click-to-select (only when no box edge was nearer). A
+        // clean click on a plane's green quad selects it on mouseup; a drag orbits.
+        if (!_cropClickCandidate && constraints.length) {
+          var _pcHit = pickPlaneConstraintAt(mpG);
+          if (_pcHit) _planeClickCandidate = { constraint: _pcHit, downX: e.clientX, downY: e.clientY };
+        }
         // Any Potree-hovered draggable — box resize/move handles AND the crop-box
         // frame. A highlighted transform HANDLE takes ABSOLUTE priority for the
         // left button, so prefer a non-persistent draggable (handle) over the
@@ -11198,6 +13159,7 @@
               // and would otherwise wipe the hover and make the drag orbit.
               _clearHover = false;
               _cropClickCandidate = null;
+              _idleDownForDeselect = null;  // clicking a gizmo handle (incl. eye/face-view) must NOT deselect the box
             } else if (_persist) {
               // Locked box (crop box) frame, no handle hovered: never grab it.
               // Orbit-first; the direct edge hit-test above is the primary
@@ -11244,7 +13206,7 @@
       }
       // (Measurement-sphere + box-handle grabs are handled by the orbit-first
       // candidate block above — no immediate grab here.)
-      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) {
+      if (!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode && !_normDimArmed && !_planeMovePick && !_axesPickMode) {
         // Not grabbing anything and not in a pick mode → this left-drag should
         // ORBIT. Potree only starts a fresh scene-drag (orbit) when
         // inputHandler.drag is null, but a tool/insertion (or Potree auto-arming
@@ -11275,6 +13237,10 @@
       }
       // Member rubber-band: orange cursor sphere + line from the first endpoint.
       if (memberPickMode) _updateMemberPreview(e);
+      // Drawing-axes: live SketchUp-style tripod preview + white hover indicator.
+      if (_axesPickMode) _updateAxesPreview(e);
+      // Normal-dimension: red cursor dot + elastic line back to the plane.
+      if (_normDimArmed) _updateNormPreview(e);
       // Hover-preview spheres — Mark (red), Note (yellow), Constraint (green).
       // Shows the exact cloud point that will be picked, replacing the
       // crosshair cursor as the visual cue across all placement tools.
@@ -11284,7 +13250,7 @@
         var _hpRect = renderArea.getBoundingClientRect();
         var _hpMouse = { x: e.clientX - _hpRect.left, y: e.clientY - _hpRect.top };
         if (MARK_MODE && _markPreviewSphere) {
-          _updatePreviewSphereAt(_markPreviewSphere, _hpMouse);
+          _updatePreviewSphereAt(_markPreviewSphere, _hpMouse, !!_customAxes);
         }
         if (notePickMode && _notePreviewSphere) {
           _updatePreviewSphereAt(_notePreviewSphere, _hpMouse);
@@ -11333,6 +13299,36 @@
         return;
       }
       // Constraint definition point dragging
+      if (planeHandleDragActive && planeHandleDragInfo) {
+        var rectPH = renderArea.getBoundingClientRect();
+        var cameraPH = viewer.scene.getActiveCamera();
+        var ndcPH = new THREE.Vector2(
+          ((e.clientX - rectPH.left) / rectPH.width) * 2 - 1,
+          -((e.clientY - rectPH.top) / rectPH.height) * 2 + 1
+        );
+        var rayPH = new THREE.Raycaster();
+        rayPH.setFromCamera(ndcPH, cameraPH);
+        var cPH = planeHandleDragInfo.constraint;
+        var hitPH = new THREE.Vector3();
+        if (cPH.plane && rayPH.ray.intersectPlane(cPH.plane, hitPH) && cPH._quadX && cPH._quadY) {
+          var rel = hitPH.clone().sub(cPH.centroid);
+          var u = rel.dot(cPH._quadX);
+          var v = rel.dot(cPH._quadY);
+          var exPH = cPH.rectExtent;
+          var MINSPAN = 0.05;
+          var edgeTokens = planeHandleDragInfo.edge.split(',');
+          for (var etI = 0; etI < edgeTokens.length; etI++) {
+            switch (edgeTokens[etI]) {
+              case 'xMin': exPH.xMin = Math.min(u, exPH.xMax - MINSPAN); break;
+              case 'xMax': exPH.xMax = Math.max(u, exPH.xMin + MINSPAN); break;
+              case 'yMin': exPH.yMin = Math.min(v, exPH.yMax - MINSPAN); break;
+              case 'yMax': exPH.yMax = Math.max(v, exPH.yMin + MINSPAN); break;
+            }
+          }
+          rebuildConstraintVisual(cPH);
+        }
+        return;
+      }
       if (constraintDragActive && constraintDragInfo) {
         var rect = renderArea.getBoundingClientRect();
         var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -11340,9 +13336,15 @@
         var pickResult = _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true });
         if (pickResult && pickResult.location) {
           var c = constraintDragInfo.constraint;
-          c.points[constraintDragInfo.pointIndex] = pickResult.location.clone();
-          if (recomputeConstraint(c)) {
+          if (c.perpRef && c.perpCycle != null) {
+            // Cycled perp plane: dragging TRANSLATES the anchor, orientation fixed.
+            translatePerpPlane(c, constraintDragInfo.pointIndex, pickResult.location);
             rebuildConstraintVisual(c);
+          } else {
+            c.points[constraintDragInfo.pointIndex] = pickResult.location.clone();
+            if (recomputeConstraint(c)) {
+              rebuildConstraintVisual(c);
+            }
           }
         }
         return;
@@ -11520,7 +13522,7 @@
       if (_noteCandidate) {
         var nc = _noteCandidate;
         _noteCandidate = null;
-        var noDragNote = !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive;
+        var noDragNote = !markerDragActive && !memberDragActive && !constraintDragActive && !planeHandleDragActive && !_xAxisPickDragActive;
         if (noDragNote && e.button === 0) {
           var ndx = e.clientX - nc.downX;
           var ndy = e.clientY - nc.downY;
@@ -11541,7 +13543,7 @@
         // Depth priority: a station icon under the cursor sits IN FRONT of the
         // crop-box wireframe, so it wins. Defer to the station handler below
         // (notes already ran above). The wireframe isn't selectable here.
-        var noDragCrop = !_stationCandidate && !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive && !_pgArmed;
+        var noDragCrop = !_stationCandidate && !markerDragActive && !memberDragActive && !constraintDragActive && !planeHandleDragActive && !_xAxisPickDragActive && !_pgArmed;
         if (noDragCrop && e.button === 0 && viewer.inputHandler) {
           var cdx = e.clientX - cc2.downX, cdy = e.clientY - cc2.downY;
           if (Math.sqrt(cdx * cdx + cdy * cdy) < 5) {
@@ -11557,12 +13559,45 @@
           }
         }
       }
+      // Plane surface click — a clean click on a plane's quad selects (activates)
+      // it, revealing its stretch handles when unlocked. A drag orbits instead.
+      if (_planeClickCandidate) {
+        var pcc = _planeClickCandidate;
+        _planeClickCandidate = null;
+        var noDragPlane = !markerDragActive && !memberDragActive && !constraintDragActive && !planeHandleDragActive && !_xAxisPickDragActive;
+        if (noDragPlane && e.button === 0) {
+          var pdx = e.clientX - pcc.downX, pdy = e.clientY - pcc.downY;
+          if (Math.sqrt(pdx * pdx + pdy * pdy) < 5) {
+            // Selecting a plane deselects any Potree box (clears its tool panel).
+            try { if (viewer.inputHandler.selection && viewer.inputHandler.selection.length) viewer.inputHandler.deselectAll(); } catch (e4) {}
+            selectConstraint(pcc.constraint.id);
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+      // Clean click on empty space (no plane / box / node consumed) deselects the
+      // currently-selected plane AND any selected box (clearing its tool panel).
+      // No stopPropagation/return — let other handlers run.
+      if (_idleDownForDeselect) {
+        var idd = _idleDownForDeselect;
+        _idleDownForDeselect = null;
+        if (e.button === 0 &&
+            !markerDragActive && !memberDragActive && !constraintDragActive &&
+            !planeHandleDragActive && !_xAxisPickDragActive) {
+          var iddx = e.clientX - idd.downX, iddy = e.clientY - idd.downY;
+          if (Math.sqrt(iddx * iddx + iddy * iddy) < 5) {
+            deselectConstraint();
+            try { if (viewer.inputHandler.selection && viewer.inputHandler.selection.length) viewer.inputHandler.deselectAll(); } catch (e4) {}
+          }
+        }
+      }
       // Station pin click — open panorama if the mouse barely moved since mousedown
       // and no other drag was active. Always clear the candidate.
       if (_stationCandidate) {
         var sc = _stationCandidate;
         _stationCandidate = null;
-        var noDragActive = !markerDragActive && !memberDragActive && !constraintDragActive && !_xAxisPickDragActive;
+        var noDragActive = !markerDragActive && !memberDragActive && !constraintDragActive && !planeHandleDragActive && !_xAxisPickDragActive;
         if (noDragActive && e.button === 0) {
           var sdx = e.clientX - sc.downX;
           var sdy = e.clientY - sc.downY;
@@ -11587,6 +13622,7 @@
           for (var ai2 = 0; ai2 < refsAffected.length; ai2++) {
             forceRecomputeBox(refsAffected[ai2]);
           }
+          rebuildMarkList(); // refresh the mark's X/Y/Z readout after the move
         }
         return;
       }
@@ -11599,11 +13635,21 @@
         return;
       }
 
+      // Finalize plane stretch-handle drag
+      if (planeHandleDragActive) {
+        planeHandleDragActive = false;
+        planeHandleDragInfo = null;
+        document.body.classList.remove('constraint-drag');
+        if (_planeDragEdit) { _pushPlaneEdit('stretch ' + _planeDragEdit.c.name, _planeDragEdit.c, _planeDragEdit.before); _planeDragEdit = null; }
+        return;
+      }
+
       // Finalize constraint point drag
       if (constraintDragActive) {
         constraintDragActive = false;
         constraintDragInfo = null;
         document.body.classList.remove('constraint-drag');
+        if (_planeDragEdit) { _pushPlaneEdit('edit ' + _planeDragEdit.c.name, _planeDragEdit.c, _planeDragEdit.before); _planeDragEdit = null; }
         return;
       }
 
@@ -11615,7 +13661,7 @@
         return;
       }
 
-      if ((!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode) || !mouseDownPos) return;
+      if ((!MARK_MODE && !constraintPickMode && !memberPickMode && !zBasePickMode && !notePickMode && !_normDimArmed && !_planeMovePick && !_axesPickMode) || !mouseDownPos) return;
 
       // Drag guard: only place marker if mouse moved < 5px
       const dx = e.clientX - mouseDownPos.x;
@@ -11661,7 +13707,9 @@
       // (unpatched) picker so a note never snaps onto a nearby member / constraint /
       // measurement node ("protected circle") and never projects onto an active
       // constraint. Every other tool keeps the snapping picker.
-      const pickResult = notePickMode
+      // Notes AND normal-dimensions use the RAW picker so the point lands exactly
+      // where clicked (no snapping onto nodes, no projection onto a bound plane).
+      const pickResult = (notePickMode || _normDimArmed || _planeMovePick || _axesPickMode)
         ? _origPick(mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true })
         : Potree.Utils.getMousePointCloudIntersection(
             mouse, camera, viewer, viewer.scene.pointclouds, { pickClipped: true }
@@ -11669,21 +13717,32 @@
 
       if (pickResult && pickResult.location) {
         var pos = pickResult.location;
-        // Snap check for member/constraint picks (aggressive threshold)
-        if (memberPickMode || constraintPickMode) {
+        // Snap check for member/constraint/axes picks (aggressive threshold) — lets
+        // the axes origin / +X / +Y land exactly on an existing node. A locked
+        // drawing axis overrides node snapping (SketchUp-style).
+        if ((memberPickMode || constraintPickMode || _axesPickMode) && !_axisLock) {
           var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
           if (snap) {
             pos = snap.position;
             showToast('Snapped to ' + snap.label, 1500);
           }
         }
-        if (memberPickMode) {
+        if (_axesPickMode) {
+          handleAxesPick(pos);
+        } else if (memberPickMode) {
           handleMemberPick(pos);
         } else if (constraintPickMode) {
           handleConstraintPick(pos);
         } else if (notePickMode) {
           placeNote(pos);
           cancelNotePick(); // also disposes the preview sphere
+        } else if (_normDimArmed) {
+          placeNormDimension(pos);
+        } else if (_planeMovePick) {
+          var _pmp = _planeMovePick;
+          var _pmC = constraints.find(function(cc) { return cc.id === _pmp.planeId && cc.type === 'plane'; });
+          cancelPlaneMovePick();
+          if (_pmC) movePlaneToPoint(_pmC, pos, _planeMoveMeters, _pmp.doCopy);
         } else {
           placeMarker(pos);
         }
@@ -11823,6 +13882,7 @@
           clipBox.userData = clipBox.userData || {};
           clipBox.userData.persistent = true;     // mark as locked
           initialClipBox = clipBox;               // store reference for elevation tool
+          _applyBoxWireToVolume(clipBox);         // honor the box-wireframe brightness setting
           trackVolumeUndo(clipBox);               // Ctrl+Z undoes accidental move/rotate/scale of the crop box
           // Make the crop box grabbable ONLY by its wireframe perimeter: route
           // the fill mesh's hit-test to the frame, so dragging OVER the interior
@@ -11919,6 +13979,7 @@
               showToast('Activate a plane first to enable ortho measure', 3000);
             } else {
               _orthoMeasureMode = true;
+              _normDimMode = false; _normDimArmed = false; _normDimRefId = null; _disposeNormPreview(); // mutually exclusive
               var axesLbl = _orthoParallelMode ? 'X/Y/Z' : 'X/Y';
               showToast('Ortho measure ON — picks snap to ' + ac.name + ' ' + axesLbl + ' axes', 3000);
               updateConstraintStatus();
@@ -11952,6 +14013,14 @@
           }
         }
       }
+      // Normal-dimension toggle (uses the SELECTED plane). "d" = dimension.
+      if (ev.key === 'd' || ev.key === 'D') {
+        var _td = ev.target;
+        var _typingD = _td && (_td.tagName === 'INPUT' || _td.tagName === 'TEXTAREA' || _td.isContentEditable);
+        if (!_typingD && !ev.ctrlKey && !ev.metaKey && !constraintPickMode && !memberPickMode && !MARK_MODE) {
+          toggleNormDim();
+        }
+      }
       // Undo
       if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) { ev.preventDefault(); performRedo(); }
       else if ((ev.key === 'z' || ev.key === 'Z') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); performUndo(); }
@@ -11981,6 +14050,23 @@
       }
 
       if (ev.key === 'Escape') {
+        // In Norm mode, Esc STOPS the measuring (disarms) — exactly like exiting
+        // the distance tool — but leaves the Norm modifier on (only the Norm
+        // button turns that off). This is the primary Esc action while armed.
+        if (_normDimArmed) {
+          _normDimArmed = false;
+          _disposeNormPreview();
+          updateConstraintStatus();
+          showToast('Measuring stopped (Norm still on — start the distance tool to resume, or click Norm to exit)', 3500);
+          return;
+        }
+        // Cancel a pending move/copy-to-point pick.
+        if (_planeMovePick) { cancelPlaneMovePick(); showToast('Move/copy to point cancelled', 1500); return; }
+        // Deselect a highlighted plane first (only if nothing else is mid-action).
+        if (!zBasePickMode && !constraintPickMode && !memberPickMode && !notePickMode &&
+            _expandedNoteId == null && !MARK_MODE && selectedConstraintId !== null) {
+          deselectConstraint();
+        }
         if (zBasePickMode) { cancelZBasePick(); rebuildElevationBoxList(); }
         else if (constraintPickMode) cancelConstraintPick();
         else if (memberPickMode) cancelMemberPick();
@@ -12036,6 +14122,17 @@
       performRedo:              function () { return performRedo();   },
       setUnitMode:              function (m) { return setUnitMode(m); },
       getUnitMode:              function () { return getUnitMode();   },
+      setBoxWireBrightness:     function (v) { return setBoxWireBrightness(v); },
+      getBoxWireBrightness:     function () { return getBoxWireBrightness(); },
+      // Light/dark theme toggle (eye dropdown). The 3D canvas background is
+      // CSS-driven (custom.css `--bg` keyed off :root[data-theme]) and the
+      // WebGL layer is transparent, so the flip is automatic — this hook just
+      // guarantees the canvas stays transparent so the CSS bg shows through,
+      // and is a place for any future JS-side theme refresh.
+      applyViewerTheme:         function (theme) {
+        try { if (viewer && viewer.renderer) viewer.renderer.setClearAlpha(0); } catch (e) {}
+        return theme;
+      },
       // Visibility toggles for the top-bar eye dropdown.
       getClipBoxVis:            function () { return !!(typeof initialClipBox !== 'undefined' && initialClipBox && !initialClipBox._outlineHidden); },
       toggleClipBoxVis:         function () { var b = document.getElementById('btn-toggle-clipbox-outline'); if (b) b.click(); return this.getClipBoxVis(); },
@@ -12045,6 +14142,10 @@
       hasNotes:                 function () { return notes.length > 0; },
       getNotesVis:              function () { return _notesVisibleAll; },
       toggleNotesVis:           function () { _setNotesVisOnly(!_notesVisibleAll); return _notesVisibleAll; },
+      // Custom drawing axes — gizmo show/hide for the eye dropdown.
+      hasCustomAxes:            function () { return !!_customAxes; },
+      getAxesGizmoVis:          function () { return _customAxesVisible; },
+      toggleAxesGizmoVis:       function () { setAxesGizmoVisible(!_customAxesVisible); return _customAxesVisible; },
       get undoStack()           { return undoStack;           },
       // Called from chrome.js after a clean 1-finger tap on touch. Exits any
       // single-action pick mode (Mark, Note, Constraint) so the user can

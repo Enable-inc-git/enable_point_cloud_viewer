@@ -2352,6 +2352,10 @@
     let constraintPickType = null;
     const constraintScene = new THREE.Scene();
     constraintScene.name = "EnableConstraintScene";
+    // Plane fill sheets render here in the depth_overlay pass (which has the point
+    // cloud's depth restored), so points IN FRONT of a plane occlude its sheet.
+    const planeFillScene = new THREE.Scene();
+    planeFillScene.name = "EnablePlaneFillScene";
     let constraintDragActive = false;
     let constraintDragInfo = null; // { constraint, pointIndex }
     // Plane stretch handles (visibility-only resize of the plane quad).
@@ -3576,7 +3580,7 @@
     }
     function _cmdAddConstraint(c) {
       return { label: c.name || 'constraint', tag: 'constraint',
-        undo: function(){ var i=constraints.indexOf(c); if(i>=0)constraints.splice(i,1); if(c.visual)constraintScene.remove(c.visual);
+        undo: function(){ var i=constraints.indexOf(c); if(i>=0)constraints.splice(i,1); if(c.visual)constraintScene.remove(c.visual); _disposePlaneFill(c);
           if(activeConstraintId===c.id)activeConstraintId=null; if(selectedConstraintId===c.id)selectedConstraintId=null;
           if(_normDimRefId===c.id){_normDimMode=false;_normDimArmed=false;_normDimRefId=null;_disposeNormPreview();}
           rebuildConstraintList(); updateConstraintVisuals(); },
@@ -4084,6 +4088,19 @@
             result = { location: snap.position.clone(), distance: _scam ? _scam.position.distanceTo(snap.position) : 0, pointcloud: null, point: { position: snap.position.clone() } };
           }
           showToast('Snapped to ' + snap.label, 1000);
+        }
+      }
+      // ---- Plane-plane intersection snap (SketchUp-style proximity inference): if
+      // the cursor is near where two planes cross, snap onto that line — even where
+      // it runs through empty space. An exact endpoint/vertex snap (above) wins.
+      if (_snapPlaneIntersections && mouse && typeof mouse.x === 'number' && !_pointSnapped &&
+          !constraintPickMode && !constraintDragActive && !memberDragActive && !planeHandleDragActive) {
+        var _cam3 = viewer.scene.getActiveCamera();
+        var _isnap = snapToIntersectionLineScreen(mouse, _cam3, PLANE_INTERSECT_SNAP_PX);
+        if (_isnap) {
+          if (result && result.location) { result.location = _isnap; }
+          else { result = { location: _isnap.clone(), distance: _cam3 ? _cam3.position.distanceTo(_isnap) : 0, pointcloud: null, point: { position: _isnap.clone() } }; }
+          _pointSnapped = true;
         }
       }
       // ---- Custom drawing-axis inference (SketchUp-style). Snap the pick onto
@@ -4834,14 +4851,21 @@
 
         var planeGeo = new THREE.PlaneGeometry(rectW, rectH);
         var planeMat = new THREE.MeshBasicMaterial({
-          color: 0x39ff14, transparent: true, opacity: 0.15,
-          side: THREE.DoubleSide, depthTest: false, depthWrite: false
+          color: 0x39ff14, transparent: true, opacity: 0.22,
+          side: THREE.DoubleSide, depthTest: true, depthWrite: false
         });
         var planeMesh = new THREE.Mesh(planeGeo, planeMat);
         planeMesh.position.copy(rectCenter);
         planeMesh.quaternion.copy(quat);
-        planeMesh.userData.isPlaneFill = true; // click target for plane selection
-        group.add(planeMesh);
+        planeMesh.renderOrder = 1;
+        planeMesh.userData.isPlaneFill = true;          // also the click target for plane selection
+        planeMesh.userData.constraintId = constraint.id;
+        // Render the fill in planeFillScene (drawn in the depth_overlay pass, which
+        // has the point cloud's depth) so it depth-tests correctly: points IN FRONT
+        // of the plane occlude the green sheet, points BEHIND show through it — the
+        // classic section-plane look. Lifecycle is managed via constraint._fillMesh.
+        planeFillScene.add(planeMesh);
+        constraint._fillMesh = planeMesh;
 
         var edgeGeo = new THREE.EdgesGeometry(planeGeo);
         var edgeMat = new THREE.LineBasicMaterial({
@@ -5296,6 +5320,7 @@
         });
         constraintScene.remove(c.visual);
       }
+      _disposePlaneFill(c);
       if (activeConstraintId === id) activeConstraintId = null;
       if (selectedConstraintId === id) selectedConstraintId = null;
       if (_normDimRefId === id) { _normDimMode = false; _normDimArmed = false; _normDimRefId = null; _disposeNormPreview(); }
@@ -5402,12 +5427,8 @@
       var best = null, bestDist = Infinity;
       for (var ci = 0; ci < constraints.length; ci++) {
         var c = constraints[ci];
-        if (c.type !== 'plane' || c.visible === false || !c.visual) continue;
-        var fills = [];
-        c.visual.traverse(function(obj) {
-          if (obj.userData && obj.userData.isPlaneFill) fills.push(obj);
-        });
-        var hits = ray.intersectObjects(fills, false);
+        if (c.type !== 'plane' || c.visible === false || !c._fillMesh) continue;
+        var hits = ray.intersectObjects([c._fillMesh], false);
         if (hits.length && hits[0].distance < bestDist) {
           bestDist = hits[0].distance;
           best = c;
@@ -5519,6 +5540,17 @@
       return true;
     }
 
+    // Dispose a plane's depth-correct fill mesh (lives in viewer.scene.scene, not
+    // the constraint group). Call wherever c.visual is disposed.
+    function _disposePlaneFill(c) {
+      if (c && c._fillMesh) {
+        planeFillScene.remove(c._fillMesh);
+        if (c._fillMesh.geometry) c._fillMesh.geometry.dispose();
+        if (c._fillMesh.material) c._fillMesh.material.dispose();
+        c._fillMesh = null;
+      }
+    }
+
     // -- Rebuild visual for a single constraint (dispose old, build new) --
     function rebuildConstraintVisual(c) {
       if (c.visual) {
@@ -5529,6 +5561,7 @@
         constraintScene.remove(c.visual);
         c.visual = null;
       }
+      _disposePlaneFill(c);
       buildConstraintVisual(c);
     }
 
@@ -6423,6 +6456,18 @@
       showToast('Exported ' + members.length + ' member(s) to DXF');
     }
 
+    // Plane fills render in the depth_overlay pass so they depth-test against the
+    // point cloud (points in front occlude the sheet; points behind show through).
+    viewer.addEventListener("render.pass.depth_overlay", function() {
+      if (planeFillScene.children.length > 0) {
+        var _r = viewer.renderer;
+        var _prevAutoClear = _r.autoClear;
+        _r.autoClear = false;   // composite over the cloud, don't wipe it
+        _r.render(planeFillScene, viewer.scene.getActiveCamera());
+        _r.autoClear = _prevAutoClear;
+      }
+    });
+
     // -- Render constraint + member visuals in overlay pass --
     viewer.addEventListener("render.pass.perspective_overlay", function(e) {
       var camera = viewer.scene.getActiveCamera();
@@ -6440,6 +6485,11 @@
             if (obj.userData && obj.userData.isPlaneStretchHandle) {
               // Handles are visibility-only (don't affect the plane math), so they
               // show whenever the plane is SELECTED — independent of lock state.
+              obj.visible = (c.id === selectedConstraintId) && c.visible !== false;
+            }
+            if (obj.userData && obj.userData.isBasisArrow) {
+              // X/Y (red/green) axis arrows show only when the plane is selected,
+              // same as the stretch handles.
               obj.visible = (c.id === selectedConstraintId) && c.visible !== false;
             }
             if (obj.userData && obj.userData.isMarkerSphere) {
@@ -11237,6 +11287,14 @@
       if (cutoutBoxes.length > 0) {
         syncExclusionBoxes();
       }
+      if (focusBoxes.length > 0) {
+        syncFocusBoxes();
+      }
+      if (_planeSliceOn) {
+        syncPlaneSlabs();
+      }
+      syncPlaneFills();
+      updateIntersectionLineVisuals();
       if (elevationCropVolumes.length > 0) {
         // Always sync highlights (handles dragging in real-time, including
         // the new "active box transform != computedBoxMatrix" case).
@@ -11327,6 +11385,414 @@
         })(i);
       }
     }
+
+    // ===== Focus Boxes (inverse-clip: keep interior prominent, fade the rest) =====
+    // Inverse of a cut-out box. Everything OUTSIDE all focus boxes fades to the
+    // "Point cloud opacity" slider value; each box's interior gets its own opacity
+    // (surfaced in the right Tool settings panel when the box is selected). Fading
+    // is stable dithered discard in the shared shader (EDL puts depth in the alpha
+    // channel, so true per-point translucency isn't available) — active only while
+    // >=1 focus box exists, so the plain edlOpacity fade is untouched otherwise.
+    var _focusCounter = 0;
+    var focusBoxes = [];
+    // Single source of truth for the global (outside-focus) opacity, mirrored by
+    // the "Point cloud opacity" slider. Initialized from the current edlOpacity.
+    var _pcOpacityLogical = (viewer.edlOpacity != null ? viewer.edlOpacity : 1);
+
+    function styleFocusBox(vol) {
+      if (vol.box) {
+        vol.box.visible = true;
+        vol.box.material.color.setHex(0x000000);
+        vol.box.material.opacity = 0.0;
+        vol.box.material.transparent = true;
+        vol.box.material.needsUpdate = true;
+        // Disable raycast on the invisible fill (same rationale as styleCutoutBox):
+        // selection is via the nearest-edge hit-test, not the fill mesh.
+        vol.box.raycast = function() {};
+      }
+      // Frame honors the shared box-wireframe brightness slider like every other
+      // box (black by default), instead of a custom color.
+      _applyBoxWireToVolume(vol);
+      if (vol.label) vol.label.visible = false;
+    }
+
+    function addFocusBox() {
+      var volume = viewer.volumeTool.startInsertion({ clip: false });
+      _focusCounter++;
+      volume.name = 'Focus ' + _focusCounter;
+      volume.clip = false;
+      volume._focusOpacity = 1.0;   // interior starts fully crisp
+
+      styleFocusBox(volume);
+      setTimeout(function() { styleFocusBox(volume); }, 500);
+
+      focusBoxes.push(volume);
+      // First focus box auto-dims everything OUTSIDE it to 30% so the focus reads
+      // immediately, without touching the opacity slider.
+      if (focusBoxes.length === 1) { _pcOpacityLogical = 0.30; updateScansPanel(); }
+      trackVolumeUndo(volume);
+      syncFocusBoxes();
+      applyGlobalOpacity();   // crossing 0->N switches the outside fade to dithered
+      rebuildFocusList();
+      showToast('Click and drag on the point cloud to place focus box.');
+    }
+
+    function removeFocusBox(index) {
+      if (index < 0 || index >= focusBoxes.length) return;
+      var vol = focusBoxes[index];
+      viewer.scene.removeVolume(vol);
+      focusBoxes.splice(index, 1);
+      if (focusBoxes.length === 0) { _pcOpacityLogical = 1.0; updateScansPanel(); }  // restore full opacity
+      syncFocusBoxes();
+      applyGlobalOpacity();   // crossing N->0 restores the smooth edlOpacity fade
+      rebuildFocusList();
+      showToast('Focus box removed');
+    }
+
+    function clearAllFocusBoxes() {
+      for (var i = 0; i < focusBoxes.length; i++) {
+        viewer.scene.removeVolume(focusBoxes[i]);
+      }
+      focusBoxes = [];
+      _pcOpacityLogical = 1.0; updateScansPanel();   // restore full opacity
+      syncFocusBoxes();
+      applyGlobalOpacity();
+      rebuildFocusList();
+      showToast('All focus boxes removed');
+    }
+
+    // ===== Plane slabs — tint cloud points near planes so their intersection
+    // with the cloud is visible in 3D (helps find where two planes cross). =====
+    var _planeSliceOn = false;         // per-point tint superseded by the depth-correct fill sheet
+    var _planeSliceThickness = 0.10;   // (unused) half-thickness of the tinted band (metres)
+    function syncPlaneSlabs() {
+      var list = [];
+      if (_planeSliceOn) {
+        var cam = viewer.scene.getActiveCamera();
+        var cp = cam ? cam.position : null;
+        for (var i = 0; i < constraints.length; i++) {
+          var c = constraints[i];
+          if (c.type !== 'plane' || c.visible === false || !c.plane || !c.basis) continue;
+          var qx = c._quadX || c.basis.X;
+          var qy = c._quadY || c.basis.Y;
+          var nrm = c.plane.normal.clone();
+          var k = c.plane.constant;
+          // Orient the normal toward the camera so quad-local +z = camera side
+          // (a shaded point is then "behind": local z < 0).
+          if (cp && (nrm.x * cp.x + nrm.y * cp.y + nrm.z * cp.z + k) < 0) nrm.negate();
+          var re = c.rectExtent || { xMin: -1, xMax: 1, yMin: -1, yMax: 1 };
+          var width = Math.max(re.xMax - re.xMin, 1e-3);
+          var height = Math.max(re.yMax - re.yMin, 1e-3);
+          var cx = (re.xMin + re.xMax) / 2, cy = (re.yMin + re.yMax) / 2;
+          var rectCenter = new THREE.Vector3().copy(c.basis.origin)
+            .addScaledVector(qx, cx).addScaledVector(qy, cy);
+          var m = new THREE.Matrix4().makeBasis(qx, qy, nrm);
+          m.scale(new THREE.Vector3(width, height, 1));
+          m.setPosition(rectCenter);
+          list.push({ inverse: m.clone().invert() });
+        }
+      }
+      viewer.scene.pointclouds.forEach(function(pc) {
+        pc.material.setPlaneSlabs(list);
+      });
+    }
+
+    // Keep each plane's depth-correct fill sheet (in viewer.scene.scene) in sync
+    // with the plane's visibility and selection state.
+    function syncPlaneFills() {
+      for (var i = 0; i < constraints.length; i++) {
+        var c = constraints[i];
+        if (c.type !== 'plane' || !c._fillMesh) continue;
+        c._fillMesh.visible = c.visible !== false;
+        if (c._fillMesh.material) {
+          c._fillMesh.material.opacity = (c.id === selectedConstraintId) ? 0.32 : 0.20;
+        }
+      }
+    }
+    function setPlaneSliceEnabled(on) {
+      _planeSliceOn = !!on;
+      syncPlaneSlabs();
+      if (viewer.repaint) viewer.repaint();
+    }
+    function setPlaneSliceThickness(m) {
+      _planeSliceThickness = Math.max(0.001, m);
+      if (_planeSliceOn) { syncPlaneSlabs(); if (viewer.repaint) viewer.repaint(); }
+    }
+
+    // ===== Plane-plane intersection snapping (no binding) =====
+    // Two planes meet in a LINE. When enabled, a pick landing near any pair of
+    // visible planes' intersection line is projected ONTO that line — so marks /
+    // measurement points drop exactly on the intersection at whatever height you
+    // click. Just toggle it on; nothing to bind.
+    var _snapPlaneIntersections = true;  // always on: proximity-inferred, no toggle
+    var PLANE_INTERSECT_SNAP_PX = 18;    // screen-space snap radius to a line (px)
+
+    // Parameter range [tLo, tHi] where line (p + t*d) stays inside plane c's
+    // stretched rectangle, or null if it never does.
+    function _lineRectTRange(p, d, c) {
+      if (!c.basis) return null;
+      var qx = c._quadX || c.basis.X, qy = c._quadY || c.basis.Y, o = c.basis.origin;
+      var re = c.rectExtent || { xMin: -1, xMax: 1, yMin: -1, yMax: 1 };
+      var wx = p.x - o.x, wy = p.y - o.y, wz = p.z - o.z;
+      var u0 = wx * qx.x + wy * qx.y + wz * qx.z, du = d.x * qx.x + d.y * qx.y + d.z * qx.z;
+      var v0 = wx * qy.x + wy * qy.y + wz * qy.z, dv = d.x * qy.x + d.y * qy.y + d.z * qy.z;
+      var lo = -Infinity, hi = Infinity;
+      if (Math.abs(du) > 1e-9) { var ta = (re.xMin - u0) / du, tb = (re.xMax - u0) / du; lo = Math.max(lo, Math.min(ta, tb)); hi = Math.min(hi, Math.max(ta, tb)); }
+      else if (u0 < re.xMin || u0 > re.xMax) return null;
+      if (Math.abs(dv) > 1e-9) { var tc = (re.yMin - v0) / dv, td = (re.yMax - v0) / dv; lo = Math.max(lo, Math.min(tc, td)); hi = Math.min(hi, Math.max(tc, td)); }
+      else if (v0 < re.yMin || v0 > re.yMax) return null;
+      return (lo > hi) ? null : [lo, hi];
+    }
+
+    // Pairwise intersection lines of visible planes, CLIPPED to where both planes'
+    // stretched rectangles overlap: [{ origin, dir(unit), tLo, tHi }].
+    function getIntersectionLines() {
+      var planes = [];
+      for (var i = 0; i < constraints.length; i++) {
+        var c = constraints[i];
+        if (c.type === 'plane' && c.visible !== false && c.plane) planes.push(c);
+      }
+      var lines = [];
+      for (var a = 0; a < planes.length; a++) {
+        for (var b = a + 1; b < planes.length; b++) {
+          var n1 = planes[a].plane.normal, n2 = planes[b].plane.normal;
+          var h1 = -planes[a].plane.constant, h2 = -planes[b].plane.constant;  // THREE.Plane: n·x = -constant
+          var u = new THREE.Vector3().crossVectors(n1, n2);
+          var uLen2 = u.lengthSq();
+          if (uLen2 < 1e-9) continue;   // parallel → no line
+          var p = new THREE.Vector3()
+            .addScaledVector(new THREE.Vector3().crossVectors(n2, u), h1)
+            .addScaledVector(new THREE.Vector3().crossVectors(u, n1), h2)
+            .divideScalar(uLen2);
+          var dir = u.normalize();
+          var rA = _lineRectTRange(p, dir, planes[a]);
+          var rB = _lineRectTRange(p, dir, planes[b]);
+          if (!rA || !rB) continue;              // line misses one rectangle entirely
+          var tLo = Math.max(rA[0], rB[0]), tHi = Math.min(rA[1], rB[1]);
+          if (tLo >= tHi) continue;              // rectangles don't overlap along the line
+          lines.push({ origin: p, dir: dir, tLo: tLo, tHi: tHi });
+        }
+      }
+      return lines;
+    }
+
+    // Screen-space snap: if the cursor is within `thrPx` of an intersection line's
+    // on-screen projection, return the 3D point ON the line nearest the cursor ray
+    // (works even where the line runs through empty space, e.g. a member centreline).
+    function snapToIntersectionLineScreen(mouse, camera, thrPx) {
+      var lines = getIntersectionLines();
+      if (!lines.length || !mouse || typeof mouse.x !== 'number' || !camera) return null;
+      var sz = viewer.renderer.getSize(new THREE.Vector2());
+      var ray = Potree.Utils.mouseToRay(mouse, camera, sz.x, sz.y);
+      var ro = ray.origin, rd = ray.direction.clone().normalize();
+      var best = null, bestPx = thrPx;
+      for (var i = 0; i < lines.length; i++) {
+        var lo = lines[i].origin, ld = lines[i].dir;   // ld is unit
+        var w0 = new THREE.Vector3().subVectors(lo, ro);
+        var b = ld.dot(rd), d = ld.dot(w0), e = rd.dot(w0);
+        var denom = 1 - b * b;
+        if (Math.abs(denom) < 1e-6) continue;           // line ∥ ray
+        var t = (b * e - d) / denom;                    // param on the intersection line
+        t = Math.max(lines[i].tLo, Math.min(lines[i].tHi, t));   // only snap on the visible (clipped) segment
+        var pol = new THREE.Vector3().copy(lo).addScaledVector(ld, t);
+        var sp = pol.clone().project(camera);
+        if (sp.z < -1 || sp.z > 1) continue;            // behind camera / off-frustum
+        var px = (sp.x * 0.5 + 0.5) * sz.x;
+        var py = (1 - (sp.y * 0.5 + 0.5)) * sz.y;
+        var dist = Math.sqrt((px - mouse.x) * (px - mouse.x) + (py - mouse.y) * (py - mouse.y));
+        if (dist < bestPx) { bestPx = dist; best = pol; }
+      }
+      return best;
+    }
+
+    // ---- Green intersection-line visuals (drawn like a plane outline so you can
+    // see the axis where two planes cross, and snap/measure to it). ----
+    var _intersectLineGroup = new THREE.Group();
+    constraintScene.add(_intersectLineGroup);
+    function updateIntersectionLineVisuals() {
+      var lines = getIntersectionLines();
+      while (_intersectLineGroup.children.length < lines.length) {
+        var geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        var mat = new THREE.LineBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+        _intersectLineGroup.add(new THREE.Line(geo, mat));
+      }
+      while (_intersectLineGroup.children.length > lines.length) {
+        var old = _intersectLineGroup.children.pop();
+        if (old.geometry) old.geometry.dispose();
+        if (old.material) old.material.dispose();
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var L = lines[i];
+        var line = _intersectLineGroup.children[i];
+        var pos = line.geometry.attributes.position;
+        pos.setXYZ(0, L.origin.x + L.dir.x * L.tLo, L.origin.y + L.dir.y * L.tLo, L.origin.z + L.dir.z * L.tLo);
+        pos.setXYZ(1, L.origin.x + L.dir.x * L.tHi, L.origin.y + L.dir.y * L.tHi, L.origin.z + L.dir.z * L.tHi);
+        pos.needsUpdate = true;
+        line.geometry.computeBoundingSphere();
+      }
+    }
+
+    // Push focus box transforms + per-box opacity to every point cloud material.
+    function syncFocusBoxes() {
+      var activeBoxes = focusBoxes.filter(function(v) { return !v._disabled; });
+      var list = activeBoxes.map(function(vol) {
+        vol.updateMatrixWorld(true);
+        var inv = new THREE.Matrix4().copy(vol.matrixWorld).invert();
+        return { inverse: inv, opacity: (vol._focusOpacity == null ? 1 : vol._focusOpacity) };
+      });
+      viewer.scene.pointclouds.forEach(function(pc) {
+        pc.material.setFocusBoxes(list);
+        pc.material.setFocusOutsideOpacity(_pcOpacityLogical);
+      });
+    }
+
+    // Route the global "outside" opacity. When focus boxes exist the whole cloud
+    // renders via dithered discard, so the outside value must go through the shader
+    // (uFocusOutsideOpacity) and the smooth post-process fade is disabled to avoid
+    // double-dimming. With no focus boxes, behave exactly as before (edlOpacity).
+    function applyGlobalOpacity() {
+      if (focusBoxes.length > 0) {
+        viewer.edlOpacity = 1.0;
+        viewer.scene.pointclouds.forEach(function(pc) {
+          pc.material.setFocusOutsideOpacity(_pcOpacityLogical);
+        });
+      } else {
+        viewer.edlOpacity = _pcOpacityLogical;
+      }
+      if (viewer.repaint) viewer.repaint();
+    }
+
+    function rebuildFocusList() {
+      var list = document.getElementById('enable-focus-list');
+      if (!list) return;
+      list.innerHTML = '';
+
+      var clearBtn = document.getElementById('btn-clear-all-focus');
+      if (clearBtn) clearBtn.style.display = focusBoxes.length > 0 ? '' : 'none';
+
+      for (var i = 0; i < focusBoxes.length; i++) {
+        (function(idx) {
+          var vol = focusBoxes[idx];
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0;font:12px/1.3 sans-serif;color:var(--sidebar-text,#fbfbfb)';
+
+          var nameSpan = document.createElement('span');
+          nameSpan.style.flex = '1';
+          nameSpan.textContent = vol.name;
+
+          var eyeBtn = document.createElement('button');
+          eyeBtn.textContent = vol._disabled ? '—' : '\u{1F441}';
+          eyeBtn.title = 'Toggle this focus box on/off';
+          eyeBtn.style.cssText = 'background:none;border:none;color:var(--sidebar-text,#fbfbfb);cursor:pointer;font-size:14px;padding:2px 4px';
+          eyeBtn.addEventListener('click', function() {
+            vol._disabled = !vol._disabled;
+            vol.visible = !vol._disabled;
+            styleFocusBox(vol);
+            syncFocusBoxes();
+            rebuildFocusList();
+          });
+
+          var outlineBtn = document.createElement('button');
+          var _outVis = vol.frame ? vol.frame.visible : true;
+          outlineBtn.textContent = _outVis ? '□' : '■';
+          outlineBtn.title = 'Toggle outline visibility';
+          outlineBtn.style.cssText = 'background:none;border:none;color:var(--sidebar-text,#fbfbfb);cursor:pointer;font-size:14px;padding:2px 4px';
+          outlineBtn.addEventListener('click', function() {
+            vol._outlineHidden = !vol._outlineHidden;
+            vol.visible = !vol._outlineHidden;                 // focus effect is shader-driven, unaffected
+            if (!vol._outlineHidden) styleFocusBox(vol);
+            outlineBtn.textContent = vol._outlineHidden ? '■' : '□';
+          });
+
+          var delBtn = document.createElement('button');
+          delBtn.textContent = '✕';
+          delBtn.title = 'Remove this focus box';
+          delBtn.style.cssText = 'background:none;border:none;color:#f44;cursor:pointer;font-size:14px;padding:2px 4px';
+          delBtn.addEventListener('click', function() { removeFocusBox(idx); });
+
+          row.appendChild(nameSpan);
+          row.appendChild(eyeBtn);
+          row.appendChild(outlineBtn);
+          row.appendChild(delBtn);
+          list.appendChild(row);
+        })(i);
+      }
+    }
+
+    // Right-panel per-box opacity, shown on select (satisfies the tool-settings-on-
+    // select rule). chrome.js adopts #enable-focus-panel into the context panel.
+    function ensureFocusPanel() {
+      var p = document.getElementById('enable-focus-panel');
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'enable-focus-panel';
+        p.style.display = 'none';
+        document.body.appendChild(p); // chrome.js reparents this into the context panel
+      }
+      return p;
+    }
+
+    function showFocusBoxSettings(vol) {
+      var p = ensureFocusPanel();
+      var pct = Math.round((vol._focusOpacity == null ? 1 : vol._focusOpacity) * 100);
+      p.dataset.sliderOnly = 'false';
+      p.innerHTML =
+        '<div class="enable-cp-title">' + _cpIcon('box') + '<span>' + vol.name + '</span></div>' +
+        '<div style="margin:2px 0 10px">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
+            '<span>Interior opacity</span><span id="focus-opacity-val">' + pct + '%</span>' +
+          '</div>' +
+          '<input type="range" id="focus-opacity-slider" min="0" max="100" value="' + pct + '" style="width:100%">' +
+        '</div>';
+      p.style.display = '';
+      var os = p.querySelector('#focus-opacity-slider');
+      if (os) os.addEventListener('input', function() {
+        var v = Math.max(0, Math.min(100, +this.value));
+        vol._focusOpacity = v / 100;
+        var lbl = p.querySelector('#focus-opacity-val');
+        if (lbl) lbl.textContent = v + '%';
+        syncFocusBoxes();
+        if (viewer.repaint) viewer.repaint();
+      });
+    }
+
+    function hideFocusBoxSettings() {
+      var p = document.getElementById('enable-focus-panel');
+      if (p) { p.innerHTML = ''; p.style.display = 'none'; }
+    }
+
+    // Selecting a focus box (via its list row or 3D click) routes through Potree
+    // selection_changed -> enable:selection-changed; show/clear its settings panel.
+    document.addEventListener('enable:selection-changed', function(e) {
+      var name = e && e.detail && e.detail.name;
+      var vol = null;
+      if (name) {
+        for (var i = 0; i < focusBoxes.length; i++) {
+          if (focusBoxes[i].name === name) { vol = focusBoxes[i]; break; }
+        }
+      }
+      if (vol) showFocusBoxSettings(vol);
+      else hideFocusBoxSettings();
+    });
+
+    // Create the panel element up front so chrome.js adopts it into the context panel.
+    ensureFocusPanel();
+
+    // Potree removes a volume when the user selects it + presses Delete. Clean up
+    // our focus-box bookkeeping so the box stops focusing points, leaves the list,
+    // and its settings panel clears.
+    viewer.scene.addEventListener('volume_removed', function(e) {
+      var vol = e && e.volume;
+      var idx = focusBoxes.indexOf(vol);
+      if (idx >= 0) {
+        focusBoxes.splice(idx, 1);
+        if (focusBoxes.length === 0) { _pcOpacityLogical = 1.0; updateScansPanel(); }  // restore full opacity
+        syncFocusBoxes();
+        applyGlobalOpacity();
+        rebuildFocusList();
+        hideFocusBoxSettings();
+      }
+    });
 
     // Helper: create a collapsible group
     function createGroup(id, title, expanded) {
@@ -11887,6 +12353,34 @@
       } catch (e) { /* ignore */ }
     }
 
+    // Give each VISIBLE scan its own guaranteed point budget. Potree shares ONE
+    // global budget across clouds by screen-space priority, so a huge scan (55M)
+    // crowds out a small one (5M) — the loser only gets coarse nodes, which
+    // ADAPTIVE sizing balloons into giant splats ("giant + missing" symptom).
+    // We hand each visible cloud a full per-cloud budget (pc.pointBudget, honored
+    // at potree.js updateVisibility) and raise the global cap to their sum
+    // (bounded), so every scan renders as it would on its own.
+    var _perScanBudget = 3000000;       // matches the responsive default set at load
+    var _maxGlobalScanBudget = 9000000; // safety cap so many-cloud projects stay smooth
+    function rebalanceScanBudgets() {
+      try {
+        if (typeof elevationActive !== 'undefined' && elevationActive) return; // elevation owns the budget
+        var visN = 0, i;
+        for (i = 0; i < scanClouds.length; i++) { if (scanClouds[i].visible && scanClouds[i].pc) visN++; }
+        if (visN <= 1) {
+          for (i = 0; i < scanClouds.length; i++) { if (scanClouds[i].pc) scanClouds[i].pc.pointBudget = Infinity; }
+          viewer.setPointBudget(_perScanBudget);
+          return;
+        }
+        var global = Math.min(_perScanBudget * visN, _maxGlobalScanBudget);
+        var per = Math.floor(global / visN);
+        viewer.setPointBudget(global);
+        for (i = 0; i < scanClouds.length; i++) {
+          if (scanClouds[i].pc) scanClouds[i].pc.pointBudget = scanClouds[i].visible ? per : Infinity;
+        }
+      } catch (e) { /* ignore */ }
+    }
+
     function _cloudMetaFor(folder) {
       var cs = (meta && meta.clouds) || [];
       for (var i = 0; i < cs.length; i++) { if (cs[i].folder === folder) return cs[i]; }
@@ -11899,6 +12393,7 @@
       pc.visible = (cm.visible !== false);
       scanClouds.push({ id: cm.id || 'scan', name: cm.name || 'Scan', pc: pc, visible: pc.visible });
       updateScansPanel();
+      rebalanceScanBudgets();
     }
 
     // Load every non-primary cloud listed in meta.clouds and add to the scene.
@@ -11929,6 +12424,7 @@
           pc.visible = (cm.visible === true);
           scanClouds.push({ id: cm.id, name: cm.name || cm.id, pc: pc, visible: pc.visible });
           updateScansPanel();
+          rebalanceScanBudgets();
           console.log('[scans] loaded', cm.id, '(visible=' + pc.visible + ')');
         }).catch(function (err) { console.warn('[scans] failed to load', cm.id, err); });
       });
@@ -11940,6 +12436,7 @@
       s.visible = vis;
       s.pc.visible = vis;
       updateScansPanel();
+      rebalanceScanBudgets();
     }
 
     // Inline SVG string for a context-panel group title, using the shared
@@ -11974,12 +12471,16 @@
       // "inside" it. Drives viewer.edlOpacity (the EDL composite blends the
       // point-cloud image over the already-rendered model, depth-tested — so
       // points in front of the model fade while points behind stay occluded).
-      var _pcOpacityPct = Math.round((viewer.edlOpacity != null ? viewer.edlOpacity : 1) * 100);
+      var _pcOpacityPct = Math.round(_pcOpacityLogical * 100);
+      // With focus boxes active this slider is the "outside focus" opacity (the
+      // bulk of the cloud), routed through the dithered-discard shader path.
+      var _opacityLabel = (typeof focusBoxes !== 'undefined' && focusBoxes.length > 0)
+        ? 'Point cloud opacity (outside focus)' : 'Point cloud opacity';
       var html =
         '<div class="enable-cp-title">' + _cpIcon('layers') + '<span>Scans</span></div>' +
         '<div style="margin:2px 0 10px">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px">' +
-            '<span>Point cloud opacity</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
+            '<span>' + _opacityLabel + '</span><span id="pc-opacity-val">' + _pcOpacityPct + '%</span>' +
           '</div>' +
           '<input type="range" id="pc-opacity-slider" min="0" max="100" value="' + _pcOpacityPct + '" style="width:100%">' +
         '</div>';
@@ -11996,10 +12497,10 @@
       var os = p.querySelector('#pc-opacity-slider');
       if (os) os.addEventListener('input', function () {
         var v = Math.max(0, Math.min(100, +this.value));
-        viewer.edlOpacity = v / 100;   // EDL composite reads this each frame
+        _pcOpacityLogical = v / 100;   // single source of truth for outside opacity
+        applyGlobalOpacity();          // routes to edlOpacity OR dithered-outside
         var lbl = p.querySelector('#pc-opacity-val');
         if (lbl) lbl.textContent = v + '%';
-        if (viewer.repaint) viewer.repaint();
       });
       var btns = p.querySelectorAll('.enable-scan-eye');
       for (var j = 0; j < btns.length; j++) {
@@ -12139,8 +12640,8 @@
           '<div id="enable-note-list"></div>' +
         closeGroup() +
 
-        // === 5. CLIPPING (collapsed) ===
-        createGroup('clipping', 'Clipping', false) +
+        // === 5. ISOLATE (clip box / cut-outs / focus boxes) (collapsed) ===
+        createGroup('clipping', 'Isolate', false) +
           '<div class="enable-subsection-label">Initial Clip Box</div>' +
           '<div id="enable-clipbox-row" style="display:flex;align-items:center;gap:6px;margin:4px 0;font:12px/1.3 sans-serif;color:var(--sidebar-text,#fbfbfb)">' +
             '<span style="flex:1">Initial clip box</span>' +
@@ -12152,6 +12653,12 @@
             '<button id="btn-clear-all-cutouts" title="Remove all cut-out boxes" style="display:none">Clear All</button>' +
           '</div>' +
           '<div id="enable-global-crop-list"></div>' +
+          '<div class="enable-subsection-label" style="margin-top:10px">Focus Boxes</div>' +
+          '<div id="enable-focus-buttons">' +
+            '<button id="btn-add-focus" title="Keep this region in focus while the rest of the cloud fades">Add Focus Box</button>' +
+            '<button id="btn-clear-all-focus" title="Remove all focus boxes" style="display:none">Clear All</button>' +
+          '</div>' +
+          '<div id="enable-focus-list"></div>' +
         closeGroup() +
 
         // === 6. ELEVATION MAP (collapsed) ===
@@ -12317,6 +12824,10 @@
       // Cut-out boxes
       document.getElementById('btn-add-cutout').addEventListener('click', function() { addCutoutBox(); });
       document.getElementById('btn-clear-all-cutouts').addEventListener('click', function() { clearAllCutoutBoxes(); });
+
+      // Focus boxes (inverse cut-out)
+      document.getElementById('btn-add-focus').addEventListener('click', function() { addFocusBox(); });
+      document.getElementById('btn-clear-all-focus').addEventListener('click', function() { clearAllFocusBoxes(); });
 
       // Elevation map buttons
       document.getElementById('btn-add-elev-box').addEventListener('click', function() { addElevationBox(); });
@@ -12648,6 +13159,7 @@
               // and would otherwise wipe the hover and make the drag orbit.
               _clearHover = false;
               _cropClickCandidate = null;
+              _idleDownForDeselect = null;  // clicking a gizmo handle (incl. eye/face-view) must NOT deselect the box
             } else if (_persist) {
               // Locked box (crop box) frame, no handle hovered: never grab it.
               // Orbit-first; the direct edge hit-test above is the primary

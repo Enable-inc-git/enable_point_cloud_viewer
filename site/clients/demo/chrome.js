@@ -18,16 +18,17 @@
   'use strict';
 
   // ---- Apply state synchronously (before first paint) ----
-  // Theme is locked to dark; light mode CSS still ships but is unreachable
-  // from the UI. (Removed the user toggle per request.)
+  // Theme (dark default) is toggleable from the top-right "eye" dropdown; the
+  // choice persists in localStorage and is applied before first paint (no flash).
   (function applyEarlyState() {
     var savedSidebar = null, savedPinned = null;
-    var savedCtxWidth = null, savedPanoWidth = null;
+    var savedCtxWidth = null, savedPanoWidth = null, savedTheme = null;
     try { savedSidebar   = localStorage.getItem('dev2.sidebar.collapsed'); } catch (_) {}
     try { savedPinned    = localStorage.getItem('dev2.context.pinned'); } catch (_) {}
     try { savedCtxWidth  = localStorage.getItem('dev2.context.width'); } catch (_) {}
     try { savedPanoWidth = localStorage.getItem('dev2.panorama.width'); } catch (_) {}
-    document.documentElement.dataset.theme = 'dark';
+    try { savedTheme     = localStorage.getItem('dev2.theme'); } catch (_) {}
+    document.documentElement.dataset.theme = (savedTheme === 'light') ? 'light' : 'dark';
     if (savedSidebar === 'true') {
       document.documentElement.dataset.sidebarCollapsed = 'true';
     } else if (savedSidebar === null && window.matchMedia &&
@@ -159,7 +160,26 @@
       flashToast('Action unavailable: ' + id);
       return;
     }
+    if (btn.disabled) return; // greyed-out proxy target — no-op
     btn.click();
+  }
+
+  // Menu items can mirror a hidden legacy button's disabled state. Each mirror
+  // registers a sync fn; syncLegacyMirrors() runs them (called on menu open).
+  var _legacyMirrors = [];
+  function registerLegacyDisabledMirror(miBtn, legacyId) {
+    var syncFn = function () {
+      var lb = document.getElementById(legacyId);
+      var dis = !lb || lb.disabled;
+      miBtn.disabled = dis;
+      miBtn.classList.toggle('dev2-mi-disabled', dis);
+      if (lb && lb.title) miBtn.title = lb.title;
+    };
+    _legacyMirrors.push(syncFn);
+    syncFn();
+  }
+  function syncLegacyMirrors() {
+    for (var i = 0; i < _legacyMirrors.length; i++) _legacyMirrors[i]();
   }
 
   function clickInsideLegacyHost(selector) {
@@ -262,7 +282,6 @@
           { label: 'Area',             iconName: 'square-dashed',  action: function () { proxyMeasure('area'); } },
           { label: 'Angle',            iconName: 'triangle',       action: function () { proxyMeasure('angle'); } },
           { label: 'Height',           iconName: 'minus',          action: function () { proxyMeasure('height'); } },
-          { label: 'Point',            iconName: 'circle-dot',     action: function () { proxyMeasure('point'); } },
           { kind: 'sep' },
           { label: 'Volume',           iconName: 'box',            action: function () { proxyMeasure('volume'); } },
           { kind: 'sep' },
@@ -286,15 +305,21 @@
         id: 'constraints', label: 'Constraints', iconName: 'axis-3d',
         items: [
           { label: 'Fit plane (3+ pts)', iconName: 'layers', action: function () { clickLegacy('btn-fit-plane'); } },
-          { label: 'Set axis (2 pts)',   iconName: 'axis-3d', action: function () { clickLegacy('btn-set-axis'); } }
+          { label: 'Perp plane (⊥ selected)', iconName: 'layers', action: function () { clickLegacy('btn-perp-plane'); }, mirrorLegacy: 'btn-perp-plane' },
+          { label: 'Set axis (2 pts)',   iconName: 'axis-3d', action: function () { clickLegacy('btn-set-axis'); } },
+          { label: 'Set drawing axes (3 pts)', iconName: 'axis-3d',  action: function () { clickLegacy('btn-set-axes'); } },
+          { label: 'Reset to world axes',      iconName: 'rotate-ccw', action: function () { clickLegacy('btn-reset-axes'); } }
         ]
       },
       {
-        id: 'clip', label: 'Clip', iconName: 'scissors',
+        id: 'clip', label: 'Isolate', iconName: 'scissors',
         items: [
           // Clip-box outline visibility moved to the top-right "eye" dropdown.
           { label: 'Add cut-out box',         iconName: 'plus',    action: function () { clickLegacy('btn-add-cutout'); } },
-          { label: 'Clear all cut-outs',      iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-cutouts'); } }
+          { label: 'Clear all cut-outs',      iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-cutouts'); } },
+          { kind: 'sep' },
+          { label: 'Add focus box',           iconName: 'plus',    action: function () { clickLegacy('btn-add-focus'); } },
+          { label: 'Clear all focus boxes',   iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-focus'); } }
         ]
       },
       {
@@ -378,9 +403,10 @@
             closed: false, maxMarkers: 2, name: 'Height' });
           return;
         case 'point':
+          // Unlimited coordinate points, no connecting lines (showEdges:false).
           v.measuringTool.startInsertion({
             showDistances: false, showAngles: false, showCoordinates: true,
-            showArea: false, closed: true, maxMarkers: 1, name: 'Point' });
+            showArea: false, showEdges: false, closed: false, name: 'Point' });
           return;
         case 'volume':
           var vol = v.volumeTool.startInsertion();
@@ -406,6 +432,7 @@
   }
   function openMenuFor(trigger, menu) {
     closeOpenMenu();
+    syncLegacyMirrors(); // refresh any disabled-mirrored items (e.g. ⊥ plane)
     var rect = trigger.getBoundingClientRect();
     menu.style.top  = (rect.bottom + 4) + 'px';
     menu.style.left = rect.left + 'px';
@@ -453,17 +480,12 @@
 
     // ---- Brand area (logo + project name) — width matches the sidebar so the
     //      first tool aligns with the canvas's left edge. ----
+    // Company contact (website / email / video FAQs) now lives in the About modal
+    // (top-right info button), not beside the logo.
     var brandArea = el('div', { className: 'dev2-tb-brand-area' }, [
       el('div', { className: 'dev2-tb-brand-main' }, [
         el('img', { className: 'dev2-tb-logo', src: '../EnableLogo.png', alt: 'Enable' }),
         el('span', { className: 'dev2-tb-project-name', text: projectName() })
-      ]),
-      // Company contact, tight beside the logo/title — same font as the project
-      // name, two stacked lines that fit the existing bar height. Lives INSIDE
-      // the fixed-width brand area, so the tools keep their original position.
-      el('div', { className: 'dev2-tb-contact' }, [
-        el('a', { className: 'dev2-tb-contact-line', href: 'https://www.enable-inc.com', target: '_blank', rel: 'noopener', text: 'www.enable-inc.com' }),
-        el('a', { className: 'dev2-tb-contact-line', href: 'mailto:info@enable-inc.com', text: 'info@enable-inc.com' })
       ])
     ]);
     topbar.appendChild(brandArea);
@@ -493,7 +515,7 @@
           ];
           if (item.kbd) miChildren.push(el('span', { className: 'dev2-mi-kbd', text: item.kbd }));
           var origAction = item.action;
-          menu.appendChild(el('button', {
+          var miBtn = el('button', {
             className: 'dev2-tb-menu-item',
             type: 'button',
             onClick: function () {
@@ -504,7 +526,12 @@
               }
               origAction();
             }
-          }, miChildren));
+          }, miChildren);
+          // Menu items that mirror a legacy button's disabled state (e.g. the
+          // ⊥-plane item is only enabled when a plane is selected). Synced when
+          // the menu opens (see openMenuFor).
+          if (item.mirrorLegacy) registerLegacyDisabledMirror(miBtn, item.mirrorLegacy);
+          menu.appendChild(miBtn);
         }
       });
       document.body.appendChild(menu);
@@ -596,7 +623,10 @@
           toggle: function () { if (d.toggleStationsVis) d.toggleStationsVis(); } },
         { label: 'Notes',     avail: d.hasNotes ? d.hasNotes() : false,
           on: d.getNotesVis ? d.getNotesVis() : true,
-          toggle: function () { if (d.toggleNotesVis) d.toggleNotesVis(); } }
+          toggle: function () { if (d.toggleNotesVis) d.toggleNotesVis(); } },
+        { label: 'Drawing axes', avail: d.hasCustomAxes ? d.hasCustomAxes() : false,
+          on: d.getAxesGizmoVis ? d.getAxesGizmoVis() : true,
+          toggle: function () { if (d.toggleAxesGizmoVis) d.toggleAxesGizmoVis(); } }
       ];
       rows.forEach(function (r) {
         var mi = el('button', {
@@ -607,6 +637,30 @@
         if (!r.avail) mi.style.opacity = '0.45';
         eyeMenu.appendChild(mi);
       });
+      // Box outline brightness slider (0 = black … 1 = white).
+      eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
+      eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Box outline brightness' }));
+      eyeMenu.appendChild(buildSliderMenuItem({
+        min: 0, max: 1, step: 0.05,
+        get: function () { return d.getBoxWireBrightness ? d.getBoxWireBrightness() : 0; },
+        onInput: function (v) { if (d.setBoxWireBrightness) d.setBoxWireBrightness(v); }
+      }));
+
+      // Light / dark theme toggle (light mode gives a white background for
+      // screenshots; box wireframes stay black — they read fine on white).
+      eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
+      var _isLight = document.documentElement.dataset.theme === 'light';
+      eyeMenu.appendChild(el('button', {
+        className: 'dev2-tb-menu-item', type: 'button',
+        onClick: function () {
+          var cur = document.documentElement.dataset.theme || 'dark';
+          var next = (cur === 'dark') ? 'light' : 'dark';
+          document.documentElement.dataset.theme = next;
+          try { localStorage.setItem('dev2.theme', next); } catch (_) {}
+          try { if (window.__dev2 && window.__dev2.applyViewerTheme) window.__dev2.applyViewerTheme(next); } catch (_) {}
+          rebuildEyeMenu();
+        }
+      }, [ svg(_isLight ? 'moon' : 'sun', 16), el('span', { text: _isLight ? 'Dark mode' : 'Light mode' }) ]));
     }
     var eyeTrigger = iconBtn('eye', 'Show / hide clip box, panoramas, notes', function () {
       if (_openMenu && _openMenu.trigger === eyeTrigger) { closeOpenMenu(); return; }
@@ -757,14 +811,23 @@
         '<div style="font-size:15px;font-weight:600;color:#fff">Enable Point Cloud Viewer</div>' +
         '<div style="font-size:12px;color:#9a9a9a;margin-top:2px">&copy; Enable Engineering</div>' +
         '<hr style="border:0;border-top:1px solid #3a3a3a;margin:14px 0">' +
+        '<div style="font-size:13px;line-height:2;color:#cfcfcf">' +
+          '<div><span style="color:#9a9a9a">Website:</span> <a href="https://www.enable-inc.com" target="_blank" rel="noopener" style="color:#5cc46a">www.enable-inc.com</a></div>' +
+          '<div><span style="color:#9a9a9a">Email:</span> <a href="mailto:support@enable-inc.com" style="color:#5cc46a">support@enable-inc.com</a></div>' +
+          '<div><span style="color:#9a9a9a">Video FAQs:</span> <a href="https://www.youtube.com/@EnableDesignServices" target="_blank" rel="noopener" style="color:#5cc46a">youtube.com/@EnableDesignServices</a></div>' +
+        '</div>' +
+        '<hr style="border:0;border-top:1px solid #3a3a3a;margin:14px 0">' +
         '<div style="font-size:13px;line-height:1.5;color:#cfcfcf">' +
           'This viewer is built on <a href="https://potree.org" target="_blank" rel="noopener" style="color:#5cc46a">Potree</a>, ' +
           'an open-source WebGL point-cloud renderer, and <a href="https://threejs.org" target="_blank" rel="noopener" style="color:#5cc46a">three.js</a>.' +
         '</div>' +
-        '<div style="font-size:12px;font-weight:600;color:#fff;margin:16px 0 6px">Potree &mdash; BSD 2-Clause License</div>' +
-        '<pre id="enable-about-license" style="margin:0;white-space:pre-wrap;font:11px/1.45 ui-monospace,Consolas,\'Courier New\',monospace;' +
-          'color:#b9b9b9;background:#1c1c1c;border:1px solid #333;border-radius:6px;padding:12px;max-height:280px;overflow:auto"></pre>' +
-        '<div style="font-size:11px;color:#8f8f8f;margin-top:12px">three.js is distributed under the MIT License &copy; 2010&ndash;present three.js authors.</div>' +
+        '<details style="margin-top:14px">' +
+          '<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#cfcfcf;user-select:none;list-style:revert">Licenses &amp; legal</summary>' +
+          '<div style="font-size:12px;font-weight:600;color:#fff;margin:12px 0 6px">Potree &mdash; BSD 2-Clause License</div>' +
+          '<pre id="enable-about-license" style="margin:0;white-space:pre-wrap;font:11px/1.45 ui-monospace,Consolas,\'Courier New\',monospace;' +
+            'color:#b9b9b9;background:#1c1c1c;border:1px solid #333;border-radius:6px;padding:12px;max-height:280px;overflow:auto"></pre>' +
+          '<div style="font-size:11px;color:#8f8f8f;margin-top:12px">three.js is distributed under the MIT License &copy; 2010&ndash;present three.js authors.</div>' +
+        '</details>' +
       '</div>';
 
     overlay.appendChild(card);
@@ -795,8 +858,8 @@
     { id: 'notes',        title: 'Notes',         iconName: 'sticky-note',  slotIds: ['enable-note-list'],          defaultOpen: false },
     { id: 'constraints',  title: 'Constraints',   iconName: 'axis-3d',      slotIds: ['enable-constraint-list'],    defaultOpen: true  },
     { id: 'members',      title: 'Members',       iconName: 'pencil',       slotIds: ['enable-member-list'],        defaultOpen: false },
-    { id: 'measurements', title: 'Measurements',  iconName: 'ruler',        slotIds: ['enable-measurement-list', 'enable-area-list', 'enable-angle-list', 'enable-volume-list'], defaultOpen: false },
-    { id: 'clip',         title: 'Clip / cut-outs', iconName: 'scissors',   slotIds: ['enable-global-crop-list', 'exclusion-list'],  defaultOpen: false },
+    { id: 'measurements', title: 'Measurements',  iconName: 'ruler',        slotIds: ['enable-measurement-list', 'enable-point-list', 'enable-area-list', 'enable-angle-list', 'enable-volume-list'], defaultOpen: false },
+    { id: 'clip',         title: 'Isolate',       iconName: 'scissors',   slotIds: ['enable-global-crop-list', 'enable-focus-list', 'exclusion-list'],  defaultOpen: false },
     { id: 'elevation',    title: 'Elevation boxes', iconName: 'mountain',   slotIds: ['enable-elevation-box-list'], defaultOpen: false },
     { id: 'scene',        title: 'Scene tree',    iconName: 'list-tree',    slotIds: ['enable-scene-slot'],         defaultOpen: false }
   ];
@@ -850,6 +913,7 @@
 
   var CONTEXT_SLOTS = [
     'enable-scans-panel',
+    'enable-focus-panel',
     'enable-models-panel',
     'enable-plane-depth-controls',
     'enable-elevation-status',
@@ -1158,6 +1222,26 @@
 
     updateContextPanelVisibility();
   }
+
+  // Drive the elevation tool-settings panel off the 3D SELECTION state (viewer.html
+  // broadcasts it). Selecting an elevation box in the model focuses its panel (same
+  // as clicking its list row); deselecting it / pressing Esc / selecting anything
+  // else clears the panel. Non-elevation volumes (no _elevPanelCache entry) clear it.
+  document.addEventListener('enable:selection-changed', function (e) {
+    var name = e && e.detail && e.detail.name;
+    if (name && _elevPanelCache[name]) {
+      if (_focusedElevBoxName !== name) {
+        _focusedElevBoxName = name;
+        _elevSel = new Set([name]);
+        window.__elevExportSel = Array.from(_elevSel);
+        clearContextHiddenIfActive();
+      }
+    } else {
+      if (_focusedElevBoxName == null) return;
+      _focusedElevBoxName = null;
+    }
+    renderFocusedElevSection();
+  });
 
   function startElevationPanelObserver() {
     var list = document.getElementById('enable-elevation-box-list');
@@ -2539,6 +2623,18 @@
       }
       if (e.touches.length === 0) {
         var t = (e.changedTouches && e.changedTouches[0]) || { clientX: 0, clientY: 0 };
+        // A clean tap = one finger that stayed within the tap slop, so
+        // oneTapStart survived touchmove. For those, commit the synthesized
+        // mouseup at the touch-DOWN position, not the finger-lift position.
+        // Android digitizers report several px of finger-roll between
+        // touchstart and touchend, and viewer.html's click guards (box-select,
+        // note-pin, station-pin) reject a "tap" whose mouseup moved >5px from
+        // its mousedown — so on Android taps were read as tiny drags and
+        // nothing selected. Anchoring to the down position makes down==up
+        // (0px), so every guard passes regardless of jitter. iPad reports
+        // near-zero roll, so down≈up there already → behavior unchanged.
+        // Real drags clear oneTapStart (>slop) and still end at the lift point.
+        var _tapAnchor = oneTapStart ? { x: oneTapStart.x, y: oneTapStart.y } : null;
         // 1-finger tap detection — if no motion and short duration, this
         // is a tap. Double-tap normally zooms-to-cursor, BUT during a
         // multi-point measurement insertion (area, angle) double-tap
@@ -2574,7 +2670,8 @@
           }
         }
         oneTapStart = null;
-        endOneFinger(t.clientX, t.clientY);
+        if (_tapAnchor) endOneFinger(_tapAnchor.x, _tapAnchor.y);
+        else endOneFinger(t.clientX, t.clientY);
         _spheredragSphere = null;
         _spheredragOrigPos = null;
         two = null;

@@ -57675,6 +57675,17 @@ uniform int clipMethod;
 	uniform mat4 highlightBoxes[num_highlightboxes];
 #endif
 
+#if defined(num_focusboxes) && num_focusboxes > 0
+	uniform mat4 focusBoxes[num_focusboxes];
+	uniform float focusBoxOpacity[num_focusboxes];
+	uniform float uFocusOutsideOpacity;
+#endif
+
+#if defined(num_planeslabs) && num_planeslabs > 0
+	uniform mat4 planeSlabs[num_planeslabs];   // world -> quad-local: rect is [-0.5,0.5]^2 in x,y; +z = camera side
+	uniform vec3 uPlaneSlabColor;
+#endif
+
 #if defined(num_clipspheres) && num_clipspheres > 0
 	uniform mat4 uClipSpheres[num_clipspheres];
 #endif
@@ -57753,6 +57764,7 @@ varying float	vLogDepth;
 varying vec3	vViewPosition;
 varying float 	vRadius;
 varying float 	vPointSize;
+varying float 	vFocusOpacity;
 
 
 float round(float number){
@@ -58487,6 +58499,26 @@ void doClipping(){
 		}
 	#endif
 
+	// Focus boxes: keep each box's interior at its per-box opacity and fade
+	// everything else to uFocusOutsideOpacity. EDL puts depth in the alpha
+	// channel so real alpha is unavailable; we pass the per-point opacity to the
+	// fragment shader, which drops fragments via a screen-space ordered dither —
+	// genuinely see-through (unlike color fade) and smooth (unlike per-point
+	// discard). vFocusOpacity defaults to 1.0 in main() (no-op when full).
+	#if defined(num_focusboxes) && num_focusboxes > 0
+		vec4 fWorld = modelMatrix * vec4(position, 1.0);
+		float focusOp = -1.0;                       // <0 => not inside any focus box yet
+		for(int i = 0; i < num_focusboxes; i++){
+			vec4 fp = focusBoxes[i] * fWorld;
+			bool insideFocus = -0.5 <= fp.x && fp.x <= 0.5;
+			insideFocus = insideFocus && -0.5 <= fp.y && fp.y <= 0.5;
+			insideFocus = insideFocus && -0.5 <= fp.z && fp.z <= 0.5;
+			if(insideFocus){ focusOp = max(focusOp, focusBoxOpacity[i]); } // overlap: brightest wins
+		}
+		if(focusOp < 0.0){ focusOp = uFocusOutsideOpacity; }             // outside all boxes
+		vFocusOpacity = clamp(focusOp, 0.0, 1.0);
+	#endif
+
 	// Highlight boxes: points INSIDE any highlight box are tinted green
 	#if defined(num_highlightboxes) && num_highlightboxes > 0
 		for(int i = 0; i < num_highlightboxes; i++){
@@ -58496,6 +58528,22 @@ void doClipping(){
 			insideHl = insideHl && -0.5 <= hlPos.z && hlPos.z <= 0.5;
 			if(insideHl){
 				vColor = vec3(0.2, 0.9, 0.3);
+				break;
+			}
+		}
+	#endif
+
+	// Plane shading: tint points that are BEHIND a plane (far side from the camera)
+	// AND within the plane's stretched rectangle, so a plane reads like a
+	// depth-correct translucent sheet bounded to its outline. The matrix maps the
+	// point into quad-local space where the rectangle is [-0.5,0.5] in x,y and the
+	// camera sits on +z, so "behind + inside" is z<0 with |x|,|y| < 0.5.
+	#if defined(num_planeslabs) && num_planeslabs > 0
+		vec4 psWorld = modelMatrix * vec4(position, 1.0);
+		for(int i = 0; i < num_planeslabs; i++){
+			vec3 lp = (planeSlabs[i] * psWorld).xyz;
+			if(lp.z < 0.0 && abs(lp.x) < 0.5 && abs(lp.y) < 0.5){
+				vColor = mix(vColor, uPlaneSlabColor, 0.4);
 				break;
 			}
 		}
@@ -58519,6 +58567,7 @@ void main() {
 	vViewPosition = mvPosition.xyz;
 	gl_Position = projectionMatrix * mvPosition;
 	vLogDepth = log2(-mvPosition.z);
+	vFocusOpacity = 1.0;
 
 	//gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
 	//gl_PointSize = 5.0;
@@ -58669,6 +58718,7 @@ varying vec3	vViewPosition;
 varying float	vRadius;
 varying float 	vPointSize;
 varying vec3 	vPosition;
+varying float 	vFocusOpacity;
 
 
 float specularStrength = 1.0;
@@ -58685,13 +58735,24 @@ void main() {
 		float v = 2.0 * gl_PointCoord.y - 1.0;
 	#endif
 	
-	#if defined(circle_point_shape) 
+	#if defined(circle_point_shape)
 		float cc = u*u + v*v;
 		if(cc > 1.0){
 			discard;
 		}
 	#endif
-		
+
+	// Focus-box opacity: drop fragments via a screen-space ordered dither so faded
+	// regions become genuinely see-through (EDL forbids real per-point alpha). The
+	// interleaved-gradient-noise threshold is fine + even, so it reads as smooth
+	// translucency rather than granular per-point speckle. No-op at full opacity.
+	if(vFocusOpacity < 0.999){
+		float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+		if(vFocusOpacity < ign){
+			discard;
+		}
+	}
+
 	#if defined color_type_indices
 		gl_FragColor = vec4(color, uPCIndex / 255.0);
 	#else
@@ -59287,6 +59348,11 @@ void main() {
 				clipBoxes:			{ type: "Matrix4fv", value: [] },
 				exclusionBoxes:		{ type: "Matrix4fv", value: [] },
 				highlightBoxes:		{ type: "Matrix4fv", value: [] },
+				focusBoxes:			{ type: "Matrix4fv", value: [] },
+				focusBoxOpacity:	{ type: "fv", value: [] },
+				uFocusOutsideOpacity:{ type: "f", value: 1.0 },
+				planeSlabs:			{ type: "Matrix4fv", value: [] },
+				uPlaneSlabColor:	{ type: "fv", value: [0.22, 1.0, 0.08] },
 				//clipSpheres:		{ type: "Matrix4fv", value: [] },
 				clipPolygons:		{ type: "3fv", value: [] },
 				clipPolygonVCount:	{ type: "iv", value: [] },
@@ -59540,6 +59606,67 @@ void main() {
 					this.uniforms.highlightBoxes.value[i] = Infinity;
 				}
 			}
+		}
+
+		// Focus boxes: inverse-clip regions kept prominent while the rest of the
+		// cloud fades (via dithered discard in the vertex shader). Each entry is
+		// { inverse: THREE.Matrix4, opacity: Number in [0,1] }. Recompiles only
+		// when the box COUNT changes.
+		setFocusBoxes (focusBoxes) {
+			if (!focusBoxes) {
+				return;
+			}
+
+			let doUpdate = (!this.focusBoxes || this.focusBoxes.length !== focusBoxes.length);
+
+			this.focusBoxes = focusBoxes;
+
+			if (doUpdate) {
+				this.updateShaderSource();
+			}
+
+			this.uniforms.focusBoxes.value = new Float32Array(focusBoxes.length * 16);
+			this.uniforms.focusBoxOpacity.value = new Float32Array(focusBoxes.length);
+
+			for (let i = 0; i < focusBoxes.length; i++) {
+				let box = focusBoxes[i];
+				this.uniforms.focusBoxes.value.set(box.inverse.elements, 16 * i);
+				this.uniforms.focusBoxOpacity.value[i] = (box.opacity == null ? 1.0 : box.opacity);
+			}
+
+			for (let i = 0; i < this.uniforms.focusBoxes.value.length; i++) {
+				if (Number.isNaN(this.uniforms.focusBoxes.value[i])) {
+					this.uniforms.focusBoxes.value[i] = Infinity;
+				}
+			}
+		}
+
+		// Opacity of everything OUTSIDE all focus boxes. No recompile.
+		setFocusOutsideOpacity (v) {
+			this.uniforms.uFocusOutsideOpacity.value = (v == null ? 1.0 : v);
+		}
+
+		// Plane shading: tint points behind + inside each plane's rectangle. Each
+		// entry is { inverse: THREE.Matrix4 } mapping world -> quad-local. Recompiles
+		// only when the plane COUNT changes.
+		setPlaneSlabs (planes) {
+			if (!planes) { return; }
+			let doUpdate = (!this.planeSlabs || this.planeSlabs.length !== planes.length);
+			this.planeSlabs = planes;
+			if (doUpdate) { this.updateShaderSource(); }
+			this.uniforms.planeSlabs.value = new Float32Array(planes.length * 16);
+			for (let i = 0; i < planes.length; i++) {
+				this.uniforms.planeSlabs.value.set(planes[i].inverse.elements, 16 * i);
+			}
+			for (let i = 0; i < this.uniforms.planeSlabs.value.length; i++) {
+				if (Number.isNaN(this.uniforms.planeSlabs.value[i])) {
+					this.uniforms.planeSlabs.value[i] = Infinity;
+				}
+			}
+		}
+
+		setPlaneSlabColor (rgb) {
+			if (rgb && rgb.length === 3) { this.uniforms.uPlaneSlabColor.value = [rgb[0], rgb[1], rgb[2]]; }
 		}
 
 		setClipPolygons(clipPolygons, maxPolygonVertices) {
@@ -61173,6 +61300,15 @@ void main() {
 					}
 				}
 
+				// Honor focus boxes too, so picking matches the visible (dithered) set.
+				{
+					let _focus = this.material.focusBoxes;
+					if (pickMaterial.setFocusBoxes && ((_focus && _focus.length) || (pickMaterial.focusBoxes && pickMaterial.focusBoxes.length))) {
+						pickMaterial.setFocusBoxes(_focus || []);
+						pickMaterial.setFocusOutsideOpacity(this.material.uniforms.uFocusOutsideOpacity.value);
+					}
+				}
+
 				this.updateMaterial(pickMaterial, nodes, camera, renderer);
 			}
 
@@ -62365,6 +62501,15 @@ void main() {
 					let _excl = this.material.exclusionBoxes;
 					if (pickMaterial.setExclusionBoxes && ((_excl && _excl.length) || (pickMaterial.exclusionBoxes && pickMaterial.exclusionBoxes.length))) {
 						pickMaterial.setExclusionBoxes(_excl || []);
+					}
+				}
+
+				// Honor focus boxes too, so picking matches the visible (dithered) set.
+				{
+					let _focus = this.material.focusBoxes;
+					if (pickMaterial.setFocusBoxes && ((_focus && _focus.length) || (pickMaterial.focusBoxes && pickMaterial.focusBoxes.length))) {
+						pickMaterial.setFocusBoxes(_focus || []);
+						pickMaterial.setFocusOutsideOpacity(this.material.uniforms.uFocusOutsideOpacity.value);
 					}
 				}
 
@@ -63704,6 +63849,8 @@ void main() {
 					let numClipPolygons = (material.clipPolygons && material.clipPolygons.length) ? material.clipPolygons.length : 0;
 					let numExclusionBoxes = (material.exclusionBoxes && material.exclusionBoxes.length) ? material.exclusionBoxes.length : 0;
 					let numHighlightBoxes = (material.highlightBoxes && material.highlightBoxes.length) ? material.highlightBoxes.length : 0;
+					let numFocusBoxes = (material.focusBoxes && material.focusBoxes.length) ? material.focusBoxes.length : 0;
+					let numPlaneSlabs = (material.planeSlabs && material.planeSlabs.length) ? material.planeSlabs.length : 0;
 
 					let defines = [
 						`#define num_shadowmaps ${shadowMaps.length}`,
@@ -63713,6 +63860,8 @@ void main() {
 						`#define num_clippolygons ${numClipPolygons}`,
 						`#define num_exclusionboxes ${numExclusionBoxes}`,
 						`#define num_highlightboxes ${numHighlightBoxes}`,
+						`#define num_focusboxes ${numFocusBoxes}`,
+						`#define num_planeslabs ${numPlaneSlabs}`,
 					];
 
 
@@ -63880,6 +64029,33 @@ void main() {
 					const lHlBoxes = shader.uniformLocations["highlightBoxes[0]"];
 					if (lHlBoxes) {
 						gl.uniformMatrix4fv(lHlBoxes, false, material.uniforms.highlightBoxes.value);
+					}
+				}
+
+				if (material.focusBoxes && material.focusBoxes.length > 0) {
+					const lFocusBoxes = shader.uniformLocations["focusBoxes[0]"];
+					if (lFocusBoxes) {
+						gl.uniformMatrix4fv(lFocusBoxes, false, material.uniforms.focusBoxes.value);
+					}
+					const lFocusOpacity = shader.uniformLocations["focusBoxOpacity[0]"];
+					if (lFocusOpacity) {
+						gl.uniform1fv(lFocusOpacity, material.uniforms.focusBoxOpacity.value);
+					}
+					const lFocusOutside = shader.uniformLocations["uFocusOutsideOpacity"];
+					if (lFocusOutside) {
+						gl.uniform1f(lFocusOutside, material.uniforms.uFocusOutsideOpacity.value);
+					}
+				}
+
+				if (material.planeSlabs && material.planeSlabs.length > 0) {
+					const lPlaneSlabs = shader.uniformLocations["planeSlabs[0]"];
+					if (lPlaneSlabs) {
+						gl.uniformMatrix4fv(lPlaneSlabs, false, material.uniforms.planeSlabs.value);
+					}
+					const lPSColor = shader.uniformLocations["uPlaneSlabColor"];
+					if (lPSColor) {
+						const psc = material.uniforms.uPlaneSlabColor.value;
+						gl.uniform3f(lPSColor, psc[0], psc[1], psc[2]);
 					}
 				}
 
@@ -69721,6 +69897,7 @@ void main() {
 					e.consume();
 
 					let selected = this.selection[0];
+					if(!selected){ return; } // box was deselected during the click — nothing to snap to
 					let maxScale = Math.max(...selected.scale.toArray());
 					let minScale = Math.min(...selected.scale.toArray());
 					let handleLength = Math.abs(selected.scale.dot(new Vector3(...handle.alignment)));
@@ -70287,7 +70464,23 @@ void main() {
 						let intersects = raycaster.intersectObjects(this.pickVolumes.filter(v => v.visible), true);
 
 						if(intersects.length > 0){
+							// The gizmo renders after a depth clear (everything drawn on top),
+							// so ray-distance order is meaningless and fat pick volumes (bars,
+							// tori) hide compact ones (scale + focus/eye spheres). Highlight the
+							// handle whose screen center is nearest the cursor so all are reachable.
 							let I = intersects[0];
+							if(intersects.length > 1){
+								let w = domElement.clientWidth, h = domElement.clientHeight;
+								let _p = new Vector3();
+								let cursorDist2 = (obj) => {
+									obj.getWorldPosition(_p).project(camera);
+									let sx = (_p.x * 0.5 + 0.5) * w;
+									let sy = (1.0 - (_p.y * 0.5 + 0.5)) * h;
+									let dx = sx - mouse.x, dy = sy - mouse.y;
+									return dx * dx + dy * dy;
+								};
+								I = intersects.reduce((a, b) => cursorDist2(a.object) <= cursorDist2(b.object) ? a : b);
+							}
 							let handleName = I.object.handle;
 							this.setActiveHandle(this.handles[handleName]);
 						}else {
@@ -70634,7 +70827,14 @@ void main() {
 
 			// renderer.render(viewer.controls.sceneControls, camera);
 			// renderer.render(viewer.clippingTool.sceneVolume, camera);
-			// renderer.render(viewer.transformationTool.scene, camera);
+			// Draw the transform gizmo (box resize/move handles) in the BASIC
+			// renderer too. The EDL and HQ render paths already render it, but
+			// this fallback path (used when Features.SHADER_EDL.isSupported() is
+			// false — e.g. Android GPUs that can't run EDL) had it commented out,
+			// so selecting a clip/crop box showed NO handles on those devices.
+			// controls.sceneControls + clippingTool.sceneVolume are already
+			// rendered above in this path, so only the gizmo line is enabled.
+			renderer.render(viewer.transformationTool.scene, camera);
 
 			// renderer.setViewport(width - viewer.navigationCube.width,
 			// 							height - viewer.navigationCube.width,
@@ -81942,6 +82142,30 @@ ENDSEC
 
 			let intersections = raycaster.intersectObjects(interactables.filter(o => o.visible), false);
 
+			// Transform-gizmo handles render after a depth clear (all drawn on top),
+			// so ray-distance order is meaningless: fat pick volumes (translation bars,
+			// rotation tori) occlude compact ones (scale + focus/eye spheres), leaving
+			// some handles ungrabbable and eye/face-view buttons unclickable. Among
+			// intersected handles (marked by `.handle`), promote the one nearest the
+			// cursor to the front so onMouseDown/onMouseUp grab/click it. Non-handle
+			// interactables keep their ray-distance priority.
+			if (intersections.length > 1) {
+				let handleHits = intersections.filter(it => it.object && it.object.handle !== undefined);
+				if (handleHits.length > 1) {
+					let w = this.domElement.clientWidth, h = this.domElement.clientHeight;
+					let _p = new Vector3();
+					let cursorDist2 = (obj) => {
+						obj.getWorldPosition(_p).project(camera);
+						let sx = (_p.x * 0.5 + 0.5) * w;
+						let sy = (1.0 - (_p.y * 0.5 + 0.5)) * h;
+						let dx = sx - this.mouse.x, dy = sy - this.mouse.y;
+						return dx * dx + dy * dy;
+					};
+					let best = handleHits.reduce((a, b) => cursorDist2(a.object) <= cursorDist2(b.object) ? a : b);
+					intersections = [best].concat(intersections.filter(it => it !== best));
+				}
+			}
+
 			return intersections;
 		}
 
@@ -90829,7 +91053,12 @@ ENDSEC
 	exports.scriptPath = "";
 
 	if (document.currentScript && document.currentScript.src) {
-		exports.scriptPath = new URL(document.currentScript.src + '/..').href;
+		// Strip any ?query / #hash before deriving the worker base dir. Without
+		// this, a cache-busting query on the <script src> (e.g. potree.js?v=123)
+		// lands the '/..' inside the query string, so worker URLs collapse back
+		// to potree.js itself and load it AS a worker → "document is not defined"
+		// and the octree never streams. Query/hash are irrelevant to the path.
+		exports.scriptPath = new URL(document.currentScript.src.split('?')[0].split('#')[0] + '/..').href;
 		if (exports.scriptPath.slice(-1) === '/') {
 			exports.scriptPath = exports.scriptPath.slice(0, -1);
 		}
