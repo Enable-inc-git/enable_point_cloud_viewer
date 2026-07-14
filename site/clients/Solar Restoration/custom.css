@@ -26,6 +26,41 @@
   --legend-border:    #23272d;
 }
 
+/* ---- LIGHT THEME override (toggled from the eye dropdown). Gives a white
+   canvas background for screenshots + a light sidebar. Box wireframes stay
+   black (they're 3D, not CSS) and read fine on white. ---- */
+:root[data-theme="light"]{
+  --bg:               #ffffff;
+  --sidebar-bg:       #f1f1f3;
+  --sidebar-text:     #1a1a1a;
+  --accent:           #2D8537;
+  --muted:            #5f6673;
+  --panel-bg:         #e6e6e9;
+  --border:           #cfcfd4;
+  --logo-panel-bg:    #f1f1f3;
+  --section-bg:       #eaeaec;
+  --section-text:     #1a1a1a;
+  --section-border:   #c4c4c8;
+  --fieldset-bg:      #e6e6e9;
+  --fieldset-border:  #cfcfd4;
+  --legend-bg:        #dcdce0;
+  --legend-text:      #1a1a1a;
+  --legend-border:    #c4c4c8;
+}
+
+/* Legacy sidebar bits that hardcode near-white text/backgrounds — make them
+   readable on the light sidebar. (The rows themselves theme via the vars above.) */
+:root[data-theme="light"] .mark-coords,
+:root[data-theme="light"] .enable-meas-seg .seg-vals,
+:root[data-theme="light"] .enable-meas-item .meas-title,
+:root[data-theme="light"] #enable-elevation-status,
+:root[data-theme="light"] .plane-move-controls .pm-label,
+:root[data-theme="light"] .plane-move-controls .pm-unit { color: #4a5160 !important; }
+:root[data-theme="light"] .enable-meas-seg .seg-vals { color: #333 !important; }
+:root[data-theme="light"] .enable-meas-item,
+:root[data-theme="light"] .plane-move-controls { background: rgba(0,0,0,0.03) !important; }
+:root[data-theme="light"] .enable-group-header { background: rgba(0,0,0,0.04) !important; }
+
 /* ---- Page / canvas background (shows when BG=None) ---- */
 html, body, #potree_render_area{
   background: var(--bg) !important;

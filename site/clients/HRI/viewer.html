@@ -3506,7 +3506,15 @@
       var i = _trackedVolumes.indexOf(volume);
       if (i !== -1) _trackedVolumes.splice(i, 1);
     }
-    document.addEventListener('mousedown', function() {
+    document.addEventListener('mousedown', function(e) {
+      // Only arm a box-transform snapshot for a drag that STARTS on the 3D canvas.
+      // A click on a toolbar button (e.g. Undo, which is outside potree_render_area)
+      // would otherwise snapshot the box, the button's undo then changes it, and the
+      // mouseup records that change as a spurious NEW "box transform" command (which
+      // also clears the redo stack) — making the Undo BUTTON flip one step back and
+      // forth. Ctrl+Z is a key event, never triggered this, hence it worked.
+      _volSnapshots = null;
+      if (!e || !renderArea || !renderArea.contains(e.target)) return;
       _volSnapshots = [];
       for (var i = 0; i < _trackedVolumes.length; i++) {
         var v = _trackedVolumes[i];
@@ -4140,17 +4148,19 @@
       var depth = cam.position.distanceTo(view.getPivot());
       return ray.ray.origin.clone().addScaledVector(ray.ray.direction, depth);
     }
-    // Set the pivot on every left-mousedown; clear on mouseup. If the gesture
-    // ends up grabbing something instead of orbiting, the orbit deltas stay 0 and
-    // the pivot is simply unused.
+    // Set the pivot on every left-mousedown. We do NOT clear it on mouseup: the
+    // rotation keeps decaying (fadeFactor) for several frames after release, and
+    // those frames must tumble around the SAME cursor pivot — clearing it mid-decay
+    // switches the pivot to the look-at point and jumps the camera (a shudder that
+    // is subtle indoors but large in wide outdoor scenes). The next left-mousedown
+    // recomputes a fresh pivot, so a stale one is only ever used to finish the decay
+    // of the gesture that set it. If a gesture grabs something instead of orbiting,
+    // the orbit deltas stay 0 and the pivot is simply unused.
     renderArea.addEventListener('mousedown', function(e) {
       if (e.button !== 0 || !viewer.orbitControls) return;
       var rect = renderArea.getBoundingClientRect();
       try { viewer.orbitControls._cursorPivot = _pickOrbitPivot({ x: e.clientX - rect.left, y: e.clientY - rect.top }); }
       catch (err) { viewer.orbitControls._cursorPivot = null; }
-    }, true);
-    window.addEventListener('mouseup', function() {
-      if (viewer.orbitControls) viewer.orbitControls._cursorPivot = null;
     }, true);
     // Reimplement OrbitControls.update: rotation tumbles around _cursorPivot;
     // pan / zoom / decay copied verbatim from the stock control.
