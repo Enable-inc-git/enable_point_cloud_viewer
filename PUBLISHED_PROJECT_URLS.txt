@@ -8,7 +8,7 @@
    - Spaces in the client folder name become %20
    - Netlify is case-insensitive and works with or without ".html"
 
- Last updated: 2026-07-01
+ Last updated: 2026-07-14
  AUTO-GENERATED from each client's projects.js by .claude/gen_published_urls.mjs
  (runs after every `git push` via a PostToolUse hook). Dev/sandbox clients are
  excluded. Do not hand-edit — change projects.js instead.
@@ -40,6 +40,10 @@ HRI
 MurrayFranks
   1531 Dupont (Steel Canopy)  https://viewer.enable-inc.com/clients/MurrayFranks/viewer.html?p=dupont
 
+PlaneTest
+  222 Jarvis Elevator 4  https://viewer.enable-inc.com/clients/PlaneTest/viewer.html?p=jarvis
+  St. Joseph's Hamilton  https://viewer.enable-inc.com/clients/PlaneTest/viewer.html?p=stjoseph
+
 Pomerleau
   Hart House             https://viewer.enable-inc.com/clients/Pomerleau/viewer.html?p=hart_house
 
@@ -49,5 +53,6 @@ Solar Restoration
 WJ Properties
   7 St Dennis - South Garage Slab  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=southGarageSlab
   PH8                    https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=ph8
+  140 Carlton - Wall     https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=carltonwall
   2560 Kingston Rd - Sprinkler Room  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=sprinkler_room
   7 St Dennis - South Garage Slab (original scan)  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=7_st_dennis_scan

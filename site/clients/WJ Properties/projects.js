@@ -12,6 +12,10 @@ window.PROJECTS = {
     name: "PH8",
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/140carlton/pointclouds/ph8"
   },
+  "carltonwall": {
+    name: "140 Carlton - Wall",
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/140carltonwall/pointclouds/wall"
+  },
   "sprinkler_room": {
     name: "2560 Kingston Rd - Sprinkler Room",
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/2560kingston/pointclouds/sprinkler-room"

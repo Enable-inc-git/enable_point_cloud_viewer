@@ -44,6 +44,16 @@
   (Android finger-roll was defeating viewer.html's <5px click guards).
 - BDA St Joseph "Columns" scan reconverted (5.06M pts) + 15 new panoramas
   (idx 71-85) merged into bda/stjoseph/stations/stations.json on R2.
+- NEW PROJECT 2026-07-14: WJ Properties "140 Carlton - Wall" (p=carltonwall),
+  2.57M-pt vertical wall scan on R2 prefix wj/140carltonwall/ (separate from ph8's
+  wj/140carlton/ so its 3 panoramas don't leak into ph8's shared stations). GOTCHA
+  for Trimble .scan extraction: this .scan had DUPLICATE "Area 1" rows interleaved
+  with the real stations, so Scan.Index (1,3,5) != the image filename number (1,2,3).
+  The images map to the FilePath basename (scans\1.tzf -> 1-4177.jpg), NOT Scan.Index.
+  Default extract_stations.py index-matching would MISPLACE them — used a custom
+  extraction keyed on FilePath basename, skipping "Area 1" rows. Station poses are in
+  a different frame than the .las (raw offset 0 kept; pin placement may need a visual
+  tune, but panoramas are wired + clickable).
 
 #############################################################################
 # *** MAJOR UPDATE 2026-07-08 — READ THIS FIRST (latest state) ***
