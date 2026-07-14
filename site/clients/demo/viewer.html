@@ -11678,9 +11678,17 @@
         viewer.edlOpacity = 1.0;
         viewer.scene.pointclouds.forEach(function(pc) {
           pc.material.setFocusOutsideOpacity(_pcOpacityLogical);
+          pc.material.opacity = 1.0;   // outside fade is the dither shader; keep material opaque
         });
       } else {
+        // EDL renderer (desktop / EDL-capable) fades via the post-process...
         viewer.edlOpacity = _pcOpacityLogical;
+        // ...but Android GPUs that can't run EDL use the BASIC renderer, where
+        // edlOpacity does nothing. material.opacity fades the cloud there
+        // (additive-blended when <1, per PointCloudMaterial.updateShaderSource).
+        viewer.scene.pointclouds.forEach(function(pc) {
+          pc.material.opacity = _pcOpacityLogical;
+        });
       }
       if (viewer.repaint) viewer.repaint();
     }
