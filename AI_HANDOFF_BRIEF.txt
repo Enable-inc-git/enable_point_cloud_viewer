@@ -6,6 +6,43 @@
 ==============================================================================
 
 #############################################################################
+# *** MAJOR UPDATE 2026-07-13 — READ THIS FIRST (latest state) ***
+#############################################################################
+- ALL 7 VIEWERS RE-SYNCED to BDA's full feature set + Android fixes (commit
+  416b7d5f, pushed to main). BDA had drifted ~2077 lines ahead (plane/constraint/
+  axis/focus work never propagated) — that gap is now closed.
+- KEY FACT FOR PROPAGATION: viewer.html and chrome.js contain NO per-client
+  data/config — the 5 main viewers were byte-identical to each other except one
+  cosmetic build-tag line; ALL per-client config is in projects.js (loaded via
+  relative ./projects.js). So propagating features = COPY BDA/viewer.html +
+  BDA/chrome.js to the other viewers, set each build tag, verify parse.
+  EXCEPTION: demo/viewer.html has 3 FUNCTIONAL extras a blind copy wipes —
+  re-apply them: (1) <base href="/clients/demo/"> in <head>, (2) the /demo1
+  clean-slug pointCloudID resolution, (3) the clipTopTrimZ block.
+- NEW FEATURES (BDA St Joseph, now on all viewers):
+  * Focus boxes ("Isolate" menu — "Clip" was renamed): inverse-clip a region to
+    keep it crisp while everything OUTSIDE dithers see-through (auto-dims to 30%
+    on first box; per-box interior opacity in the right panel on select). Uses a
+    screen-space dither discard (EDL blocks real alpha).
+  * Plane section-sheet: a plane's green fill is now DEPTH-CORRECT — points in
+    front occlude it. Rendered in a dedicated planeFillScene during the potree
+    render.pass.depth_overlay pass (the ONLY pass with the EDL cloud's depth
+    restored). NOT viewer.scene.scene (renders before the depth blit).
+  * Plane∩plane intersection: green line drawn where two planes' stretched
+    rectangles overlap; marks/measurements auto-snap onto it by screen proximity
+    (works in empty space, e.g. a member centreline). No binding, no toggle.
+  * Gizmo eye/face-view buttons + all box handles now grabbable (nearest-cursor
+    pick in shared potree.js).
+  * Multi-scan: per-cloud point budget so a big scan doesn't starve a small one.
+- ANDROID (parallel agent): shared potree.js draws the transform gizmo in the
+  BASIC renderer (EDL-less GPUs) + scriptPath strips ?query (so NEVER add a ?v=
+  cache-buster to the potree.js <script src> — it breaks octree workers). Each
+  viewer's chrome.js touchend anchors a clean tap to the touch-DOWN coords
+  (Android finger-roll was defeating viewer.html's <5px click guards).
+- BDA St Joseph "Columns" scan reconverted (5.06M pts) + 15 new panoramas
+  (idx 71-85) merged into bda/stjoseph/stations/stations.json on R2.
+
+#############################################################################
 # *** MAJOR UPDATE 2026-07-08 — READ THIS FIRST (latest state) ***
 #############################################################################
 - NO CLIENT IS LOGIN-GATED ANYMORE. MurrayFranks and Pomerleau both migrated to
