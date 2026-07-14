@@ -11684,10 +11684,17 @@
         // EDL renderer (desktop / EDL-capable) fades via the post-process...
         viewer.edlOpacity = _pcOpacityLogical;
         // ...but Android GPUs that can't run EDL use the BASIC renderer, where
-        // edlOpacity does nothing. material.opacity fades the cloud there
-        // (additive-blended when <1, per PointCloudMaterial.updateShaderSource).
+        // edlOpacity does nothing. material.opacity fades the cloud there. Potree's
+        // material defaults to AdditiveBlending when opacity<1, which makes
+        // overlapping points ADD toward bright white; force normal alpha blending
+        // so the cloud fades toward the background instead. (Inert on EDL devices,
+        // where material.opacity doesn't affect the rendered alpha.)
         viewer.scene.pointclouds.forEach(function(pc) {
           pc.material.opacity = _pcOpacityLogical;
+          if (_pcOpacityLogical < 1.0 && typeof THREE !== 'undefined') {
+            pc.material.blending = THREE.NormalBlending;
+            pc.material.depthWrite = false;
+          }
         });
       }
       if (viewer.repaint) viewer.repaint();
