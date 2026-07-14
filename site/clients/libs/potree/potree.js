@@ -58701,6 +58701,7 @@ uniform vec3 cameraPosition;
 
 uniform mat4 projectionMatrix;
 uniform float uOpacity;
+uniform float uCloudOpacity;   // global cloud opacity for the non-EDL renderer (dithered)
 
 uniform float blendHardness;
 uniform float blendDepthSupplement;
@@ -58752,6 +58753,21 @@ void main() {
 			discard;
 		}
 	}
+
+	// Global point-cloud opacity for the BASIC (non-EDL) renderer — e.g. Android
+	// GPUs that can't run EDL, where viewer.edlOpacity does nothing. On EDL devices
+	// use_edl is defined and edlOpacity handles the fade, so this compiles out.
+	// Same screen-space dither as the focus fade (a discard, so it needs no
+	// blending — which the low-level point renderer doesn't honor for a JS
+	// material.blending override).
+	#if !defined(use_edl)
+		if(uCloudOpacity < 0.999){
+			float ignC = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+			if(uCloudOpacity < ignC){
+				discard;
+			}
+		}
+	#endif
 
 	#if defined color_type_indices
 		gl_FragColor = vec4(color, uPCIndex / 255.0);
@@ -59335,6 +59351,7 @@ void main() {
 				far:				{ type: "f", value: 1.0 },
 				uColor:				{ type: "c", value: new Color( 0xffffff ) },
 				uOpacity:			{ type: "f", value: 1.0 },
+				uCloudOpacity:		{ type: "f", value: 1.0 },
 				size:				{ type: "f", value: pointSize },
 				minSize:			{ type: "f", value: minSize },
 				maxSize:			{ type: "f", value: maxSize },
@@ -64103,6 +64120,7 @@ void main() {
 				shader.setUniform3f("uColor", material.color.toArray());
 				//uniform float opacity;
 				shader.setUniform1f("uOpacity", material.opacity);
+				shader.setUniform1f("uCloudOpacity", material.uniforms.uCloudOpacity.value);
 
 				shader.setUniform2f("elevationRange", material.elevationRange);
 				shader.setUniform2f("intensityRange", material.intensityRange);

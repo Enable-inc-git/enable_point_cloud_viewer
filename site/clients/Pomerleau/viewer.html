@@ -11662,26 +11662,22 @@
     // double-dimming. With no focus boxes, behave exactly as before (edlOpacity).
     function applyGlobalOpacity() {
       if (focusBoxes.length > 0) {
+        // Outside fade is the per-point focus dither; keep the global cloud opacity
+        // at 1 (edlOpacity too) so nothing double-fades.
         viewer.edlOpacity = 1.0;
         viewer.scene.pointclouds.forEach(function(pc) {
           pc.material.setFocusOutsideOpacity(_pcOpacityLogical);
-          pc.material.opacity = 1.0;   // outside fade is the dither shader; keep material opaque
+          if (pc.material.uniforms && pc.material.uniforms.uCloudOpacity) pc.material.uniforms.uCloudOpacity.value = 1.0;
         });
       } else {
-        // EDL renderer (desktop / EDL-capable) fades via the post-process...
+        // EDL renderer (desktop) fades via the post-process; Android GPUs that can't
+        // run EDL use the BASIC renderer where edlOpacity is a no-op, so ALSO drive
+        // the shader's uCloudOpacity — a screen-space dither gated to !use_edl in
+        // potree.js, so it's inert on EDL devices. (Dither, not alpha-blend, because
+        // the low-level point renderer doesn't honor a JS material.blending change.)
         viewer.edlOpacity = _pcOpacityLogical;
-        // ...but Android GPUs that can't run EDL use the BASIC renderer, where
-        // edlOpacity does nothing. material.opacity fades the cloud there. Potree's
-        // material defaults to AdditiveBlending when opacity<1, which makes
-        // overlapping points ADD toward bright white; force normal alpha blending
-        // so the cloud fades toward the background instead. (Inert on EDL devices,
-        // where material.opacity doesn't affect the rendered alpha.)
         viewer.scene.pointclouds.forEach(function(pc) {
-          pc.material.opacity = _pcOpacityLogical;
-          if (_pcOpacityLogical < 1.0 && typeof THREE !== 'undefined') {
-            pc.material.blending = THREE.NormalBlending;
-            pc.material.depthWrite = false;
-          }
+          if (pc.material.uniforms && pc.material.uniforms.uCloudOpacity) pc.material.uniforms.uCloudOpacity.value = _pcOpacityLogical;
         });
       }
       if (viewer.repaint) viewer.repaint();
