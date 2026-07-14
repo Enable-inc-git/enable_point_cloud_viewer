@@ -11,11 +11,14 @@
 - ALL 7 VIEWERS RE-SYNCED to BDA's full feature set + Android fixes (commit
   416b7d5f, pushed to main). BDA had drifted ~2077 lines ahead (plane/constraint/
   axis/focus work never propagated) — that gap is now closed.
-- KEY FACT FOR PROPAGATION: viewer.html and chrome.js contain NO per-client
-  data/config — the 5 main viewers were byte-identical to each other except one
-  cosmetic build-tag line; ALL per-client config is in projects.js (loaded via
-  relative ./projects.js). So propagating features = COPY BDA/viewer.html +
-  BDA/chrome.js to the other viewers, set each build tag, verify parse.
+- KEY FACT FOR PROPAGATION: the FOUR per-client app files — viewer.html, chrome.js,
+  custom.css, chrome.css — contain NO per-client data/config (each is byte-identical
+  across the non-BDA viewers except viewer.html's one cosmetic build-tag line);
+  icons.js too. ALL per-client config is in projects.js (loaded via relative
+  ./projects.js). So propagating features = COPY ALL FOUR BDA files to each viewer,
+  set each build tag, verify parse. Do NOT forget custom.css + chrome.css — missing
+  them leaves light mode's model area dark (custom.css themes #potree_render_area's
+  background; the WebGL canvas is transparent so the container CSS bg shows through).
   EXCEPTION: demo/viewer.html has 3 FUNCTIONAL extras a blind copy wipes —
   re-apply them: (1) <base href="/clients/demo/"> in <head>, (2) the /demo1
   clean-slug pointCloudID resolution, (3) the clipTopTrimZ block.
