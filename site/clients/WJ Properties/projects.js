@@ -16,6 +16,12 @@ window.PROJECTS = {
     name: "140 Carlton - Wall",
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/140carltonwall/pointclouds/wall"
   },
+  "lounge": {
+    name: "7 St Dennis - Lounge",
+    // Own R2 prefix (separate from wj/7stdennis) so its 4 panoramas stay isolated
+    // from the garage slab's shared stations.
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/7stdennislounge/pointclouds/lounge"
+  },
   "sprinkler_room": {
     name: "2560 Kingston Rd - Sprinkler Room",
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/2560kingston/pointclouds/sprinkler-room"
