@@ -422,6 +422,22 @@
       text-shadow: 0 1px 2px rgba(0,0,0,0.4);
     }
 
+    /* Corner axis HUD (Tekla-style orientation triad, bottom-right of the model).
+       Tracks the context panel + docked panorama like the legend does. */
+    #enable-axis-hud {
+      position: fixed; bottom: 16px; right: 16px; z-index: 200; pointer-events: none;
+      transition: right 0.18s ease, bottom 0.18s ease;
+    }
+    #dev2-context-panel[data-open="true"] ~ #enable-axis-hud {
+      right: calc(var(--context-panel-width) + 16px);
+    }
+    :root[data-panorama-mode="docked"] #enable-axis-hud {
+      right: calc(var(--panorama-width) + 16px);
+    }
+    :root[data-panorama-mode="docked"] #dev2-context-panel[data-open="true"] ~ #enable-axis-hud {
+      right: calc(var(--context-panel-width) + var(--panorama-width) + 16px);
+    }
+
     /* Panorama modal */
     #station-panorama-modal {
       position: fixed; inset: 0; z-index: 100001;
@@ -2581,7 +2597,66 @@
       if (_axesGizmoGroup) _axesGizmoGroup.visible = _customAxesVisible;
       // Scene stays visible so the set-preview shows even if the committed gizmo
       // is hidden; the render pass gates the committed gizmo on _customAxesVisible.
+      _drawAxisHud();   // the corner HUD follows the same visibility switch
     }
+
+    // ===== Corner axis HUD (Tekla-style orientation triad, bottom-right) =====
+    // A small XYZ triad fixed in the corner of the model area so you keep your
+    // bearings when working far from the world origin (where the main gizmo is
+    // off-screen). It rotates with the camera; visibility is tied to the gizmo
+    // switch. It's a 2D-canvas overlay (positioned by CSS to track the context
+    // panel + docked panorama), projecting the world axes through the camera.
+    var _axisHud = null;
+    var _AXHUD = [
+      { k: 'X', v: new THREE.Vector3(1, 0, 0), col: '#ff3b30' },
+      { k: 'Y', v: new THREE.Vector3(0, 1, 0), col: '#34c759' },
+      { k: 'Z', v: new THREE.Vector3(0, 0, 1), col: '#0a84ff' }
+    ];
+    var _axHudInvQ = new THREE.Quaternion(), _axHudTmp = new THREE.Vector3();
+    function _ensureAxisHud() {
+      if (_axisHud) return _axisHud;
+      var cv = document.createElement('canvas');
+      cv.id = 'enable-axis-hud';
+      var css = 74, dpr = window.devicePixelRatio || 1;
+      cv.width = Math.round(css * dpr); cv.height = Math.round(css * dpr);
+      cv.style.width = css + 'px'; cv.style.height = css + 'px';
+      cv._css = css; cv._dpr = dpr;
+      document.body.appendChild(cv);   // after #dev2-context-panel → CSS ~ selectors match
+      _axisHud = cv;
+      return cv;
+    }
+    function _drawAxisHud() {
+      var cv = _ensureAxisHud();
+      if (!_customAxesVisible) { cv.style.display = 'none'; return; }
+      cv.style.display = '';
+      var ctx = cv.getContext('2d');
+      var css = cv._css, dpr = cv._dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, css, css);
+      var cx = css / 2, cy = css / 2, len = css * 0.32;
+      var cam = viewer.scene.getActiveCamera();
+      if (!cam) return;
+      _axHudInvQ.copy(cam.quaternion).invert();   // world → camera space
+      var A = _AXHUD.map(function (a) {
+        _axHudTmp.copy(a.v).applyQuaternion(_axHudInvQ);
+        return { k: a.k, col: a.col, sx: cx + _axHudTmp.x * len, sy: cy - _axHudTmp.y * len, z: _axHudTmp.z };
+      });
+      A.sort(function (p, q) { return q.z - p.z; });   // draw back (z>0) first, front on top
+      for (var i = 0; i < A.length; i++) {
+        var a = A[i];
+        ctx.globalAlpha = (a.z > 0.02) ? 0.35 : 1;     // dim the axis pointing away
+        ctx.strokeStyle = a.col; ctx.lineWidth = 2; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(a.sx, a.sy); ctx.stroke();
+        ctx.fillStyle = a.col;
+        ctx.beginPath(); ctx.arc(a.sx, a.sy, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 9px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(a.k, a.sx, a.sy);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // Redraw every frame so the triad rotates live with the camera (cheap 2D draw).
+    viewer.addEventListener('update', function () { try { _drawAxisHud(); } catch (e) {} });
 
     // -- Live SketchUp-style preview while SETTING the axes. Stage 0: white dot at
     // the hover point (choosing origin). Stage 1: red rubber-band from origin to
