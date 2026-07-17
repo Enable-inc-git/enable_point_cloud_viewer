@@ -6723,6 +6723,138 @@
     function exportPoints3D() { _runPointExport('3d'); }
     function exportPoints2D() { _runPointExport('2d'); }
 
+    // ===== Export a "sub-scan" LAS (full-resolution points in the clip/focus region) =====
+    // Force-loads full detail within the box region, filters by clip/focus/cut-out, and
+    // writes a LAS 1.2 point-format-2 file (XYZ + intensity + RGB) that drops straight
+    // into SketchUp / Tekla / CloudCompare, in the scan's own local coordinate frame.
+    var _LAS_MAXPTS = 5000000;
+    function _downloadBinary(name, buffer) {
+      var blob = new Blob([buffer], { type: 'application/octet-stream' });
+      var url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = name; document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+    // World-AABB bounding the active crop + focus boxes (limits the force-load); null = whole cloud.
+    function _exportRegionAABB() {
+      var boxes = (viewer.scene.volumes || []).filter(function (v) { return v && v.clip === true && (v instanceof Potree.BoxVolume); });
+      if (typeof focusBoxes !== 'undefined') focusBoxes.forEach(function (v) { if (!v._disabled) boxes.push(v); });
+      if (!boxes.length) return null;
+      var mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      var corners = [[-.5,-.5,-.5],[.5,-.5,-.5],[-.5,.5,-.5],[.5,.5,-.5],[-.5,-.5,.5],[.5,-.5,.5],[-.5,.5,.5],[.5,.5,.5]];
+      var c = new THREE.Vector3();
+      boxes.forEach(function (v) {
+        v.updateMatrixWorld(true);
+        corners.forEach(function (cc) {
+          c.set(cc[0], cc[1], cc[2]).applyMatrix4(v.matrixWorld);
+          mn[0] = Math.min(mn[0], c.x); mn[1] = Math.min(mn[1], c.y); mn[2] = Math.min(mn[2], c.z);
+          mx[0] = Math.max(mx[0], c.x); mx[1] = Math.max(mx[1], c.y); mx[2] = Math.max(mx[2], c.z);
+        });
+      });
+      return { min: mn, max: mx };
+    }
+    function _gatherLASPoints(voxelM, keep, pcs) {
+      var pos = [], col = [], inten = [], capped = false;
+      var dedup = voxelM > 0.002;               // ≤2mm ⇒ treat as full-res (no voxel dedup)
+      var seen = dedup ? new Set() : null, inv = 1 / Math.max(voxelM, 1e-4);
+      for (var pi = 0; pi < pcs.length && !capped; pi++) {
+        var geo = pcs[pi].pcoGeometry, o = geo.offset, ox = o.x, oy = o.y, oz = o.z;
+        var nodes = [];
+        (function collect(node) {
+          if (!node) return;
+          if (node.loaded && node.geometry && node.geometry.attributes.position) nodes.push(node);
+          if (node.children) for (var i = 0; i < 8; i++) if (node.children[i]) collect(node.children[i]);
+        })(geo.root);
+        for (var ni = 0; ni < nodes.length && !capped; ni++) {
+          var a = nodes[ni].geometry.attributes;
+          var pa = a.position.array, cnt = a.position.count;
+          var ra = a.rgba ? a.rgba.array : null;
+          var ia = a.intensity ? a.intensity.array : null;
+          var iaNorm = ia && (ia instanceof Float32Array);   // normalized 0..1 → scale to 16-bit
+          var bb = nodes[ni].boundingBox ? nodes[ni].boundingBox.min : { x: 0, y: 0, z: 0 };
+          var tx = ox + bb.x, ty = oy + bb.y, tz = oz + bb.z;
+          for (var i = 0; i < cnt; i++) {
+            var x = pa[i * 3] + tx, y = pa[i * 3 + 1] + ty, z = pa[i * 3 + 2] + tz;
+            if (!keep(x, y, z)) continue;
+            if (dedup) {
+              var key = Math.floor(x * inv) + '_' + Math.floor(y * inv) + '_' + Math.floor(z * inv);
+              if (seen.has(key)) continue;
+              seen.add(key);
+            }
+            pos.push(x, y, z);
+            if (ra) col.push(ra[i * 4], ra[i * 4 + 1], ra[i * 4 + 2]); else col.push(0, 0, 0);
+            var iv = ia ? (iaNorm ? ia[i] * 65535 : ia[i]) : 0;
+            inten.push(iv < 0 ? 0 : (iv > 65535 ? 65535 : (iv | 0)));
+            if (pos.length >= _LAS_MAXPTS * 3) { capped = true; break; }
+          }
+        }
+      }
+      return { pos: pos, col: col, inten: inten, n: pos.length / 3, capped: capped };
+    }
+    function _buildLAS(g) {
+      var n = g.n, pos = g.pos, col = g.col, inten = g.inten, SCALE = 0.001, HDR = 227, REC = 26;
+      var mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+      for (var i = 0; i < n; i++) {
+        var x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+        if (x < mnx) mnx = x; if (y < mny) mny = y; if (z < mnz) mnz = z;
+        if (x > mxx) mxx = x; if (y > mxy) mxy = y; if (z > mxz) mxz = z;
+      }
+      var offx = Math.floor(mnx), offy = Math.floor(mny), offz = Math.floor(mnz);
+      var buf = new ArrayBuffer(HDR + n * REC), dv = new DataView(buf);
+      function str(off, s, len) { for (var k = 0; k < len; k++) dv.setUint8(off + k, k < s.length ? (s.charCodeAt(k) & 0x7f) : 0); }
+      dv.setUint8(0, 0x4C); dv.setUint8(1, 0x41); dv.setUint8(2, 0x53); dv.setUint8(3, 0x46); // "LASF"
+      dv.setUint8(24, 1); dv.setUint8(25, 2);            // version 1.2
+      str(26, 'Enable Viewer', 32); str(58, 'Enable Viewer LAS', 32);
+      dv.setUint16(94, HDR, true);                        // header size
+      dv.setUint32(96, HDR, true);                        // offset to point data
+      dv.setUint32(100, 0, true);                         // # VLRs
+      dv.setUint8(104, 2);                                // point data record format 2
+      dv.setUint16(105, REC, true);                       // record length
+      dv.setUint32(107, n, true);                         // # point records
+      dv.setUint32(111, n, true);                         // points by return[0]
+      dv.setFloat64(131, SCALE, true); dv.setFloat64(139, SCALE, true); dv.setFloat64(147, SCALE, true);
+      dv.setFloat64(155, offx, true);  dv.setFloat64(163, offy, true);  dv.setFloat64(171, offz, true);
+      dv.setFloat64(179, mxx, true); dv.setFloat64(187, mnx, true);
+      dv.setFloat64(195, mxy, true); dv.setFloat64(203, mny, true);
+      dv.setFloat64(211, mxz, true); dv.setFloat64(219, mnz, true);
+      var p = HDR;
+      for (var j = 0; j < n; j++) {
+        dv.setInt32(p,     Math.round((pos[j * 3]     - offx) / SCALE), true);
+        dv.setInt32(p + 4, Math.round((pos[j * 3 + 1] - offy) / SCALE), true);
+        dv.setInt32(p + 8, Math.round((pos[j * 3 + 2] - offz) / SCALE), true);
+        dv.setUint16(p + 12, inten[j] || 0, true);        // intensity
+        dv.setUint8(p + 14, 0); dv.setUint8(p + 15, 0);   // return bits, classification
+        dv.setInt8(p + 16, 0); dv.setUint8(p + 17, 0);    // scan angle, user data
+        dv.setUint16(p + 18, 0, true);                    // point source id
+        dv.setUint16(p + 20, (col[j * 3]     || 0) * 257, true);   // R (8-bit → 16-bit)
+        dv.setUint16(p + 22, (col[j * 3 + 1] || 0) * 257, true);   // G
+        dv.setUint16(p + 24, (col[j * 3 + 2] || 0) * 257, true);   // B
+        p += REC;
+      }
+      return buf;
+    }
+    function exportSubScanLAS() {
+      var pcs = (viewer.scene.pointclouds || []).filter(function (pc) { return pc.visible; });
+      if (!pcs.length) { showToast('No visible scan to export'); return; }
+      var aabb = _exportRegionAABB();
+      if (!aabb) showToast('No clip/focus box — exporting the FULL scan (may be large/slow)…', 6000);
+      else showToast('Loading full-resolution points in the region…', 120000);
+      var prevBudget = viewer.getPointBudget();
+      try { viewer.setPointBudget(60000000); } catch (e) {}
+      Promise.all(pcs.map(function (pc) { return forceLoadAllNodes(pc, aabb, {}); })).then(function () {
+        setTimeout(function () {
+          try {
+            var keep = _makeExportPointFilter();
+            var g = _gatherLASPoints(_exportSpacingMM / 1000, keep, pcs);
+            if (!g.n) { showToast('No points inside the clip / focus region'); return; }
+            var buf = _buildLAS(g);
+            _downloadBinary('subscan.las', buf);
+            showToast('Exported ' + g.n.toLocaleString() + ' points → LAS (' + (buf.byteLength / 1048576).toFixed(1) + ' MB)' + (g.capped ? ' — capped at ' + _LAS_MAXPTS.toLocaleString() + '; raise spacing' : ''), 6000);
+          } catch (e) { console.warn('LAS export failed', e); showToast('LAS export failed — see console'); }
+          finally { try { viewer.setPointBudget(prevBudget); } catch (e) {} }
+        }, 40);
+      }).catch(function (e) { console.warn(e); showToast('LAS export failed during load'); try { viewer.setPointBudget(prevBudget); } catch (e2) {} });
+    }
+
     // Plane fills render in the depth_overlay pass so they depth-test against the
     // point cloud (points in front occlude the sheet; points behind show through).
     viewer.addEventListener("render.pass.depth_overlay", function() {
@@ -13558,6 +13690,7 @@
             '<button id="btn-export-dxf" title="Export all members as DXF">Export DXF</button>' +
             '<button id="btn-export-points-3d" style="display:none">Export Points 3D</button>' +
             '<button id="btn-export-points-2d" style="display:none">Export Points 2D</button>' +
+            '<button id="btn-export-las" style="display:none">Export Sub-scan LAS</button>' +
           '</div>' +
         closeGroup() +
 
@@ -13656,6 +13789,7 @@
       document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
       var _ep3 = document.getElementById('btn-export-points-3d'); if (_ep3) _ep3.addEventListener('click', function() { exportPoints3D(); });
       var _ep2 = document.getElementById('btn-export-points-2d'); if (_ep2) _ep2.addEventListener('click', function() { exportPoints2D(); });
+      var _elas = document.getElementById('btn-export-las'); if (_elas) _elas.addEventListener('click', function() { exportSubScanLAS(); });
       document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
       document.getElementById('btn-save-session').addEventListener('click', function() { saveSessionToFile(); });
       document.getElementById('btn-load-session').addEventListener('click', function() { loadSessionFromFile(); });

@@ -619,10 +619,11 @@
       saveMenu.appendChild(_saveItem('save',   'Save session (.json)', function () { clickLegacy('btn-save-session'); }));
       saveMenu.appendChild(_saveItem('upload', 'Load session (.json)', function () { clickLegacy('btn-load-session'); }));
       saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
-      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Export visible points (DXF)' }));
-      saveMenu.appendChild(_saveItem('box',           'Points → 3D', function () { clickLegacy('btn-export-points-3d'); }));
-      saveMenu.appendChild(_saveItem('square-dashed', 'Points → 2D (current view)', function () { clickLegacy('btn-export-points-2d'); }));
-      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Point spacing (mm)' }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Export sub-scan (clip / focus region)' }));
+      saveMenu.appendChild(_saveItem('layers',        'Sub-scan → LAS (full-res, colour)', function () { clickLegacy('btn-export-las'); }));
+      saveMenu.appendChild(_saveItem('box',           'Points → 3D DXF', function () { clickLegacy('btn-export-points-3d'); }));
+      saveMenu.appendChild(_saveItem('square-dashed', 'Points → 2D DXF (current view)', function () { clickLegacy('btn-export-points-2d'); }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Point spacing (mm) — LAS/DXF; 1 ≈ full-res' }));
       saveMenu.appendChild(buildSliderMenuItem({
         min: 1, max: 100, step: 1,
         get: function () { return d.getExportSpacingMM ? d.getExportSpacingMM() : 5; },
