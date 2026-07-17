@@ -2617,11 +2617,8 @@
     // switch. It's a 2D-canvas overlay (positioned by CSS to track the context
     // panel + docked panorama), projecting the world axes through the camera.
     var _axisHud = null;
-    var _AXHUD = [
-      { k: 'X', v: new THREE.Vector3(1, 0, 0), col: '#ff3b30' },
-      { k: 'Y', v: new THREE.Vector3(0, 1, 0), col: '#34c759' },
-      { k: 'Z', v: new THREE.Vector3(0, 0, 1), col: '#0a84ff' }
-    ];
+    var _AXHUD_COL = ['#ff3b30', '#34c759', '#0a84ff'];   // X red / Y green / Z blue
+    var _AXHUD_LBL = ['X', 'Y', 'Z'];
     var _axHudInvQ = new THREE.Quaternion(), _axHudTmp = new THREE.Vector3();
     function _ensureAxisHud() {
       if (_axisHud) return _axisHud;
@@ -2647,9 +2644,13 @@
       var cam = viewer.scene.getActiveCamera();
       if (!cam) return;
       _axHudInvQ.copy(cam.quaternion).invert();   // world → camera space
-      var A = _AXHUD.map(function (a) {
-        _axHudTmp.copy(a.v).applyQuaternion(_axHudInvQ);
-        return { k: a.k, col: a.col, sx: cx + _axHudTmp.x * len, sy: cy - _axHudTmp.y * len, z: _axHudTmp.z };
+      // Draw the ACTIVE gizmo's axes: the custom gizmo's frame when one is set,
+      // otherwise the global/world frame. So the HUD always mirrors the big gizmo.
+      var af = _activeAxes();
+      var srcV = [af.x, af.y, af.z];
+      var A = srcV.map(function (v, idx) {
+        _axHudTmp.copy(v).applyQuaternion(_axHudInvQ);
+        return { k: _AXHUD_LBL[idx], col: _AXHUD_COL[idx], sx: cx + _axHudTmp.x * len, sy: cy - _axHudTmp.y * len, z: _axHudTmp.z };
       });
       A.sort(function (p, q) { return q.z - p.z; });   // draw back (z>0) first, front on top
       for (var i = 0; i < A.length; i++) {
@@ -6642,6 +6643,95 @@
       URL.revokeObjectURL(url);
       showToast('Exported ' + members.length + ' member(s) to DXF');
     }
+
+    // ===== Export VISIBLE cloud points to DXF (3D world, or 2D flattened to view) =====
+    // Respects the active clip/crop boxes (keep INSIDE), cut-out/exclusion boxes (drop
+    // inside), and focus/isolation boxes (keep only inside — "ignore points not in the
+    // isolation box"). Voxel-thinned to _exportSpacingMM so the DXF stays manageable.
+    var _exportSpacingMM = 5;         // point spacing (mm), set from the Save/Export menu
+    var _EXP_MAXPTS = 2000000;        // hard safety cap on exported point count
+    function _makeExportPointFilter() {
+      var cropVols = (viewer.scene.volumes || []).filter(function (v) { return v && v.clip === true && (v instanceof Potree.BoxVolume); });
+      var cropInv = cropVols.map(function (v) { v.updateMatrixWorld(true); return new THREE.Matrix4().copy(v.matrixWorld).invert(); });
+      var insideAll = (viewer.clipMethod === Potree.ClipMethod.INSIDE_ALL);
+      var cutInv = (typeof buildExclusionInvMats === 'function') ? buildExclusionInvMats() : [];
+      var focusActive = (typeof focusBoxes !== 'undefined') && focusBoxes.some(function (v) { return !v._disabled; });
+      var _l = new THREE.Vector3(), _p = new THREE.Vector3();
+      function inBox(x, y, z, inv) { _l.set(x, y, z).applyMatrix4(inv); return Math.abs(_l.x) <= 0.5 && Math.abs(_l.y) <= 0.5 && Math.abs(_l.z) <= 0.5; }
+      return function keep(x, y, z) {
+        if (cropInv.length) {
+          var ins = 0;
+          for (var i = 0; i < cropInv.length; i++) if (inBox(x, y, z, cropInv[i])) ins++;
+          if (insideAll ? (ins !== cropInv.length) : (ins === 0)) return false;
+        }
+        for (var c = 0; c < cutInv.length; c++) if (inBox(x, y, z, cutInv[c])) return false;
+        if (focusActive) { _p.set(x, y, z); if (!_isInsideAnyFocusBox(_p)) return false; }
+        return true;
+      };
+    }
+    function _gatherExportPoints(voxelM) {
+      var keep = _makeExportPointFilter();
+      var pcs = (viewer.scene.pointclouds || []).filter(function (pc) { return pc.visible; });
+      var seen = new Set(), out = [], capped = false;
+      var inv = 1 / Math.max(voxelM, 1e-4);
+      for (var pi = 0; pi < pcs.length && !capped; pi++) {
+        var ex = extractPositions(pcs[pi], null, null);
+        var pos = ex.positions, cnt = ex.count;
+        for (var i = 0; i < cnt; i++) {
+          var x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+          if (!keep(x, y, z)) continue;
+          var key = Math.floor(x * inv) + '_' + Math.floor(y * inv) + '_' + Math.floor(z * inv);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(x, y, z);
+          if (out.length >= _EXP_MAXPTS * 3) { capped = true; break; }
+        }
+      }
+      return { pts: out, capped: capped };
+    }
+    function _pointsDXF3D(pts) {
+      var L = ['0', 'SECTION', '2', 'ENTITIES'];
+      for (var i = 0; i < pts.length; i += 3) L.push('0', 'POINT', '8', 'POINTS_3D', '10', '' + pts[i], '20', '' + pts[i + 1], '30', '' + pts[i + 2]);
+      L.push('0', 'ENDSEC', '0', 'EOF');
+      return L.join('\n');
+    }
+    function _pointsDXF2D(pts, cam) {
+      // Flatten along the current view: 2D axes = camera right (world X-col) + up (Y-col).
+      // Top-ortho → right=+X, up=+Y → a true floor plan; any other view flattens to it.
+      var rx = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
+      var uy = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+      var L = ['0', 'SECTION', '2', 'ENTITIES'];
+      for (var i = 0; i < pts.length; i += 3) {
+        var x = pts[i], y = pts[i + 1], z = pts[i + 2];
+        L.push('0', 'POINT', '8', 'POINTS_2D',
+               '10', '' + (x * rx.x + y * rx.y + z * rx.z),
+               '20', '' + (x * uy.x + y * uy.y + z * uy.z),
+               '30', '0');
+      }
+      L.push('0', 'ENDSEC', '0', 'EOF');
+      return L.join('\n');
+    }
+    function _downloadDXF(name, content) {
+      var blob = new Blob([content], { type: 'application/dxf' });
+      var url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = name; document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+    function _runPointExport(mode) {
+      showToast('Gathering visible points…', 4000);
+      // Defer so the toast paints before the (synchronous) gather runs.
+      setTimeout(function () {
+        try {
+          var r = _gatherExportPoints(_exportSpacingMM / 1000);
+          if (!r.pts.length) { showToast('No visible points to export (check clip / focus boxes)'); return; }
+          if (mode === '2d') _downloadDXF('points_2d.dxf', _pointsDXF2D(r.pts, viewer.scene.getActiveCamera()));
+          else               _downloadDXF('points_3d.dxf', _pointsDXF3D(r.pts));
+          showToast('Exported ' + (r.pts.length / 3).toLocaleString() + ' points (' + (mode === '2d' ? '2D' : '3D') + ')' + (r.capped ? ' — capped at ' + _EXP_MAXPTS.toLocaleString() + '; lower the spacing' : ''), 5000);
+        } catch (e) { console.warn('point export failed', e); showToast('Point export failed — see console'); }
+      }, 40);
+    }
+    function exportPoints3D() { _runPointExport('3d'); }
+    function exportPoints2D() { _runPointExport('2d'); }
 
     // Plane fills render in the depth_overlay pass so they depth-test against the
     // point cloud (points in front occlude the sheet; points behind show through).
@@ -13476,6 +13566,8 @@
           '<div id="enable-member-list"></div>' +
           '<div id="enable-member-buttons-export">' +
             '<button id="btn-export-dxf" title="Export all members as DXF">Export DXF</button>' +
+            '<button id="btn-export-points-3d" style="display:none">Export Points 3D</button>' +
+            '<button id="btn-export-points-2d" style="display:none">Export Points 2D</button>' +
           '</div>' +
         closeGroup() +
 
@@ -13572,6 +13664,8 @@
       document.getElementById('btn-reset-axes').addEventListener('click', function() { resetCustomAxes(); });
       document.getElementById('btn-add-member').addEventListener('click', function() { startMemberPick(); });
       document.getElementById('btn-export-dxf').addEventListener('click', function() { exportMembersDXF(); });
+      var _ep3 = document.getElementById('btn-export-points-3d'); if (_ep3) _ep3.addEventListener('click', function() { exportPoints3D(); });
+      var _ep2 = document.getElementById('btn-export-points-2d'); if (_ep2) _ep2.addEventListener('click', function() { exportPoints2D(); });
       document.getElementById('btn-export-measurements').addEventListener('click', function() { exportAllMeasurements(); });
       document.getElementById('btn-save-session').addEventListener('click', function() { saveSessionToFile(); });
       document.getElementById('btn-load-session').addEventListener('click', function() { loadSessionFromFile(); });
@@ -15003,6 +15097,8 @@
       toggleAxesGizmoVis:       function () { setAxesGizmoVisible(!_customAxesVisible); return _customAxesVisible; },
       // Rename an elevation box by its current name (used by chrome.js's right-panel
       // header rename). Rebuilds both toolbars + the legend title.
+      getExportSpacingMM:       function () { return _exportSpacingMM; },
+      setExportSpacingMM:       function (v) { v = +v; if (isFinite(v) && v > 0) _exportSpacingMM = v; return _exportSpacingMM; },
       renameElevBox:            function (oldName, newName) {
         if (!newName || !newName.trim()) return false;
         newName = newName.trim();

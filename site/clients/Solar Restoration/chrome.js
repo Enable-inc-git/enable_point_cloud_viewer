@@ -605,9 +605,45 @@
     })();
     meta.appendChild(_unitSeg);
 
-    meta.appendChild(iconBtn('save',     'Save session',           function () { clickLegacy('btn-save-session'); }));
-    meta.appendChild(iconBtn('upload',   'Load session',           function () { clickLegacy('btn-load-session'); }));
-    meta.appendChild(iconBtn('download', 'Export distances',       function () { clickLegacy('btn-export-measurements'); }));
+    // ---- Save / Export dropdown (consolidates session save/load + all exports) ----
+    var saveMenu = el('div', { className: 'dev2-tb-menu', id: 'dev2-menu-save', dataset: { open: 'false' } });
+    document.body.appendChild(saveMenu);
+    function _saveItem(iconName, label, fn) {
+      return el('button', { className: 'dev2-tb-menu-item', type: 'button',
+        onClick: function () { closeOpenMenu(); fn(); } }, [ svg(iconName, 16), el('span', { text: label }) ]);
+    }
+    function rebuildSaveMenu() {
+      saveMenu.innerHTML = '';
+      var d = window.__dev2 || {};
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Session' }));
+      saveMenu.appendChild(_saveItem('save',   'Save session (.json)', function () { clickLegacy('btn-save-session'); }));
+      saveMenu.appendChild(_saveItem('upload', 'Load session (.json)', function () { clickLegacy('btn-load-session'); }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Export visible points (DXF)' }));
+      saveMenu.appendChild(_saveItem('box',           'Points → 3D', function () { clickLegacy('btn-export-points-3d'); }));
+      saveMenu.appendChild(_saveItem('square-dashed', 'Points → 2D (current view)', function () { clickLegacy('btn-export-points-2d'); }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Point spacing (mm)' }));
+      saveMenu.appendChild(buildSliderMenuItem({
+        min: 1, max: 100, step: 1,
+        get: function () { return d.getExportSpacingMM ? d.getExportSpacingMM() : 5; },
+        onInput: function (v) { if (d.setExportSpacingMM) d.setExportSpacingMM(v); }
+      }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
+      saveMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Export annotations' }));
+      saveMenu.appendChild(_saveItem('download', 'Members → DXF',      function () { clickLegacy('btn-export-dxf'); }));
+      saveMenu.appendChild(_saveItem('download', 'Contour maps → DXF', function () { clickLegacy('btn-export-contours'); }));
+      saveMenu.appendChild(_saveItem('download', 'Distances → TXT',    function () { clickLegacy('btn-export-measurements'); }));
+    }
+    var saveTrigger = iconBtn('save', 'Save / Export', function () {
+      if (_openMenu && _openMenu.trigger === saveTrigger) { closeOpenMenu(); return; }
+      rebuildSaveMenu();
+      openMenuFor(saveTrigger, saveMenu);
+      var mr = saveMenu.getBoundingClientRect();
+      if (mr.right > window.innerWidth - 8) {
+        saveMenu.style.left = Math.max(8, saveTrigger.getBoundingClientRect().right - mr.width) + 'px';
+      }
+    });
+    meta.appendChild(saveTrigger);
     // ---- Visibility "eye" dropdown: clip box / panoramas / notes ----
     var eyeMenu = el('div', { className: 'dev2-tb-menu', id: 'dev2-menu-visibility', dataset: { open: 'false' } });
     document.body.appendChild(eyeMenu);
