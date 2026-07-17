@@ -44,6 +44,22 @@
     text is black. Legend units: imperial reads just "(ft-in)".
 - Datum (Z=0) pick: uses the standard red hover-preview sphere (no crosshair) and
   re-selects the box after the pick so its settings panel stays open.
+- FOLLOW-ON pushes (same WJ→all-7 method), latest first:
+  * SAVE/EXPORT dropdown (2da68acf): the top-right save icon is now a dropdown
+    consolidating Save/Load session + all exports. NEW "Export visible points" (DXF):
+    3D world points, or 2D flattened onto the CURRENT view plane (top-ortho → floor
+    plan). Respects clip/crop (keep inside), cut-out/exclusion (drop inside), focus
+    boxes (keep only inside); voxel-thinned by a "Point spacing (mm)" control, 2M cap.
+    Points come from currently-LOADED nodes (what's rendered). Legacy btn-export-points-
+    3d/2d in viewer.html; __dev2.get/setExportSpacingMM bridge. (Members/Contours/
+    Distances export items still ALSO live in their own tool menus.)
+  * CORNER AXIS HUD (0320a550, then follows-active-gizmo in 2da68acf): small Tekla-style
+    XYZ triad, bottom-right of the model, rotates with the camera, tied to the gizmo
+    visibility switch; tracks the context panel + docked panorama via CSS. Draws
+    _activeAxes() so it mirrors the custom gizmo when one is set.
+  * BOX-PLACEMENT FIX (f3fa78d4): placing a focus/cut-out box while a focus box was
+    active put it at the world origin — exempted box placement (pendingVolume) from the
+    focus-box pick restriction.
 
 #############################################################################
 # *** NEW PROJECT 2026-07-15 — WJ Properties "7 St Dennis - Lounge" ***
