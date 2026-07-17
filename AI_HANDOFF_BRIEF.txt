@@ -60,6 +60,14 @@
   * BOX-PLACEMENT FIX (f3fa78d4): placing a focus/cut-out box while a focus box was
     active put it at the world origin — exempted box placement (pendingVolume) from the
     focus-box pick restriction.
+  * LAS SUB-SCAN EXPORT (de554620): "Sub-scan -> LAS" in the Save/Export dropdown.
+    Force-loads FULL resolution within the active clip/focus box region (bumps point
+    budget, forceLoadAllNodes with the region AABB), filters by clip (keep inside) /
+    cut-out (drop) / focus (keep inside), and hand-writes a LAS 1.2 point-format-2 file
+    (XYZ int32 @scale 0.001 + intensity + RGB, in the scan's LOCAL frame) that opens in
+    SketchUp/Tekla/CloudCompare. Shared point-spacing slider (1mm ~= full res), 5M cap.
+    No library — the LAS writer is ~60 lines in viewer.html (_buildLAS). LAZ (compressed)
+    is the follow-up if files get big (needs laz-perf WASM).
 
 #############################################################################
 # *** NEW PROJECT 2026-07-15 — WJ Properties "7 St Dennis - Lounge" ***
