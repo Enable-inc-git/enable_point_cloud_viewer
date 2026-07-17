@@ -6,6 +6,60 @@
 ==============================================================================
 
 #############################################################################
+# *** BIG FEATURE SYNC 2026-07-17 — ALL 7 VIEWERS (developed in WJ) ***
+#############################################################################
+- A large batch of viewer work was developed+eyeballed in WJ Properties, then
+  propagated to ALL 7 viewers (copy viewer.html/chrome.js/chrome.css/icons.js
+  WJ->others; demo's 3 extras re-applied; per-viewer build tag). Shared
+  libs/potree/potree.js also changed (backward-compatible). NOTE: the de-facto
+  DEV VIEWER this round was WJ, not BDA — WJ holds the canonical files now.
+- WHAT SHIPPED:
+  * Colourize tool (draw a region -> paint points into named colour groups;
+    palette, add/remove/clear; re-bakes LOD nodes). New "Colour groups" sidebar
+    + toolbar group; point-size moved into a panel; all sidebar accordions now
+    start COLLAPSED.
+  * ALWAYS-ON GLOBAL GIZMO + always-on X/Y/Z inference snapping. The old "Set
+    drawing axes" tool is renamed "Set Custom Gizmo" (menu: Set custom gizmo /
+    Reset to global gizmo; eye-dropdown item "Gizmo"). Inference position along an
+    axis is now the WORLD-space projection of the picked point (was screen-space,
+    drifted on oblique views). Trimble-style DASHED connector + white highlight to
+    the real off-axis point, and those persist after a point is placed.
+  * MEASUREMENT fix: during the distance/area/etc tools a click on empty space or
+    a click-DRAG no longer drops a point — a drag now ORBITS; only a clean click
+    on the cloud places. (Detaches Potree's floating insertion drag on mousedown;
+    decides place-vs-orbit on mouseup.)
+  * Distance in-model label shows ONLY the 3D value (XY/Z live in the left panel);
+    driven by a new potree.js `userData.label3DOnly` flag (app-set; inert elsewhere).
+  * FOCUS BOXES: new "Snap/select outside focus" toggle in the Scans panel (near
+    the opacity slider); OFF by default => with a focus box active you can't pick/
+    snap OUTSIDE it (all tools, any opacity).
+  * ELEVATION: per-box colour LEGENDS, stacked to the LEFT of the right context
+    panel (track its expand/collapse), each with its own tick-DENSITY control and
+    the box NAME as title (centered over the bar; title wraps, bars stay aligned).
+    Box names are now DOUBLE-CLICK editable in either toolbar. Auto colour range is
+    now a robust 1st-99th PERCENTILE of top-surface points (was raw min/max ->
+    blew out on outliers). Clearing Min/Max to blank + Apply now truly resets to
+    auto and recomputes from the box's current bounds. Contour field on its own
+    line; datum row shortened ("Datum: P1", z-value dropped). Light-mode legend
+    text is black. Legend units: imperial reads just "(ft-in)".
+- Datum (Z=0) pick: uses the standard red hover-preview sphere (no crosshair) and
+  re-selects the box after the pick so its settings panel stays open.
+
+#############################################################################
+# *** NEW PROJECT 2026-07-15 — WJ Properties "7 St Dennis - Lounge" ***
+#############################################################################
+- p=lounge. 2.42M-pt interior lounge scan (RGB+intensity, s0.2 octree, 43MB) +
+  4 full-res 4177 station panoramas. Served from R2 prefix wj/7stdennislounge/
+  (its OWN prefix, separate from the garage slab's wj/7stdennis/, so its 4
+  panoramas don't leak into that project's shared stations — same isolation
+  trick as 140carltonwall). .scan was CLEAN this time (indexes 1-4 == image
+  filenames, no "Area 1" duplicate-row trap). Stations 3&4 sit ~0.5-0.8m beyond
+  the cloud's Y-max wall (far wall likely cropped from the LAS); offset 0,0,0,
+  pins wired + clickable, may want a small --offset tune if placement looks off.
+  Code push = projects.js + .gitignore only (commit 00cf729c). Prod:
+  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=lounge
+
+#############################################################################
 # *** MAJOR UPDATE 2026-07-13 — READ THIS FIRST (latest state) ***
 #############################################################################
 - ALL 7 VIEWERS RE-SYNCED to BDA's full feature set + Android fixes (commit

@@ -242,16 +242,6 @@
   function topbarGroups() {
     return [
       {
-        id: 'display', label: 'Point size', iconName: 'point-size',
-        items: [
-          { kind: 'slider', id: 'point-size', min: 0.1, max: 10.0, step: 0.1, get: function () { return readPointPrefs().size; },
-            onInput: function (v) {
-              applyPointCloudSettings({ size: v });
-              writePointPrefs({ size: v });
-            } }
-        ]
-      },
-      {
         id: 'view', label: 'View', iconName: 'navigation',
         items: [
           { kind: 'label', text: 'Camera angle' },
@@ -296,19 +286,13 @@
         ]
       },
       {
-        id: 'notes', label: 'Notes', iconName: 'sticky-note',
-        items: [
-          { label: 'Add note',         iconName: 'plus',     action: function () { clickLegacy('btn-add-note'); } }
-        ]
-      },
-      {
         id: 'constraints', label: 'Constraints', iconName: 'axis-3d',
         items: [
           { label: 'Fit plane (3+ pts)', iconName: 'layers', action: function () { clickLegacy('btn-fit-plane'); } },
           { label: 'Perp plane (⊥ selected)', iconName: 'layers', action: function () { clickLegacy('btn-perp-plane'); }, mirrorLegacy: 'btn-perp-plane' },
           { label: 'Set axis (2 pts)',   iconName: 'axis-3d', action: function () { clickLegacy('btn-set-axis'); } },
-          { label: 'Set drawing axes (3 pts)', iconName: 'axis-3d',  action: function () { clickLegacy('btn-set-axes'); } },
-          { label: 'Reset to world axes',      iconName: 'rotate-ccw', action: function () { clickLegacy('btn-reset-axes'); } }
+          { label: 'Set custom gizmo (3 pts)', iconName: 'axis-3d',  action: function () { clickLegacy('btn-set-axes'); } },
+          { label: 'Reset to global gizmo',    iconName: 'rotate-ccw', action: function () { clickLegacy('btn-reset-axes'); } }
         ]
       },
       {
@@ -320,6 +304,15 @@
           { kind: 'sep' },
           { label: 'Add focus box',           iconName: 'plus',    action: function () { clickLegacy('btn-add-focus'); } },
           { label: 'Clear all focus boxes',   iconName: 'trash-2', action: function () { clickLegacy('btn-clear-all-focus'); } }
+        ]
+      },
+      {
+        id: 'colorize', label: 'Colourize', iconName: 'palette',
+        items: [
+          { label: 'Draw region → active group', iconName: 'square-dashed', action: function () { clickLegacy('btn-colorize-draw'); } },
+          { kind: 'sep' },
+          { label: 'New colour group',        iconName: 'plus',    action: function () { clickLegacy('btn-colorize-add-group'); } },
+          { label: 'Clear all colour groups', iconName: 'trash-2', action: function () { clickLegacy('btn-colorize-clear'); } }
         ]
       },
       {
@@ -340,6 +333,13 @@
         items: [
           { label: 'New member',          iconName: 'plus',     kbd: 'M', action: function () { clickLegacy('btn-add-member'); } },
           { label: 'Export DXF',          iconName: 'download', action: function () { clickLegacy('btn-export-dxf'); } }
+        ]
+      },
+      // Notes sits last — least-used tool, so it ranks lowest in the toolbar.
+      {
+        id: 'notes', label: 'Notes', iconName: 'sticky-note',
+        items: [
+          { label: 'Add note',         iconName: 'plus',     action: function () { clickLegacy('btn-add-note'); } }
         ]
       }
     ];
@@ -624,7 +624,7 @@
         { label: 'Notes',     avail: d.hasNotes ? d.hasNotes() : false,
           on: d.getNotesVis ? d.getNotesVis() : true,
           toggle: function () { if (d.toggleNotesVis) d.toggleNotesVis(); } },
-        { label: 'Drawing axes', avail: d.hasCustomAxes ? d.hasCustomAxes() : false,
+        { label: 'Gizmo',     avail: true,
           on: d.getAxesGizmoVis ? d.getAxesGizmoVis() : true,
           toggle: function () { if (d.toggleAxesGizmoVis) d.toggleAxesGizmoVis(); } }
       ];
@@ -637,6 +637,15 @@
         if (!r.avail) mi.style.opacity = '0.45';
         eyeMenu.appendChild(mi);
       });
+      // Point size (moved here from the top toolbar to reclaim toolbar room).
+      eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
+      eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Point size' }));
+      eyeMenu.appendChild(buildSliderMenuItem({
+        min: 0.1, max: 10.0, step: 0.1,
+        get: function () { return readPointPrefs().size; },
+        onInput: function (v) { applyPointCloudSettings({ size: v }); writePointPrefs({ size: v }); }
+      }));
+
       // Box outline brightness slider (0 = black … 1 = white).
       eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
       eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Box outline brightness' }));
@@ -662,7 +671,7 @@
         }
       }, [ svg(_isLight ? 'moon' : 'sun', 16), el('span', { text: _isLight ? 'Dark mode' : 'Light mode' }) ]));
     }
-    var eyeTrigger = iconBtn('eye', 'Show / hide clip box, panoramas, notes', function () {
+    var eyeTrigger = iconBtn('eye', 'Display: point size, visibility, box outline, theme', function () {
       if (_openMenu && _openMenu.trigger === eyeTrigger) { closeOpenMenu(); return; }
       rebuildEyeMenu();
       openMenuFor(eyeTrigger, eyeMenu);
@@ -853,13 +862,14 @@
   // while working), Scene Tree last (the underlying Potree object graph — useful
   // but rarely the primary thing).
   var SIDEBAR_SECTIONS = [
-    { id: 'views',        title: 'Saved Views',   iconName: 'frame',        slotIds: ['enable-views-list'],         defaultOpen: true  },
-    { id: 'marks',        title: 'Marks',         iconName: 'map-pin',      slotIds: ['enable-mark-list'],          defaultOpen: true  },
+    { id: 'views',        title: 'Saved Views',   iconName: 'frame',        slotIds: ['enable-views-list'],         defaultOpen: false },
+    { id: 'marks',        title: 'Marks',         iconName: 'map-pin',      slotIds: ['enable-mark-list'],          defaultOpen: false },
     { id: 'notes',        title: 'Notes',         iconName: 'sticky-note',  slotIds: ['enable-note-list'],          defaultOpen: false },
-    { id: 'constraints',  title: 'Constraints',   iconName: 'axis-3d',      slotIds: ['enable-constraint-list'],    defaultOpen: true  },
+    { id: 'constraints',  title: 'Constraints',   iconName: 'axis-3d',      slotIds: ['enable-constraint-list'],    defaultOpen: false },
     { id: 'members',      title: 'Members',       iconName: 'pencil',       slotIds: ['enable-member-list'],        defaultOpen: false },
     { id: 'measurements', title: 'Measurements',  iconName: 'ruler',        slotIds: ['enable-measurement-list', 'enable-point-list', 'enable-area-list', 'enable-angle-list', 'enable-volume-list'], defaultOpen: false },
     { id: 'clip',         title: 'Isolate',       iconName: 'scissors',   slotIds: ['enable-global-crop-list', 'enable-focus-list', 'exclusion-list'],  defaultOpen: false },
+    { id: 'colorize',     title: 'Colour groups', iconName: 'palette',      slotIds: ['enable-colorgroup-list'],    defaultOpen: false },
     { id: 'elevation',    title: 'Elevation boxes', iconName: 'mountain',   slotIds: ['enable-elevation-box-list'], defaultOpen: false },
     { id: 'scene',        title: 'Scene tree',    iconName: 'list-tree',    slotIds: ['enable-scene-slot'],         defaultOpen: false }
   ];
@@ -914,6 +924,7 @@
   var CONTEXT_SLOTS = [
     'enable-scans-panel',
     'enable-focus-panel',
+    'enable-colorgroup-panel',
     'enable-models-panel',
     'enable-plane-depth-controls',
     'enable-elevation-status',
@@ -1180,6 +1191,36 @@
     renderFocusedElevSection();
   }
 
+  // Inline rename of an elevation box from the right-panel header. Commits through
+  // the viewer bridge, which renames the volume + rebuilds the list; the list
+  // observer then re-focuses the box by its new name and re-renders this header.
+  function _editElevHeaderName(spanEl, curName) {
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = curName;
+    input.style.cssText = 'flex:1;min-width:0;font:inherit;padding:1px 4px;border:1px solid var(--accent,#4db6ff);' +
+      'border-radius:3px;background:var(--panel-bg,#3a3a3a);color:var(--sidebar-text,#fbfbfb)';
+    spanEl.replaceWith(input);
+    input.focus(); input.select();
+    var done = false;
+    function commit(save) {
+      if (done) return; done = true;
+      var nv = input.value.trim();
+      if (save && nv && nv !== curName && window.__dev2 && window.__dev2.renameElevBox) {
+        _focusedElevBoxName = nv;                       // keep focus on the renamed box
+        window.__dev2.renameElevBox(curName, nv);       // → list rebuild → observer re-renders
+      } else {
+        renderFocusedElevSection();                     // restore header unchanged
+      }
+    }
+    input.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+    });
+    input.addEventListener('blur', function () { commit(true); });
+  }
+
   function renderFocusedElevSection() {
     var host = getElevHost();
     host.innerHTML = '';
@@ -1187,9 +1228,14 @@
     var name = _focusedElevBoxName;
     if (name && _elevPanelCache[name] && _elevPanelCache[name].panels.length > 0) {
       var cached = _elevPanelCache[name];
+      var nameSpanEl = el('span', { className: 'dev2-cp-elev-name', text: name, title: 'Double-click to rename' });
+      nameSpanEl.style.cursor = 'text';
+      (function (curName) {
+        nameSpanEl.addEventListener('dblclick', function (e) { e.stopPropagation(); _editElevHeaderName(nameSpanEl, curName); });
+      })(name);
       var headerEl = el('div', { className: 'dev2-cp-elev-header' }, [
         el('span', { className: 'dev2-cp-elev-dot', style: { background: cached.accent || 'var(--accent)' } }),
-        el('span', { className: 'dev2-cp-elev-name', text: name }),
+        nameSpanEl,
         el('button', {
           className: 'dev2-cp-elev-close',
           type: 'button',

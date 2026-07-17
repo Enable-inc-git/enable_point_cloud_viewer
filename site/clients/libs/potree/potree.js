@@ -54308,9 +54308,10 @@
 
 					// Measures flagged only3D (perpendicular / plane-bound dimensions)
 					// show just the single 3D distance — the XY/Z split is meaningless
-					// there. No other viewer sets this flag, so their labels are
-					// unchanged.
-					let only3D = !!(this.userData && this.userData.only3D);
+					// there. label3DOnly is the same collapse for the IN-MODEL label only
+					// (the app's left-toolbar accordion still reads only3D, so it keeps the
+					// full XY/Z breakdown). Both flags are app-set; unset = unchanged.
+					let only3D = !!(this.userData && (this.userData.only3D || this.userData.label3DOnly));
 					let text;
 					if (typeof window !== 'undefined' && window.__unitFmt && window.__unitFmt.len) {
 						// Custom app unit formatter (mm / feet-inches). len* are in metres

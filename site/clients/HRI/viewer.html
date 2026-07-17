@@ -389,9 +389,37 @@
       border-radius: 3px; font: 12px sans-serif; cursor: pointer;
       background: var(--panel-bg, #6b6b6b); color: var(--sidebar-text, #fbfbfb);
     }
-    #heatmap-legend {
-      display: none; position: fixed; top: 10px; right: 20px; z-index: 200;
-      pointer-events: none;
+    /* Elevation legends: a right-anchored row that sits to the LEFT of the right
+       context panel and tracks its expand/collapse (same [data-open] ~ sibling
+       pattern the render area + panorama dock use). One legend per active box. */
+    #heatmap-legend-stack {
+      /* Extra top room so a wrapped (multi-line) title can grow UPWARD without
+         hitting the toolbar — the title block is bottom-aligned so all the bars
+         still line up across legends. */
+      display: none; position: fixed; top: calc(var(--topbar-height, 50px) + 26px);
+      right: 36px; z-index: 200;
+      pointer-events: none; flex-direction: row; gap: 26px; align-items: flex-start;
+      transition: right 0.18s ease;
+    }
+    #dev2-context-panel[data-open="true"] ~ #heatmap-legend-stack {
+      right: calc(var(--context-panel-width) + 36px);
+    }
+    .heatmap-legend-item { display: flex; flex-direction: column; align-items: center; }
+    /* Fixed-height, BOTTOM-aligned title block → the gradient bars start at the same
+       Y across every legend even when one title wraps to 2 lines. Its width is set
+       per-legend to match the canvas so the centred title lands over the (centred) bar. */
+    .heatmap-legend-head {
+      height: 52px; box-sizing: border-box; margin-bottom: 4px; overflow: visible;
+      display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+    }
+    .heatmap-legend-name {
+      max-width: 100%; font: 700 15px/1.15 sans-serif; text-align: center;
+      overflow-wrap: break-word; word-break: break-word;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+    }
+    .heatmap-legend-unit {
+      font: 600 12px/1.2 sans-serif; opacity: 0.9; margin-top: 1px;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.4);
     }
 
     /* Panorama modal */
@@ -622,7 +650,7 @@
   </div>
 
   <!-- Elevation legend -->
-  <div id="heatmap-legend"><canvas id="heatmap-legend-canvas" width="180" height="520"></canvas></div>
+  <div id="heatmap-legend-stack"></div>
 
   <!-- Scan station panorama modal -->
   <div id="station-panorama-modal">
@@ -741,7 +769,7 @@
       try { renderElevStatus(); } catch (e) {}
       try {
         if (elevationActive) {
-          if (typeof updateElevationLegend === 'function') updateElevationLegend(elevationZMin, elevationZMax);
+          if (typeof rebuildElevationLegends === 'function') rebuildElevationLegends();
           if (typeof buildBoxContours === 'function') {
             elevationCropVolumes.forEach(function (v2) {
               var c = getBoxConfig(v2);
@@ -2416,13 +2444,26 @@
     // otherwise, exactly like SketchUp. Arrow keys lock an axis. World by default.
     const axesGizmoScene = new THREE.Scene();
     axesGizmoScene.name = "EnableAxesScene";
-    let _customAxes = null;         // { origin, x, y, z } unit vectors, or null = world (no inference)
+    let _customAxes = null;         // custom OVERRIDE frame, or null = use the global gizmo below
+    // The always-on GLOBAL gizmo: world axes at the world origin. The gizmo and the
+    // X/Y/Z inference snapping ALWAYS use the active frame — the custom frame when one
+    // is set, otherwise this global one. So inference is on by default; the "Custom
+    // Gizmo" tool temporarily overrides it, and resetting reverts to this.
+    const _globalAxes = {
+      origin: new THREE.Vector3(0, 0, 0),
+      x: new THREE.Vector3(1, 0, 0),
+      y: new THREE.Vector3(0, 1, 0),
+      z: new THREE.Vector3(0, 0, 1)
+    };
+    function _activeAxes() { return _customAxes || _globalAxes; }
     let _customAxesVisible = true;  // eye-dropdown show/hide of the gizmo
     let _axisLock = null;           // 'x' | 'y' | 'z' | null  (arrow-key inference lock)
     let _axesPickMode = false;      // running the 3-click set flow
     let _axesPickPts = [];          // points collected during the set flow
     let _axesGizmoGroup = null;     // THREE.Group with the 3 coloured lines
     let _activeInferAxis = null;    // 'x'|'y'|'z' snapped this frame (for colouring/tag)
+    let _axisRawTarget = null;      // raw cloud point under cursor while axis-snapped (the point you're actually measuring TO)
+    let _axisSnapPos = null;        // the snapped location on the axis (segment endpoint)
     const AXIS_COLORS = { x: 0xff3b30, y: 0x34c759, z: 0x0a84ff }; // red / green / blue
     const AXIS_NAMES  = { x: 'Red',  y: 'Green', z: 'Blue' };
     const AXIS_SNAP_PX = 10;        // cursor within this many px of an axis line snaps
@@ -2449,8 +2490,7 @@
         _axesGizmoGroup.traverse(function (o) { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
         _axesGizmoGroup = null;
       }
-      if (!_customAxes) return;
-      var f = _customAxes, g = new THREE.Group();
+      var f = _activeAxes(), g = new THREE.Group();
       g.userData.isAxesGizmo = true;
       var L = 1; // local unit length; per-frame scale sets the real screen size
       var O = new THREE.Vector3(0, 0, 0);
@@ -2487,7 +2527,7 @@
       if (constraintPickMode) cancelConstraintPick();
       _axesPickMode = true; _axesPickPts = [];
       document.body.classList.add('member-pick-mode'); // reuse crosshair cursor
-      showToast('Set axes — click the ORIGIN (1/3)', 6000);
+      showToast('Set custom gizmo — click the ORIGIN (1/3)', 6000);
       var b = document.getElementById('btn-set-axes'); if (b) b.classList.add('active');
     }
     function cancelAxesPick() {
@@ -2499,8 +2539,8 @@
     function handleAxesPick(position) {
       _axesPickPts.push(position.clone());
       var n = _axesPickPts.length;
-      if (n === 1) { showToast('Set axes — click along +X (RED) (2/3)', 6000); return; }
-      if (n === 2) { showToast('Set axes — click the +Y (GREEN) side (3/3)', 6000); return; }
+      if (n === 1) { showToast('Set custom gizmo — click along +X (RED) (2/3)', 6000); return; }
+      if (n === 2) { showToast('Set custom gizmo — click the +Y (GREEN) side (3/3)', 6000); return; }
       buildCustomAxes(_axesPickPts[0], _axesPickPts[1], _axesPickPts[2]);
       cancelAxesPick();
     }
@@ -2517,20 +2557,20 @@
       var next = { origin: origin.clone(), x: x, y: y, z: z };
       _customAxes = next; _axisLock = null;
       rebuildAxesGizmo(); updateAxesUiState();
-      pushUndoCmd({ label: 'set axes', tag: 'axes',
+      pushUndoCmd({ label: 'set gizmo', tag: 'axes',
         undo: function () { _customAxes = prev; rebuildAxesGizmo(); updateAxesUiState(); },
         redo: function () { _customAxes = next; rebuildAxesGizmo(); updateAxesUiState(); } });
-      showToast('Custom drawing axes set');
+      showToast('Custom gizmo set — tools snap to it until you reset to the global gizmo');
     }
     function resetCustomAxes() {
-      if (!_customAxes) { showToast('Already using world axes'); return; }
+      if (!_customAxes) { showToast('Already on the global gizmo'); return; }
       var prev = _customAxes;
       _customAxes = null; _axisLock = null;
       rebuildAxesGizmo(); updateAxesUiState();
-      pushUndoCmd({ label: 'reset axes', tag: 'axes',
+      pushUndoCmd({ label: 'reset gizmo', tag: 'axes',
         undo: function () { _customAxes = prev; rebuildAxesGizmo(); updateAxesUiState(); },
         redo: function () { _customAxes = null; rebuildAxesGizmo(); updateAxesUiState(); } });
-      showToast('Axes reset to world');
+      showToast('Reverted to the global gizmo');
     }
     function updateAxesUiState() {
       var b = document.getElementById('btn-reset-axes'); if (b) b.disabled = !_customAxes;
@@ -2618,14 +2658,16 @@
         return (pm && pm.position) ? pm.position : pm;
       }
       if (memberPickMode && memberPickPoints.length >= 1) return memberPickPoints[memberPickPoints.length - 1];
-      if (typeof MARK_MODE !== 'undefined' && MARK_MODE && _customAxes) return _customAxes.origin;
+      if (typeof MARK_MODE !== 'undefined' && MARK_MODE) return _activeAxes().origin;
       return null;
     }
-    // Screen-space snap onto the nearest axis line through the anchor (or the
-    // locked axis). Returns { location, key } or null. Same math as ortho-measure:
-    // proximity in PIXELS decides whether to snap; along-axis pixels decide where.
+    // Snap onto the nearest axis line through the anchor (or the locked axis).
+    // Returns { location, key } or null. Proximity in PIXELS decides WHETHER to snap
+    // (SketchUp-style); the position ALONG the axis is the WORLD-space projection of
+    // the actual cloud point (foot of the perpendicular) so it stays exact on oblique
+    // / foreshortened views.
     function applyAxisInference(rawLoc, mousePx) {
-      if (!_customAxes) return null;
+      var A = _activeAxes();
       var anchor = _axisInferAnchor();
       if (!anchor) return null;
       var cam = viewer.scene.getActiveCamera();
@@ -2634,7 +2676,7 @@
       var aX = (aN.x + 1) * 0.5 * rect.width;
       var aY = (1 - aN.y) * 0.5 * rect.height;
       var cdx = mousePx.x - aX, cdy = mousePx.y - aY;
-      var cand = [['x', _customAxes.x], ['y', _customAxes.y], ['z', _customAxes.z]];
+      var cand = [['x', A.x], ['y', A.y], ['z', A.z]];
       var best = null;
       for (var i = 0; i < cand.length; i++) {
         var key = cand[i][0], axis = cand[i][1];
@@ -2645,11 +2687,15 @@
         var slen = Math.sqrt(sx * sx + sy * sy);
         if (slen < 1e-3) continue;
         var ux = sx / slen, uy = sy / slen;
-        var along = cdx * ux + cdy * uy;              // px along the axis
-        var perp = Math.abs(cdx * uy - cdy * ux);     // px perpendicular to it
+        var perp = Math.abs(cdx * uy - cdy * ux);     // px perpendicular to the axis (snap test only)
         var locked = (_axisLock === key);
         if (!locked && perp > AXIS_SNAP_PX) continue;
-        var t = along / slen;                         // world units along the axis
+        // Position along the axis = WORLD-space projection of the picked cloud point
+        // onto the axis (axis vectors are unit length), i.e. the foot of the
+        // perpendicular from the real point. Exact regardless of view angle; the old
+        // screen-space (along/slen) estimate drifted, so the placed point landed short
+        // of / past the true projection and the dashed connector came off at an angle.
+        var t = rawLoc.clone().sub(anchor).dot(axis);
         var score = locked ? -1 : perp;
         if (!best || score < best.score) best = { location: anchor.clone().addScaledVector(axis, t), key: key, score: score };
       }
@@ -2681,7 +2727,6 @@
     window.addEventListener('keydown', function (e) {
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (!_customAxes) return;
       if (!(pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) return;
       var want = null;
       if (e.key === 'ArrowRight') want = 'x';
@@ -2697,12 +2742,16 @@
     // Position the on-screen axis tag while a placement tool is active. Reads the
     // axis chosen by the most recent pick (one-frame lag is imperceptible).
     renderArea.addEventListener('mousemove', function (e) {
-      if (_customAxes && (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) {
+      if (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE)) {
         _updateAxisTag(e.clientX, e.clientY);
       } else {
         _updateAxisTag(null);
       }
     });
+
+    // Build the always-on global gizmo now; the per-frame render pass keeps it
+    // scaled. A custom gizmo overrides it later; resetting rebuilds this one.
+    try { rebuildAxesGizmo(); } catch (e) { /* camera not ready yet — render pass will build on next reset */ }
 
     // ===== ELEVATION MAP TOOL =====
     const elevationScene = new THREE.Scene();
@@ -2739,7 +2788,7 @@
       for (var i = 0; i < elevationCropVolumes.length; i++) {
         if (!elevationCropVolumes[i]._disabled) return getBoxConfig(elevationCropVolumes[i]);
       }
-      return { mode: 'z', refConstraintIdx: -1, refPlane: null, refSide: 1, sideSet: false, zMin: null, zMax: null, contourStep: 0.05 };
+      return { mode: 'z', refConstraintIdx: -1, refPlane: null, refSide: 1, sideSet: false, zMin: null, zMax: null, contourStep: 0.05, legendTicks: 8 };
     }
     // Compatibility getters/setters via property descriptors on a proxy object
     var _elevProxy = {};
@@ -2780,6 +2829,7 @@
           zMin: null,   // null = auto-detect
           zMax: null,
           contourStep: 0.05,
+          legendTicks: 8,         // number of ticks/labels on THIS box's legend (density)
           active: false,          // true once this box has been computed
           surfaceGrid: null,      // per-box Z surface grid
           planeSurfGrid: null,    // per-box plane surface grid
@@ -2844,6 +2894,10 @@
     // ===== Z-BASE PICK MODE =====
     var zBasePickMode = false;
     var zBasePickTargetVol = null;
+    // Red hover-preview sphere — same cue as the Mark tool (the datum IS a mark),
+    // so datum picking looks like every other click-to-place tool instead of a
+    // bare crosshair. Added to markerScene, which auto-scales isMarkerSphere meshes.
+    var _zbasePreviewSphere = null;
 
     function startZBasePick(vol) {
       // Cancel other pick modes
@@ -2852,7 +2906,10 @@
       if (MARK_MODE) toggleMarkMode(true);
       zBasePickMode = true;
       zBasePickTargetVol = vol;
-      document.body.classList.add('mark-mode'); // crosshair cursor
+      if (!_zbasePreviewSphere) {
+        _zbasePreviewSphere = _makePreviewSphere(0xff2020);
+        markerScene.add(_zbasePreviewSphere);
+      }
       var hint = markedPoints.length > 0
         ? 'Click an existing mark to use as Z=0, or click any point to place a new one'
         : 'Click any point in the cloud to place a Z=0 reference mark';
@@ -2862,7 +2919,29 @@
     function cancelZBasePick() {
       zBasePickMode = false;
       zBasePickTargetVol = null;
-      document.body.classList.remove('mark-mode');
+      if (_zbasePreviewSphere) {
+        _disposePreviewSphere(_zbasePreviewSphere, markerScene);
+        _zbasePreviewSphere = null;
+      }
+    }
+
+    // After a datum (Z=0) pick, the box whose datum we just set should STAY
+    // selected so its right-panel settings remain open. But the tool-workflow
+    // guard clears inputHandler.hoveredElements during the pick, so Potree's own
+    // onMouseUp deselectAll()s it (worst in ortho view, where the hover ray
+    // reliably resolves to nothing → empty hover → guaranteed deselect). Re-assert
+    // the selection on the next tick so it survives that deselect.
+    function reselectBoxAfterPick(vol) {
+      if (!vol || !viewer.inputHandler) return;
+      setTimeout(function() {
+        try {
+          var sel = viewer.inputHandler.selection || [];
+          if (sel.indexOf(vol) < 0) {
+            viewer.inputHandler.deselectAll();
+            viewer.inputHandler.toggleSelection(vol);
+          }
+        } catch (e) { /* ignore */ }
+      }, 0);
     }
 
     // Recompute a single box's elevation (forces re-detect of zMin/zMax in the
@@ -3664,7 +3743,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] HRI build 2026-07-13 — plane/focus tools + android touch'); } catch (e) {}
+    try { console.info('[Enable] HRI build 2026-07-17 — colourize + gizmo + per-box legends + measure/legend fixes'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -4116,16 +4195,25 @@
       // is within a few px (or an axis is arrow-locked). Applies to the measure,
       // member, and mark tools. A locked axis overrides a point snap; otherwise
       // an exact point snap (endpoint/vertex, above) wins over the axis. ----
-      if (result && result.location && _customAxes && mouse && typeof mouse.x === 'number' &&
+      if (result && result.location && mouse && typeof mouse.x === 'number' &&
           !constraintPickMode && !constraintDragActive && !memberDragActive &&
           !markerDragActive && !planeHandleDragActive &&
           (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) {
         var _inf = applyAxisInference(result.location, mouse);
-        if (_inf && (_axisLock || !_pointSnapped)) { result.location = _inf.location; _activeInferAxis = _inf.key; }
-        else _activeInferAxis = null;
+        if (_inf && (_axisLock || !_pointSnapped)) {
+          _axisRawTarget = result.location.clone();   // the real point under the cursor (off-axis)
+          result.location = _inf.location;            // snap the measurement onto the axis
+          _axisSnapPos = _inf.location.clone();
+          _activeInferAxis = _inf.key;
+        } else { _activeInferAxis = null; _axisRawTarget = null; _axisSnapPos = null; }
       } else if (!_axesPickMode) {
-        _activeInferAxis = null;
+        _activeInferAxis = null; _axisRawTarget = null; _axisSnapPos = null;
       }
+      // Focus-box restriction: with a focus box active and "snap outside" off, a
+      // pick that lands OUTSIDE the focus box(es) is rejected for EVERY tool that
+      // funnels through this picker (mark / measure / member / constraint / datum),
+      // regardless of the dimmed points' opacity. The Scans-panel toggle lifts it.
+      if (result && result.location && _focusBlocksPick(result.location)) return null;
       return result;
     };
 
@@ -7026,6 +7114,12 @@
             if (m) {
               var _bp = constraints.find(function(con) { return con.id === activeConstraintId && con.type === 'plane'; });
               if (_bp) m.userData.only3D = true;
+              // Plain (unbound) distance measures: show ONLY the 3D value in the
+              // in-model label to declutter; the left-toolbar accordion still
+              // carries the XY/Z breakdown (it reads only3D, not label3DOnly).
+              else if (args && args.showDistances && !args.showArea && !args.showAngles && !args.showHeight) {
+                m.userData.label3DOnly = true;
+              }
             }
             return m;
           };
@@ -7858,6 +7952,7 @@
                 zMin: cfg.zMin,
                 zMax: cfg.zMax,
                 contourStep: cfg.contourStep,
+                legendTicks: cfg.legendTicks,
                 active: cfg.active
               };
               return sv;
@@ -8064,6 +8159,9 @@
           measure.showAngles = false;
           measure.closed = false;
           if (sm2.only3D) measure.userData.only3D = true; // set before markers so labels build 3D-only
+          // Plain distance measures show ONLY the 3D value in the in-model label
+          // (declutter); the left-toolbar accordion still shows the XY/Z split.
+          else if (savedShowD) measure.userData.label3DOnly = true;
           for (var pi = 0; pi < sm2.points.length; pi++) {
             var pp = sm2.points[pi];
             measure.addMarker(new THREE.Vector3(pp.x, pp.y, pp.z));
@@ -8188,6 +8286,7 @@
               cfg.zMin = sv.config.zMin;
               cfg.zMax = sv.config.zMax;
               cfg.contourStep = sv.config.contourStep || 0.05;
+              if (sv.config.legendTicks != null) cfg.legendTicks = sv.config.legendTicks;
               cfg.active = !!sv.config.active;
               // Restore reference plane from constraint index
               if (cfg.mode === 'plane' && cfg.refConstraintIdx >= 0 && cfg.refConstraintIdx < constraints.length) {
@@ -8886,92 +8985,125 @@
       }
     }
 
-    function updateElevationLegend(zMin, zMax) {
-      var canvas = document.getElementById('heatmap-legend-canvas');
-      if (!canvas) return;
+    // ===== Per-box elevation LEGENDS =====
+    // Each ACTIVE box gets its own gradient legend (its own range + tick density),
+    // laid out in a right-anchored row to the LEFT of the context panel; the row
+    // re-flows as boxes are added / activated / hidden / deleted. Re-tints live on
+    // a light/dark theme switch.
+    (function _watchThemeForLegend() {
+      try {
+        new MutationObserver(function () { rebuildElevationLegends(); })
+          .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      } catch (e) { /* ignore */ }
+    })();
+
+    function _legendTextColor() {
+      return (document.documentElement.getAttribute('data-theme') === 'light') ? '#111' : '#fff';
+    }
+
+    // Draw ONE box's gradient bar + ticks. The title (box name) and unit live in HTML
+    // ABOVE the canvas (so they can wrap / scale independently). Tick/label count =
+    // cfg.legendTicks (the density control). Text contrasts with the current theme.
+    // Shared 2D context just for measuring tick-label widths (so we can size the
+    // canvas to center the bar under the title with the labels fitting on the left).
+    var _legendMeasureCtx = null;
+    function _legendMaxLabelWidth(cfg) {
+      if (!_legendMeasureCtx) _legendMeasureCtx = document.createElement('canvas').getContext('2d');
+      _legendMeasureCtx.font = '14px sans-serif';
+      var zMin = cfg.zMin, zMax = cfg.zMax, range = zMax - zMin;
+      var nT = Math.max(2, Math.min(60, Math.round(cfg.legendTicks || 8)));
+      var maxW = 0;
+      for (var k = 0; k < nT; k++) {
+        var v = zMin + (k / (nT - 1)) * range;
+        var lw = _legendMeasureCtx.measureText(fmtLenVal(v)).width;
+        if (lw > maxW) maxW = lw;
+      }
+      return maxW;
+    }
+
+    function renderBoxLegend(canvas, cfg, barX, barW) {
       var ctx = canvas.getContext('2d');
       var w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
-
-      var barX = 100, barW = 40, barTop = 60, barBot = h - 20;
+      var zMin = cfg.zMin, zMax = cfg.zMax;
+      if (zMin == null || zMax == null || !(zMax > zMin)) return;
+      var txt = _legendTextColor();
+      var range = zMax - zMin;
+      var barTop = 8, barBot = h - 10;
       var barH = barBot - barTop;
 
-      // Draw gradient bar: top = high (red), bottom = low (blue)
+      // Gradient bar (top = high, bottom = low)
       for (var y = 0; y < barH; y++) {
-        var t = 1 - (y / barH); // top=1, bottom=0
-        var color = elevationToRGBA(zMin + t * (zMax - zMin), zMin, zMax);
+        var tt = 1 - (y / barH);
+        var color = elevationToRGBA(zMin + tt * range, zMin, zMax);
         ctx.fillStyle = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
         ctx.fillRect(barX, barTop + y, barW, 1);
       }
-
-      ctx.strokeStyle = '#aaa';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#aaa'; ctx.lineWidth = 1;
       ctx.strokeRect(barX, barTop, barW, barH);
 
-      // Use the contour step for legend ticks so they match contour lines
-      var range = zMax - zMin;
-      var step = elevationContourStep;
-      // If step would give too many ticks on the legend, use multiples
-      var nTicks = Math.floor(range / step);
-      var legendStep = step;
-      if (nTicks > 12) {
-        var mult = Math.ceil(nTicks / 8);
-        legendStep = step * mult;
-      }
-
-      // Determine decimal places from step
-      var decimals = 0;
-      if (legendStep < 0.01) decimals = 3;
-      else if (legendStep < 0.1) decimals = 2;
-      else if (legendStep < 1) decimals = 1;
-
-      var tickLen = 6;
-      var labelRight = barX - 8;
-
-      // Draw ticks with labels on the LEFT side of the bar, right-justified
-      ctx.font = '16px sans-serif';
-      ctx.textBaseline = 'middle';
-
-      var firstTick = Math.ceil(zMin / legendStep) * legendStep;
-      for (var v = firstTick; v <= zMax + legendStep * 0.01; v += legendStep) {
-        if (v < zMin || v > zMax) continue;
-        var t = (v - zMin) / range;
-        var yPos = barTop + barH * (1 - t);
-
-        // Tick line
-        ctx.strokeStyle = '#ccc';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(barX - tickLen, yPos);
-        ctx.lineTo(barX, yPos);
-        ctx.stroke();
-
-        // Label
-        ctx.fillStyle = '#fff';
-        ctx.textAlign = 'right';
+      // N evenly-spaced ticks/labels (density = cfg.legendTicks, min 2)
+      var nT = Math.max(2, Math.min(60, Math.round(cfg.legendTicks || 8)));
+      var tickLen = 6, labelRight = barX - 8;
+      ctx.font = '14px sans-serif'; ctx.textBaseline = 'middle';
+      for (var k = 0; k < nT; k++) {
+        var frac = k / (nT - 1);              // 0 (bottom) .. 1 (top)
+        var v = zMin + frac * range;
+        var yPos = barTop + barH * (1 - frac);
+        ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(barX - tickLen, yPos); ctx.lineTo(barX, yPos); ctx.stroke();
+        ctx.fillStyle = txt; ctx.textAlign = 'right';
         ctx.fillText(fmtLenVal(v), labelRight, yPos);
       }
+    }
 
-      // Title
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 22px sans-serif';
-      ctx.textAlign = 'center';
-      var centerX = (labelRight + barX + barW) / 2;
-      if (elevationMode === 'plane') {
-        ctx.fillText('Deviation', centerX, 18);
-        ctx.font = 'bold 18px sans-serif';
-        ctx.fillText(unitTitle(), centerX, 40);
-      } else {
-        ctx.fillText('Elevation', centerX, 18);
-        ctx.font = 'bold 18px sans-serif';
-        ctx.fillText(unitTitle(), centerX, 40);
+    // Rebuild the whole legend row: one legend per active, painting box.
+    function rebuildElevationLegends() {
+      var stack = document.getElementById('heatmap-legend-stack');
+      if (!stack) return;
+      stack.innerHTML = '';
+      // One legend per COMPUTED (cfg.active), not-hidden, valid-range box. Iterate the
+      // volumes directly (buildActiveBoxDrawList returns draw ENTRIES, not volumes, so
+      // it can't give us the box name) using the same filter it applies.
+      for (var i = 0; i < elevationCropVolumes.length; i++) {
+        var vol = elevationCropVolumes[i];
+        if (vol._disabled) continue;
+        var cfg = getBoxConfig(vol);
+        if (!cfg.active || cfg.heatmapHidden) continue;
+        if (cfg.zMin == null || cfg.zMax == null || !(cfg.zMax > cfg.zMin)) continue;
+        var item = document.createElement('div');
+        item.className = 'heatmap-legend-item';
+        // Title block (box name, larger) + unit (smaller), bottom-aligned so bars line up.
+        var head = document.createElement('div');
+        head.className = 'heatmap-legend-head';
+        var nm = document.createElement('div');
+        nm.className = 'heatmap-legend-name';
+        nm.textContent = vol.name || 'Box';
+        nm.style.color = _legendTextColor();
+        var un = document.createElement('div');
+        un.className = 'heatmap-legend-unit';
+        un.textContent = UNIT_MODE === 'mm' ? '(m)' : '(ft-in)';
+        un.style.color = _legendTextColor();
+        head.appendChild(nm); head.appendChild(un);
+        // Size the canvas so the bar is CENTERED (symmetric margins = label width),
+        // and set the title block to the same width so its centred text lands over
+        // the bar. Adapts to short (metric) vs wide (imperial) tick labels.
+        var _barW = 34, _tickPad = 14;
+        var _labelW = Math.ceil(_legendMaxLabelWidth(cfg));
+        var _margin = _labelW + _tickPad;         // room for labels + tick, both sides (centres the bar)
+        var _cw = _margin * 2 + _barW;
+        var cv = document.createElement('canvas');
+        cv.width = _cw; cv.height = 430;
+        head.style.width = _cw + 'px';
+        item.appendChild(head); item.appendChild(cv);
+        stack.appendChild(item);
+        renderBoxLegend(cv, cfg, _margin, _barW);
       }
-
-      document.getElementById('heatmap-legend').style.display = 'block';
+      stack.style.display = stack.children.length ? 'flex' : 'none';
     }
 
     function hideElevationLegend() {
-      var el = document.getElementById('heatmap-legend');
+      var el = document.getElementById('heatmap-legend-stack');
       if (el) el.style.display = 'none';
     }
 
@@ -10174,6 +10306,35 @@
       rebuildElevationBoxList();
     }
 
+    // Inline rename editor for an elevation box (used by the left-list name AND,
+    // via the __dev2 bridge, the right-panel header). Enter/blur commits, Esc cancels;
+    // rebuild refreshes both toolbars + the legend title (which reads vol.name).
+    function _editElevName(spanEl, vol) {
+      if (!spanEl || !vol) return;
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.value = vol.name || '';
+      input.style.cssText = 'flex:1;min-width:0;font:inherit;font-weight:700;padding:1px 4px;' +
+        'border:1px solid var(--accent,#4db6ff);border-radius:3px;background:var(--panel-bg,#3a3a3a);color:var(--sidebar-text,#fbfbfb)';
+      spanEl.replaceWith(input);
+      input.focus(); input.select();
+      var done = false;
+      function commit(save) {
+        if (done) return; done = true;
+        var nv = input.value.trim();
+        if (save && nv) vol.name = nv;
+        rebuildElevationBoxList();   // restores the span; refreshes list + legend title
+      }
+      input.addEventListener('keydown', function (e) {
+        e.stopPropagation();   // never leak Enter/Esc/letters to global shortcuts
+        if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+      });
+      input.addEventListener('blur', function () { commit(true); });
+      input.addEventListener('click', function (e) { e.stopPropagation(); });
+      input.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    }
+
     function rebuildElevationBoxList() {
       var list = document.getElementById('enable-elevation-box-list');
       if (!list) return;
@@ -10210,8 +10371,10 @@
           dot.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:50%;background:' + accent + ';flex:none';
 
           var nameSpan = document.createElement('span');
-          nameSpan.style.cssText = 'flex:1;font-weight:700;letter-spacing:0.2px';
+          nameSpan.style.cssText = 'flex:1;font-weight:700;letter-spacing:0.2px;cursor:text';
           nameSpan.textContent = vol.name;
+          nameSpan.title = 'Double-click to rename';
+          (function(v){ nameSpan.addEventListener('dblclick', function(e){ e.stopPropagation(); _editElevName(nameSpan, v); }); })(vol);
 
           var badge = document.createElement('span');
           var badgeText, badgeBg, badgeColor;
@@ -10291,19 +10454,20 @@
           // Z-mode: Z=0 base mark picker
           if (cfg.mode === 'z') {
             var zbRow = document.createElement('div');
-            zbRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0';
-            zbRow.innerHTML = '<span style="min-width:60px">Z=0 base:</span>';
+            zbRow.style.cssText = 'display:flex;align-items:center;gap:5px;margin:4px 0';
+            zbRow.innerHTML = '<span style="opacity:0.85">Datum:</span>';
             var zbLabel = document.createElement('span');
-            zbLabel.style.cssText = 'flex:1;color:var(--muted,#9aa3b2);font-size:10px';
+            zbLabel.style.cssText = 'flex:1;color:var(--muted,#9aa3b2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+            // Just the mark label (e.g. "P1"); its z value lives in the left toolbar.
             var baseName = '';
             if (cfg.zBaseMarkId != null) {
               for (var zi = 0; zi < markedPoints.length; zi++) {
                 if (markedPoints[zi].id === cfg.zBaseMarkId) {
-                  baseName = markedPoints[zi].name + ' (z=' + markedPoints[zi].visual.position.z.toFixed(3) + ')';
+                  baseName = markedPoints[zi].name;
                   break;
                 }
               }
-              if (!baseName) baseName = '(mark deleted)';
+              if (!baseName) baseName = '(deleted)';
             }
             zbLabel.textContent = baseName || 'Not set';
             var zbPickBtn = document.createElement('button');
@@ -10508,10 +10672,18 @@
           // map for the new bounds.
           panel.appendChild(computeRow);
 
-          // Min / Max / Contour step — per-box overrides (blank = auto-detect on compute)
           var inputStyle = 'width:100%;padding:2px 4px;border:1px solid var(--border,#333);border-radius:3px;background:var(--panel-bg,#6b6b6b);color:var(--sidebar-text,#fbfbfb);font:11px sans-serif';
+          var subHdrStyle = 'font-size:10px;font-weight:600;color:var(--sidebar-text,#fbfbfb);opacity:0.85;margin:7px 0 2px';
+
+          // --- Heat-map colour RANGE (min/max of the elevation/deviation scale) ---
+          var rangeHdr = document.createElement('div');
+          rangeHdr.style.cssText = subHdrStyle;
+          rangeHdr.innerHTML = (cfg.mode === 'plane' ? 'Deviation' : 'Elevation') + ' colour range' +
+            '<span style="display:block;font-weight:400;opacity:0.65;margin-top:1px">blank = auto</span>';
+          panel.appendChild(rangeHdr);
+
           var rangeRow = document.createElement('div');
-          rangeRow.style.cssText = 'display:flex;gap:4px;margin:4px 0';
+          rangeRow.style.cssText = 'display:flex;gap:4px;margin:2px 0';
           var minCol = document.createElement('div');
           minCol.style.cssText = 'flex:1';
           minCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Min (' + inputUnitLabel() + ')</div>';
@@ -10534,21 +10706,40 @@
           if (cfg.zMax !== null && cfg.zMax !== undefined) maxInput.value = lenToInputStr(cfg.zMax);
           maxCol.appendChild(maxInput);
 
-          var stepCol = document.createElement('div');
-          stepCol.style.cssText = 'flex:1';
-          stepCol.innerHTML = '<div style="font-size:10px;color:var(--muted,#9aa3b2);margin-bottom:2px">Contour (' + inputUnitLabel() + ')</div>';
+          rangeRow.appendChild(minCol);
+          rangeRow.appendChild(maxCol);
+          panel.appendChild(rangeRow);
+
+          // --- Contour interval — its OWN line (a separate thing from the range) ---
+          var contourHdr = document.createElement('div');
+          contourHdr.style.cssText = subHdrStyle;
+          contourHdr.textContent = 'Contour interval (' + inputUnitLabel() + ')';
+          panel.appendChild(contourHdr);
           var stepInput = document.createElement('input');
           stepInput.type = 'number';
           stepInput.step = (inputUnitLabel() === 'm' ? '0.01' : '0.05');
           stepInput.min = '0';
-          stepInput.style.cssText = inputStyle;
+          stepInput.style.cssText = inputStyle + ';margin:2px 0';
           stepInput.value = lenToInputStr(cfg.contourStep != null ? cfg.contourStep : 0.05);
-          stepCol.appendChild(stepInput);
+          panel.appendChild(stepInput);
 
-          rangeRow.appendChild(minCol);
-          rangeRow.appendChild(maxCol);
-          rangeRow.appendChild(stepCol);
-          panel.appendChild(rangeRow);
+          // --- Legend density — ticks/labels on THIS box's colour legend ---
+          var legHdr = document.createElement('div');
+          legHdr.style.cssText = subHdrStyle;
+          legHdr.textContent = 'Legend ticks (density)';
+          panel.appendChild(legHdr);
+          var legInput = document.createElement('input');
+          legInput.type = 'number';
+          legInput.min = '2'; legInput.max = '60'; legInput.step = '1';
+          legInput.style.cssText = inputStyle + ';margin:2px 0';
+          legInput.value = String(Math.round(cfg.legendTicks || 8));
+          legInput.addEventListener('change', function () {
+            var n = parseInt(legInput.value, 10);
+            if (isNaN(n) || n < 2) n = 2; if (n > 60) n = 60;
+            cfg.legendTicks = n; legInput.value = String(n);
+            rebuildElevationLegends();   // live density update on this box's legend
+          });
+          panel.appendChild(legInput);
 
           var applyRow = document.createElement('div');
           applyRow.style.cssText = 'display:flex;gap:4px;margin:4px 0';
@@ -10564,15 +10755,27 @@
             if (mx !== null && isNaN(mx)) { showToast('Invalid max'); return; }
             if (mn !== null && mx !== null && mn >= mx) { showToast('Min must be < Max'); return; }
             if (isNaN(sp) || sp <= 0) { showToast('Invalid contour step'); return; }
-            if (mn !== null) cfg.zMin = mn;
-            if (mx !== null) cfg.zMax = mx;
+            // Always write both — a BLANK field means "auto" and must RESET the
+            // stored override to null (previously blank was ignored, so clearing a
+            // field silently kept the old value instead of reverting to auto).
+            cfg.zMin = mn;
+            cfg.zMax = mx;
             cfg.contourStep = sp;
 
             if (cfg.active && elevationActive && elevationPositions) {
-              recolorElevatedNodes();
-              updateElevationLegend(cfg.zMin, cfg.zMax);
-              if (cfg.contoursVisible) buildBoxContours(vol);
-              showToast('Applied');
+              if (mn === null || mx === null) {
+                // Auto requested → re-detect the range from the box's CURRENT points
+                // (picks up any resize since the last compute). Same path as Compute.
+                _selectedElevBox = vol;
+                syncElevGlobals();
+                onComputeElevation();
+                showToast('Recomputed (auto range)');
+              } else {
+                recolorElevatedNodes();
+                rebuildElevationLegends();
+                if (cfg.contoursVisible) buildBoxContours(vol);
+                showToast('Applied');
+              }
             } else {
               showToast('Saved — will be used on next Compute');
             }
@@ -10616,6 +10819,9 @@
           list.appendChild(wrapper);
         })(i);
       }
+      // Keep the per-box legend row in sync with the box list (add / remove / hide /
+      // deactivate / rename all funnel through here).
+      try { rebuildElevationLegends(); } catch (e) {}
     }
 
     // ===== COMPUTE PROGRESS OVERLAY =====
@@ -10918,6 +11124,13 @@
           var tsMin = Infinity, tsMax = -Infinity;
           var planeGrid = selCfg.planeSurfGrid, zGrid = selCfg.surfaceGrid;
           var thickGrid = selCfg.thicknessGrid;
+          // Robust auto-range: histogram the TOP-SURFACE elevations, then take a
+          // percentile band (below) instead of raw min/max — so a few outlier points
+          // (noise spikes, a stray floor/ceiling return) don't blow the colour range
+          // out toward the box's full height. Reflects where the bulk of the surface
+          // actually sits (i.e. the spread of the points, not the box dimensions).
+          var _histLo = zMin, _histHi = zMax, _histSpan = _histHi - _histLo;
+          var _NB = 1024, _hist = new Int32Array(_NB), _nSurf = 0;
           for (var i = 0; i < count; i++) {
             var px = elevationPositions[i * 3];
             var py = elevationPositions[i * 3 + 1];
@@ -10940,8 +11153,23 @@
             }
             if (e < tsMin) tsMin = e;
             if (e > tsMax) tsMax = e;
+            if (_histSpan > 0) {
+              var _bi = ((e - _histLo) / _histSpan * _NB) | 0;
+              if (_bi < 0) _bi = 0; else if (_bi >= _NB) _bi = _NB - 1;
+              _hist[_bi]++; _nSurf++;
+            }
           }
-          if (tsMin < tsMax) { zMin = tsMin; zMax = tsMax; }
+          if (_nSurf > 50 && _histSpan > 0) {
+            // 1st..99th percentile of the surface elevations (drop the outlier tails).
+            var _loT = _nSurf * 0.01, _hiT = _nSurf * 0.99, _cum = 0, _bLo = 0, _bHi = _NB - 1;
+            for (var _b = 0; _b < _NB; _b++) { _cum += _hist[_b]; if (_cum >= _loT) { _bLo = _b; break; } }
+            _cum = 0;
+            for (var _b2 = 0; _b2 < _NB; _b2++) { _cum += _hist[_b2]; if (_cum >= _hiT) { _bHi = _b2; break; } }
+            var _rMin = _histLo + (_bLo / _NB) * _histSpan;
+            var _rMax = _histLo + ((_bHi + 1) / _NB) * _histSpan;
+            if (_rMax > _rMin) { zMin = _rMin; zMax = _rMax; }
+            else if (tsMin < tsMax) { zMin = tsMin; zMax = tsMax; }
+          } else if (tsMin < tsMax) { zMin = tsMin; zMax = tsMax; }
         }
 
         if (zMin >= zMax) {
@@ -10976,7 +11204,7 @@
 
         setComputeProgress('Coloring points...');
         applyElevationColors(elevationPositions, elevationNodeMap);
-        updateElevationLegend(zMin, zMax);
+        rebuildElevationLegends();
         elevationActive = true;
 
         elevationColoredNodes.clear();
@@ -11070,7 +11298,7 @@
         for (var ni = 0; ni < elevationNodeMap.length; ni++) {
           elevationColoredNodes.add(elevationNodeMap[ni].geometryNode);
         }
-        updateElevationLegend(zMin, zMax);
+        rebuildElevationLegends();
         if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply'; }
         $('#enable-elevation-status').text('');
         showToast('Range updated');
@@ -11107,7 +11335,7 @@
         for (var i = 0; i < elevationCropVolumes.length; i++) {
           var c2 = getBoxConfig(elevationCropVolumes[i]);
           if (c2.active) {
-            updateElevationLegend(c2.zMin, c2.zMax);
+            rebuildElevationLegends();
             elevationZMin = c2.zMin;
             elevationZMax = c2.zMax;
             break;
@@ -11405,6 +11633,34 @@
     // >=1 focus box exists, so the plain edlOpacity fade is untouched otherwise.
     var _focusCounter = 0;
     var focusBoxes = [];
+    // When a focus box exists, picking/snapping is RESTRICTED to inside the focus
+    // box(es) for every tool (regardless of the outside opacity) — you can't place
+    // or snap onto the dimmed points outside. The Scans-panel toggle flips this on
+    // to allow outside picks again. Default false = restrict.
+    var _focusSnapOutside = false;
+    var _fbInvMat = new THREE.Matrix4();
+    var _fbTmpVec = new THREE.Vector3();
+    function _isInsideAnyFocusBox(pos) {
+      for (var i = 0; i < focusBoxes.length; i++) {
+        var v = focusBoxes[i];
+        if (v._disabled) continue;
+        v.updateMatrixWorld(true);
+        _fbInvMat.copy(v.matrixWorld).invert();
+        _fbTmpVec.copy(pos).applyMatrix4(_fbInvMat);
+        if (_fbTmpVec.x >= -0.5 && _fbTmpVec.x <= 0.5 &&
+            _fbTmpVec.y >= -0.5 && _fbTmpVec.y <= 0.5 &&
+            _fbTmpVec.z >= -0.5 && _fbTmpVec.z <= 0.5) return true;
+      }
+      return false;
+    }
+    // True when a pick at `loc` must be REJECTED because it's outside the focus box(es).
+    function _focusBlocksPick(loc) {
+      if (_focusSnapOutside || !loc) return false;
+      var active = false;
+      for (var i = 0; i < focusBoxes.length; i++) { if (!focusBoxes[i]._disabled) { active = true; break; } }
+      if (!active) return false;
+      return !_isInsideAnyFocusBox(loc);
+    }
     // Single source of truth for the global (outside-focus) opacity, mirrored by
     // the "Point cloud opacity" slider. Initialized from the current edlOpacity.
     var _pcOpacityLogical = (viewer.edlOpacity != null ? viewer.edlOpacity : 1);
@@ -11815,6 +12071,299 @@
       }
     });
 
+    // ============================================================
+    // COLOR GROUPS — draw a 2D polygon; every point that projects
+    // inside it (unlimited depth — combine with clip/focus boxes to
+    // limit depth) gets tinted toward the group's colour. Groups
+    // toggle on/off. The tint is BAKED into each node's colour buffer
+    // and re-applied as LOD nodes stream in, so it scales to many
+    // regions across a whole building. Entirely viewer-local.
+    // ============================================================
+    var colorGroups = [];        // { id, name, color:[r,g,b] 0-255, enabled, strokes:[{vp:Float32Array(16), ndc:Float32Array(2n)}] }
+    var _cgCounter = 0;
+    var _cgActiveId = null;      // group that new regions are added to
+    var _cgSelectedId = null;    // group whose settings show in the right panel
+    var _cgPaintVersion = 0;     // bump to force a re-bake of visible nodes
+    var _cgTint = 0.6;           // 0..1 blend of group colour over original RGB
+    var _cgDrawing = false;
+    var _CG_PALETTE = [[62,173,74],[232,74,74],[64,132,240],[240,176,32],[168,90,220],[0,180,180],[240,120,40],[236,72,153]];
+
+    function _cgFind(id){ for (var i=0;i<colorGroups.length;i++) if (colorGroups[i].id===id) return colorGroups[i]; return null; }
+    function _cgNextColor(){ return _CG_PALETTE[_cgCounter % _CG_PALETTE.length].slice(); }
+    function _cgRgbToHex(c){ function h(n){ n=Math.max(0,Math.min(255,n|0)).toString(16); return n.length<2?'0'+n:n; } return '#'+h(c[0])+h(c[1])+h(c[2]); }
+    function _cgHexToRgb(s){ s=s.replace('#',''); return [parseInt(s.substr(0,2),16),parseInt(s.substr(2,2),16),parseInt(s.substr(4,2),16)]; }
+
+    function addColorGroup(name, color) {
+      var g = { id:'cg-'+(++_cgCounter), name: name || ('Group '+_cgCounter), color: color || _cgNextColor(), enabled:true, strokes:[] };
+      colorGroups.push(g);
+      _cgActiveId = g.id;
+      rebuildColorGroupList();
+      return g;
+    }
+    function removeColorGroup(id) {
+      for (var i=0;i<colorGroups.length;i++){ if (colorGroups[i].id===id){ colorGroups.splice(i,1); break; } }
+      if (_cgActiveId===id) _cgActiveId = colorGroups.length ? colorGroups[colorGroups.length-1].id : null;
+      if (_cgSelectedId===id){ _cgSelectedId=null; _cgHidePanel(); }
+      _cgBump(); rebuildColorGroupList();
+    }
+    function clearAllColorGroups() {
+      colorGroups = []; _cgActiveId=null; _cgSelectedId=null;
+      _cgHidePanel(); _cgBump(); rebuildColorGroupList();
+    }
+    function _cgBump(){ _cgPaintVersion++; if (viewer.repaint) viewer.repaint(); }
+
+    // -- point-in-polygon (crossing number), verts flat [x0,y0,x1,y1,...] in NDC --
+    function _cgPointInPoly(x, y, v) {
+      var inside=false, n=v.length/2;
+      for (var i=0, j=n-1; i<n; j=i++){
+        var yi=v[i*2+1], yj=v[j*2+1];
+        if ((yi>y)!==(yj>y)){
+          var xi=v[i*2], xj=v[j*2];
+          if (x < (xj-xi)*(y-yi)/(yj-yi) + xi) inside = !inside;
+        }
+      }
+      return inside;
+    }
+
+    // -- bake the enabled groups' strokes into one octree node's colours --
+    function _cgPaintNode(node) {
+      var gn = node.geometryNode; if (!gn || !gn.geometry) return false;
+      var geom = gn.geometry;
+      // PotreeConverter binary octrees expose colour as 'rgba' (Uint8x4 normalized);
+      // the on-the-fly LAS path uses 'color'. Support both.
+      var colAttr = geom.attributes.rgba || geom.attributes.color, posAttr = geom.attributes.position;
+      if (!colAttr || !posAttr || !node.sceneNode) { node._cgVersion = _cgPaintVersion; return false; }
+
+      var strokes = [];
+      for (var gi=0; gi<colorGroups.length; gi++){
+        var g = colorGroups[gi]; if (!g.enabled) continue;
+        for (var si=0; si<g.strokes.length; si++) strokes.push({ s:g.strokes[si], c:g.color });
+      }
+      if (strokes.length === 0) {
+        if (node._cgOrigColor){ colAttr.array.set(node._cgOrigColor); colAttr.needsUpdate = true; node._cgVersion = _cgPaintVersion; return true; }
+        node._cgVersion = _cgPaintVersion; return false;
+      }
+      if (!node._cgOrigColor) node._cgOrigColor = colAttr.array.slice();
+      var orig = node._cgOrigColor, col = colAttr.array, pos = posAttr.array, count = posAttr.count;
+      var e = node.sceneNode.matrixWorld.elements;
+      var m0=e[0],m1=e[1],m2=e[2],m4=e[4],m5=e[5],m6=e[6],m8=e[8],m9=e[9],m10=e[10],m12=e[12],m13=e[13],m14=e[14];
+      var t=_cgTint, it=1-t;
+      for (var i=0;i<count;i++){
+        var lx=pos[i*3], ly=pos[i*3+1], lz=pos[i*3+2];
+        var wx=m0*lx+m4*ly+m8*lz+m12, wy=m1*lx+m5*ly+m9*lz+m13, wz=m2*lx+m6*ly+m10*lz+m14;
+        var cr=-1, cg=-1, cb=-1;
+        for (var k=0;k<strokes.length;k++){
+          var vp=strokes[k].s.vp;
+          var cw=vp[3]*wx+vp[7]*wy+vp[11]*wz+vp[15];
+          if (cw<=0) continue;
+          var nx=(vp[0]*wx+vp[4]*wy+vp[8]*wz+vp[12])/cw;
+          if (nx<-1||nx>1) continue;
+          var ny=(vp[1]*wx+vp[5]*wy+vp[9]*wz+vp[13])/cw;
+          if (ny<-1||ny>1) continue;
+          if (_cgPointInPoly(nx,ny,strokes[k].s.ndc)){ var cc=strokes[k].c; cr=cc[0]; cg=cc[1]; cb=cc[2]; }
+        }
+        var o=i*4;
+        if (cr>=0){ col[o]=(orig[o]*it+cr*t)|0; col[o+1]=(orig[o+1]*it+cg*t)|0; col[o+2]=(orig[o+2]*it+cb*t)|0; col[o+3]=orig[o+3]; }
+        else { col[o]=orig[o]; col[o+1]=orig[o+1]; col[o+2]=orig[o+2]; col[o+3]=orig[o+3]; }
+      }
+      colAttr.needsUpdate = true;
+      node._cgVersion = _cgPaintVersion;
+      return true;
+    }
+
+    // Re-bake stale visible nodes a few per frame (avoids a hard freeze on
+    // big changes); newly streamed LOD nodes get painted automatically.
+    viewer.addEventListener('update', function() {
+      var pcs = viewer.scene.pointclouds; if (!pcs || !pcs.length) return;
+      var budget = 6;
+      for (var p=0; p<pcs.length && budget>0; p++){
+        var vn = pcs[p].visibleNodes; if (!vn) continue;
+        for (var n=0; n<vn.length && budget>0; n++){
+          var node = vn[n];
+          if (node._cgVersion === _cgPaintVersion) continue;
+          if (_cgPaintNode(node)) budget--;
+        }
+      }
+    });
+
+    // -- polygon-draw overlay (passive SVG) + capture-phase input --
+    // The overlay is pointer-events:none so it NEVER blocks the viewer. We watch
+    // pointer events in the capture phase and treat only a CLEAN click (no drag) as
+    // a polygon vertex — so left-drag orbit, right-drag pan and wheel zoom all keep
+    // working while you draw.
+    var _cgOverlay = null, _cgPts = [], _cgMoveXY = null, _cgDown = null;
+    function _cgEnsureOverlay() {
+      if (_cgOverlay) return _cgOverlay;
+      var NS='http://www.w3.org/2000/svg';
+      var svg = document.createElementNS(NS,'svg');
+      svg.setAttribute('id','enable-colorize-overlay');
+      svg.style.cssText='position:absolute;inset:0;width:100%;height:100%;z-index:50;pointer-events:none;display:none';
+      var fill = document.createElementNS(NS,'polygon');
+      fill.setAttribute('fill','rgba(255,255,255,0.12)'); fill.setAttribute('stroke','none');
+      var poly = document.createElementNS(NS,'polyline');
+      poly.setAttribute('fill','none'); poly.setAttribute('stroke','#fff'); poly.setAttribute('stroke-width','1.5'); poly.setAttribute('stroke-dasharray','5 4');
+      svg.appendChild(fill); svg.appendChild(poly);
+      renderArea.appendChild(svg);
+      _cgOverlay = { svg:svg, poly:poly, fill:fill };
+      return _cgOverlay;
+    }
+    function _cgXY(ev){ var r=renderArea.getBoundingClientRect(); return { x:ev.clientX-r.left, y:ev.clientY-r.top }; }
+
+    // While a polygon is IN PROGRESS (>=1 vertex placed) navigation is FROZEN:
+    // intercept mouse/wheel events at the document capture phase — ahead of both
+    // Potree's InputHandler and the app's capture-phase pan handler — and swallow
+    // them. With ZERO vertices (tool active but between polygons, e.g. right after
+    // Enter) nothing is blocked, so orbit / pan / zoom work normally.
+    var _CG_EVT = ['mousedown','mouseup','mousemove','click','dblclick','wheel','mousewheel','DOMMouseScroll','contextmenu'];
+    function _cgOnDocEvent(ev){
+      if (!_cgDrawing) return;
+      if (ev.target !== renderArea && !renderArea.contains(ev.target)) return;
+      var wasActive = _cgPts.length >= 1;   // freeze only once a polygon is under way
+      var type = ev.type;
+      if (type==='mousedown'){ _cgDown={ x:ev.clientX, y:ev.clientY, btn:ev.button }; }
+      else if (type==='mousemove'){ _cgMoveXY=_cgXY(ev); _cgRedraw(); }
+      else if (type==='mouseup' && _cgDown){
+        var moved=Math.hypot(ev.clientX-_cgDown.x, ev.clientY-_cgDown.y), btn=_cgDown.btn; _cgDown=null;
+        if (moved<=6){                        // a clean click (drags orbit/pan instead)
+          if (btn===2){ _cgFinish(); }        // clean right-click closes the region
+          else if (btn===0){
+            var p=_cgXY(ev), done=false;
+            if (_cgPts.length>=3){ var f=_cgPts[0]; if (Math.hypot(p.x-f.x,p.y-f.y)<10){ _cgFinish(); done=true; } }
+            if (!done){ _cgPts.push(p); _cgRedraw(); }
+          }
+        }
+      }
+      else if (type==='dblclick'){
+        if (_cgPts.length>=2){ var a=_cgPts[_cgPts.length-1], b=_cgPts[_cgPts.length-2]; if (Math.hypot(a.x-b.x,a.y-b.y)<8) _cgPts.pop(); }
+        _cgFinish();
+      }
+      if (wasActive){ ev.stopImmediatePropagation(); if (ev.cancelable) ev.preventDefault(); }
+    }
+    for (var _cgi=0; _cgi<_CG_EVT.length; _cgi++) document.addEventListener(_CG_EVT[_cgi], _cgOnDocEvent, { capture:true, passive:false });
+    function _cgRedraw(){
+      if (!_cgOverlay) return;
+      var lp=[]; for (var i=0;i<_cgPts.length;i++) lp.push(_cgPts[i].x+','+_cgPts[i].y);
+      var line=lp.slice(); if (_cgDrawing && _cgMoveXY && _cgPts.length>0) line.push(_cgMoveXY.x+','+_cgMoveXY.y);
+      _cgOverlay.poly.setAttribute('points', line.join(' '));
+      _cgOverlay.fill.setAttribute('points', _cgPts.length>=3 ? lp.join(' ') : '');
+    }
+    function _cgSetCursor(on){
+      renderArea.style.cursor = on ? 'crosshair' : '';
+      var cv=renderArea.querySelector('canvas'); if (cv) cv.style.cursor = on ? 'crosshair' : '';
+    }
+    function startColorizeDraw(){
+      if (!viewer.scene.pointclouds.length){ _cgToast('No point cloud loaded'); return; }
+      if (!_cgFind(_cgActiveId)) addColorGroup();
+      _cgEnsureOverlay();
+      _cgDrawing=true; _cgPts=[]; _cgMoveXY=null; _cgDown=null;
+      _cgOverlay.svg.style.display=''; _cgSetCursor(true); _cgRedraw();
+      var g=_cgFind(_cgActiveId);
+      _cgToast('Colouring into "'+(g?g.name:'group')+'". Click to drop points — navigation locks while a region is open. Right-click / double-click / Enter closes it, then orbit & zoom freely before the next one. Esc to stop.');
+    }
+    function _cgStopDraw(){ _cgDrawing=false; _cgPts=[]; _cgMoveXY=null; _cgDown=null; _cgSetCursor(false); if (_cgOverlay){ _cgOverlay.svg.style.display='none'; _cgRedraw(); } }
+    function _cgFinish(){
+      if (_cgPts.length>=3){
+        var g=_cgFind(_cgActiveId) || addColorGroup(); _cgActiveId=g.id;
+        var cam=viewer.scene.getActiveCamera(); cam.updateMatrixWorld(true);
+        var vp=new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+        var W=renderArea.clientWidth, H=renderArea.clientHeight;
+        var ndc=new Float32Array(_cgPts.length*2);
+        for (var i=0;i<_cgPts.length;i++){ ndc[i*2]=(_cgPts[i].x/W)*2-1; ndc[i*2+1]=-((_cgPts[i].y/H)*2-1); }
+        g.strokes.push({ vp:Float32Array.from(vp.elements), ndc:ndc });
+        _cgBump(); rebuildColorGroupList();
+        _cgToast('Region added to "'+g.name+'". Draw another, or Esc to finish.');
+      }
+      _cgPts=[]; _cgMoveXY=null; _cgRedraw();
+    }
+    document.addEventListener('keydown', function(ev){
+      if (!_cgDrawing) return;
+      var tn=ev.target && ev.target.tagName;
+      if (tn==='INPUT'||tn==='TEXTAREA'||(ev.target && ev.target.isContentEditable)) return;
+      if (ev.key==='Escape'){ _cgStopDraw(); _cgToast('Colourize draw finished'); }
+      else if (ev.key==='Enter'){ ev.preventDefault(); _cgFinish(); }
+    }, true);
+
+    var _cgToastEl=null, _cgToastT=null;
+    function _cgToast(msg){
+      if (!_cgToastEl){
+        _cgToastEl=document.createElement('div');
+        _cgToastEl.style.cssText='position:absolute;left:50%;bottom:24px;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#fff;font:12px/1.4 sans-serif;padding:7px 12px;border-radius:6px;z-index:60;pointer-events:none;max-width:70%;text-align:center';
+        renderArea.appendChild(_cgToastEl);
+      }
+      _cgToastEl.textContent=msg; _cgToastEl.style.display='';
+      if (_cgToastT) clearTimeout(_cgToastT);
+      _cgToastT=setTimeout(function(){ if (_cgToastEl) _cgToastEl.style.display='none'; }, 4000);
+    }
+
+    // -- left-panel group list --
+    function rebuildColorGroupList(){
+      var list=document.getElementById('enable-colorgroup-list'); if (!list) return;
+      list.innerHTML='';
+      var clr=document.getElementById('btn-colorize-clear'); if (clr) clr.style.display = colorGroups.length>0 ? '' : 'none';
+      if (!colorGroups.length){
+        var hint=document.createElement('div');
+        hint.style.cssText='font:11px/1.4 sans-serif;opacity:0.6;color:var(--sidebar-text,#fbfbfb);margin:2px 0';
+        hint.textContent='No colour groups yet — use Colourize ▸ New colour group, then Draw region.';
+        list.appendChild(hint); return;
+      }
+      colorGroups.forEach(function(g){
+        var active=g.id===_cgActiveId;
+        var row=document.createElement('div');
+        row.style.cssText='display:flex;align-items:center;gap:6px;margin:2px 0;font:12px/1.3 sans-serif;color:var(--sidebar-text,#fbfbfb);padding:1px 3px'+(active?';background:rgba(255,255,255,0.08);border-radius:4px':'');
+        var sw=document.createElement('button');
+        sw.title='Edit this group’s colour';
+        sw.style.cssText='width:14px;height:14px;border-radius:3px;border:1px solid rgba(255,255,255,0.4);cursor:pointer;flex:0 0 auto;background:rgb('+g.color[0]+','+g.color[1]+','+g.color[2]+')';
+        sw.addEventListener('click', function(e){ e.stopPropagation(); _cgActiveId=g.id; _cgSelectGroup(g.id); rebuildColorGroupList(); });
+        var nameSpan=document.createElement('span');
+        nameSpan.style.cssText='flex:1;cursor:pointer'+(active?';font-weight:600':'');
+        nameSpan.textContent=g.name+(g.strokes.length?' ('+g.strokes.length+')':'');
+        nameSpan.title='Click to make active & edit';
+        nameSpan.addEventListener('click', function(){ _cgActiveId=g.id; _cgSelectGroup(g.id); rebuildColorGroupList(); });
+        var eyeBtn=document.createElement('button');
+        eyeBtn.textContent=g.enabled?'\u{1F441}':'—';
+        eyeBtn.title='Show/hide this group’s colouring';
+        eyeBtn.style.cssText='background:none;border:none;color:var(--sidebar-text,#fbfbfb);cursor:pointer;font-size:14px;padding:2px 4px';
+        eyeBtn.addEventListener('click', function(e){ e.stopPropagation(); g.enabled=!g.enabled; _cgBump(); rebuildColorGroupList(); });
+        var delBtn=document.createElement('button');
+        delBtn.textContent='✕'; delBtn.title='Delete this group';
+        delBtn.style.cssText='background:none;border:none;color:#f44;cursor:pointer;font-size:14px;padding:2px 4px';
+        delBtn.addEventListener('click', function(e){ e.stopPropagation(); removeColorGroup(g.id); });
+        row.appendChild(sw); row.appendChild(nameSpan); row.appendChild(eyeBtn); row.appendChild(delBtn);
+        list.appendChild(row);
+      });
+    }
+
+    // -- right-panel settings (colour + tint), shown on select --
+    function ensureColorGroupPanel(){
+      var p=document.getElementById('enable-colorgroup-panel');
+      if (!p){ p=document.createElement('div'); p.id='enable-colorgroup-panel'; p.style.display='none'; document.body.appendChild(p); }
+      return p;
+    }
+    function _cgHidePanel(){ var p=document.getElementById('enable-colorgroup-panel'); if (p){ p.innerHTML=''; p.style.display='none'; } }
+    function _cgSelectGroup(id){
+      var g=_cgFind(id); var p=ensureColorGroupPanel();
+      if (!g){ _cgHidePanel(); return; }
+      _cgSelectedId=id;
+      var hex=_cgRgbToHex(g.color), tintPct=Math.round(_cgTint*100);
+      p.innerHTML=
+        '<div class="enable-cp-title">'+_cpIcon('palette')+'<span>'+g.name+'</span></div>'+
+        '<div style="margin:2px 0 10px">'+
+          '<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">Name'+
+            '<input type="text" id="cg-name" value="'+g.name.replace(/"/g,'&quot;')+'" style="flex:1;background:#2a2a2a;border:1px solid #444;color:#fff;border-radius:4px;padding:3px 6px"></label>'+
+          '<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:10px">Colour'+
+            '<input type="color" id="cg-color" value="'+hex+'" style="width:38px;height:24px;padding:0;border:none;background:none;cursor:pointer"></label>'+
+          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;opacity:0.85;margin-bottom:3px"><span>Tint strength (all groups)</span><span id="cg-tint-val">'+tintPct+'%</span></div>'+
+          '<input type="range" id="cg-tint" min="10" max="100" value="'+tintPct+'" style="width:100%">'+
+          '<button id="cg-draw-btn" style="margin-top:12px;width:100%">Draw region into this group</button>'+
+        '</div>';
+      p.style.display='';
+      p.querySelector('#cg-name').addEventListener('input', function(){ g.name=this.value||g.name; rebuildColorGroupList(); var t=p.querySelector('.enable-cp-title span'); if (t) t.textContent=g.name; });
+      p.querySelector('#cg-color').addEventListener('input', function(){ g.color=_cgHexToRgb(this.value); _cgBump(); rebuildColorGroupList(); });
+      p.querySelector('#cg-tint').addEventListener('input', function(){ _cgTint=Math.max(0.1,Math.min(1,this.value/100)); var l=p.querySelector('#cg-tint-val'); if (l) l.textContent=Math.round(_cgTint*100)+'%'; _cgBump(); });
+      p.querySelector('#cg-draw-btn').addEventListener('click', function(){ _cgActiveId=g.id; startColorizeDraw(); });
+    }
+    ensureColorGroupPanel();   // create up front so chrome.js adopts it into the context panel
+
     // Helper: create a collapsible group
     function createGroup(id, title, expanded) {
       return '<div class="enable-group' + (expanded ? ' expanded' : '') + '" id="group-' + id + '">' +
@@ -12094,6 +12643,112 @@
       var s = pr > 0.0001 ? (6 / pr) : 0.05; // ~6 px radius
       _snapIndicator.scale.set(s, s, s);
     });
+
+    // -- Axis-inference guide (Trimble-style): while a measurement / member / mark
+    //    point SNAPS onto a red/green/blue axis (global OR custom gizmo), show the
+    //    ACTUAL off-axis point under the cursor as a white highlight, plus a dashed
+    //    connector from the snapped point to it — so the user sees what they're
+    //    really measuring toward. Own scene (markerScene billboards its children,
+    //    which would wreck a world-space line). --
+    var _axisVisScene = new THREE.Scene();
+    _axisVisScene.name = 'EnableAxisGuideScene';
+    var _axisTargetHi = (function () {
+      var mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
+      mesh.renderOrder = 99997; mesh.visible = false; mesh.frustumCulled = false;
+      _axisVisScene.add(mesh);
+      return mesh;
+    })();
+    var _axisDashLine = (function () {
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      var line = new THREE.Line(geo, new THREE.LineDashedMaterial({
+        color: 0xbdbdbd, dashSize: 0.1, gapSize: 0.06, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+      line.renderOrder = 99996; line.visible = false; line.frustumCulled = false;
+      _axisVisScene.add(line);
+      return line;
+    })();
+    var _axisVisSize = new THREE.Vector2();
+    viewer.addEventListener("render.pass.perspective_overlay", function () {
+      var toolActive = pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE);
+      var show = !!(_activeInferAxis && _axisRawTarget && _axisSnapPos && toolActive);
+      _axisTargetHi.visible = show;
+      _axisDashLine.visible = show;
+      if (!show) return;
+      var cam = viewer.scene.getActiveCamera();
+      var sz = viewer.renderer.getSize(_axisVisSize);
+      // white highlight on the actual (off-axis) cloud point under the cursor
+      _axisTargetHi.position.copy(_axisRawTarget);
+      var d = cam.position.distanceTo(_axisRawTarget);
+      var pr = Potree.Utils.projectedRadius(1, cam, d, sz.x, sz.y);
+      _axisTargetHi.scale.setScalar(pr > 0.0001 ? (6 / pr) : 0.05); // ~6px, matches hover/snap dots
+      // dashed connector: snapped point -> actual point
+      var pos = _axisDashLine.geometry.attributes.position;
+      pos.setXYZ(0, _axisSnapPos.x, _axisSnapPos.y, _axisSnapPos.z);
+      pos.setXYZ(1, _axisRawTarget.x, _axisRawTarget.y, _axisRawTarget.z);
+      pos.needsUpdate = true;
+      var len = _axisSnapPos.distanceTo(_axisRawTarget);
+      var dash = Math.max(len / 24, 1e-4);
+      _axisDashLine.material.dashSize = dash;
+      _axisDashLine.material.gapSize = dash * 0.6;
+      _axisDashLine.computeLineDistances();
+      viewer.renderer.render(_axisVisScene, cam);
+    });
+
+    // -- Persistent axis guides: once a measurement point is PLACED while snapped to
+    //    a gizmo axis, its dashed connector + the white highlight of the actual point
+    //    it references STAY visible (until that measurement is deleted). --
+    var _axisGuides = [];   // { measure, snapPos, rawTarget, hi, line }
+    var _axisGuideScene = new THREE.Scene();
+    _axisGuideScene.name = 'EnableAxisGuidePersistScene';
+    function _makeGuideObjs(g) {
+      g.hi = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
+      g.hi.renderOrder = 99995; g.hi.frustumCulled = false;
+      var lgeo = new THREE.BufferGeometry();
+      lgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      g.line = new THREE.Line(lgeo, new THREE.LineDashedMaterial({
+        color: 0xbdbdbd, dashSize: 0.1, gapSize: 0.06, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+      g.line.renderOrder = 99994; g.line.frustumCulled = false;
+      _axisGuideScene.add(g.hi); _axisGuideScene.add(g.line);
+    }
+    function _disposeGuide(g) {
+      if (g.hi) { _axisGuideScene.remove(g.hi); g.hi.geometry.dispose(); g.hi.material.dispose(); g.hi = null; }
+      if (g.line) { _axisGuideScene.remove(g.line); g.line.geometry.dispose(); g.line.material.dispose(); g.line = null; }
+    }
+    function _clearAxisGuidesFor(measure) {
+      for (var i = _axisGuides.length - 1; i >= 0; i--) {
+        if (_axisGuides[i].measure === measure) { _disposeGuide(_axisGuides[i]); _axisGuides.splice(i, 1); }
+      }
+    }
+    function _clearAllAxisGuides() {
+      for (var i = 0; i < _axisGuides.length; i++) _disposeGuide(_axisGuides[i]);
+      _axisGuides = [];
+    }
+    viewer.addEventListener("render.pass.perspective_overlay", function () {
+      if (!_axisGuides.length) return;
+      var cam = viewer.scene.getActiveCamera();
+      var sz = viewer.renderer.getSize(_axisVisSize);
+      for (var i = 0; i < _axisGuides.length; i++) {
+        var g = _axisGuides[i];
+        if (!g.hi) _makeGuideObjs(g);
+        g.hi.position.copy(g.rawTarget);
+        var d = cam.position.distanceTo(g.rawTarget);
+        var pr = Potree.Utils.projectedRadius(1, cam, d, sz.x, sz.y);
+        g.hi.scale.setScalar(pr > 0.0001 ? (6 / pr) : 0.05);
+        var pos = g.line.geometry.attributes.position;
+        pos.setXYZ(0, g.snapPos.x, g.snapPos.y, g.snapPos.z);
+        pos.setXYZ(1, g.rawTarget.x, g.rawTarget.y, g.rawTarget.z);
+        pos.needsUpdate = true;
+        var len = g.snapPos.distanceTo(g.rawTarget);
+        var dash = Math.max(len / 24, 1e-4);
+        g.line.material.dashSize = dash; g.line.material.gapSize = dash * 0.6;
+        g.line.computeLineDistances();
+      }
+      viewer.renderer.render(_axisGuideScene, cam);
+    });
+    // A deleted measurement takes its guides with it.
+    try { viewer.scene.addEventListener('measurement_removed', function (e) { if (e && e.measurement) _clearAxisGuidesFor(e.measurement); }); } catch (e) {}
 
     // -- Diagnostic: run __msInfo() in the console to check model snap state /
     //    whether the model and cloud overlap. --
@@ -12505,6 +13160,15 @@
           '</div>' +
           '<input type="range" id="pc-opacity-slider" min="0" max="100" value="' + _pcOpacityPct + '" style="width:100%">' +
         '</div>';
+      // Focus-box pick restriction toggle — only relevant while a focus box exists.
+      if (typeof focusBoxes !== 'undefined' && focusBoxes.length > 0) {
+        html +=
+          '<label style="display:flex;align-items:center;gap:8px;font-size:12px;opacity:0.9;margin:-4px 0 10px;cursor:pointer" ' +
+          'title="Off (default): with a focus box active you cannot pick or snap onto points OUTSIDE it, for every tool, no matter their opacity. On: allow picking outside the focus box.">' +
+            '<input type="checkbox" id="focus-snap-outside"' + (_focusSnapOutside ? ' checked' : '') + '>' +
+            '<span>Snap/select outside focus</span>' +
+          '</label>';
+      }
       if (multi) {
         for (var i = 0; i < scanClouds.length; i++) {
           var s = scanClouds[i];
@@ -12523,6 +13187,8 @@
         var lbl = p.querySelector('#pc-opacity-val');
         if (lbl) lbl.textContent = v + '%';
       });
+      var fso = p.querySelector('#focus-snap-outside');
+      if (fso) fso.addEventListener('change', function () { _focusSnapOutside = this.checked; });
       var btns = p.querySelectorAll('.enable-scan-eye');
       for (var j = 0; j < btns.length; j++) {
         btns[j].addEventListener('click', function () {
@@ -12646,8 +13312,8 @@
             '<button id="btn-fit-plane" title="Best-fit plane from many points (Enter to finalize)">Fit Plane</button>' +
             '<button id="btn-set-axis" title="Define a constraint axis (2 points)">Set Axis</button>' +
             '<button id="btn-perp-plane" title="New plane perpendicular and square to the selected plane (single click to place)" disabled>⊥ Plane</button>' +
-            '<button id="btn-set-axes" title="Set custom drawing axes (3 clicks: origin, +X, +Y). Tools snap to these axes.">Set Axes</button>' +
-            '<button id="btn-reset-axes" title="Reset drawing axes back to world" disabled>Reset Axes</button>' +
+            '<button id="btn-set-axes" title="Set a custom gizmo (3 clicks: origin, +X, +Y). Tools snap to its axes; reset reverts to the always-on global gizmo.">Set Custom Gizmo</button>' +
+            '<button id="btn-reset-axes" title="Remove the custom gizmo — revert to the always-on global gizmo" disabled>Reset to Global</button>' +
           '</div>' +
           '<div id="enable-constraint-list"></div>' +
           '<div id="enable-constraint-status"></div>' +
@@ -12680,6 +13346,16 @@
             '<button id="btn-clear-all-focus" title="Remove all focus boxes" style="display:none">Clear All</button>' +
           '</div>' +
           '<div id="enable-focus-list"></div>' +
+        closeGroup() +
+
+        // === 5b. COLOR GROUPS (colorize regions) (open) ===
+        createGroup('colorize', 'Colour Groups', true) +
+          '<div id="enable-colorize-buttons">' +
+            '<button id="btn-colorize-add-group" title="Create a new colour group">New Group</button>' +
+            '<button id="btn-colorize-draw" title="Draw a polygon; every point inside it gets the active group’s colour">Draw Region</button>' +
+            '<button id="btn-colorize-clear" title="Delete all colour groups" style="display:none">Clear All</button>' +
+          '</div>' +
+          '<div id="enable-colorgroup-list"></div>' +
         closeGroup() +
 
         // === 6. ELEVATION MAP (collapsed) ===
@@ -12850,6 +13526,12 @@
       document.getElementById('btn-add-focus').addEventListener('click', function() { addFocusBox(); });
       document.getElementById('btn-clear-all-focus').addEventListener('click', function() { clearAllFocusBoxes(); });
 
+      // Color groups (colorize regions)
+      document.getElementById('btn-colorize-draw').addEventListener('click', function() { startColorizeDraw(); });
+      document.getElementById('btn-colorize-add-group').addEventListener('click', function() { var g = addColorGroup(); _cgSelectGroup(g.id); });
+      document.getElementById('btn-colorize-clear').addEventListener('click', function() { clearAllColorGroups(); });
+      rebuildColorGroupList();
+
       // Elevation map buttons
       document.getElementById('btn-add-elev-box').addEventListener('click', function() { addElevationBox(); });
       var _expContoursBtn = document.getElementById('btn-export-contours');
@@ -12924,6 +13606,8 @@
     let mouseDownPos = null;
     let _orbitNextDrag = false;    // set on Esc: force the next left-drag to orbit (don't grab the trailing sphere)
     let _draggingMeasureSphere = false;  // true while a measurement point's handle is being dragged
+    let _measDownPos = null;       // left-mousedown pos during an in-progress measurement (click-vs-drag)
+    let _measMovingSphere = null;  // the moving insertion sphere, detached on mousedown so a drag can orbit
     // A measurement-point adjust just ended. Node hit boxes are node-sized now,
     // so re-grabbing the point (to adjust again) is the desired behaviour — do
     // NOT force the next drag to orbit (that was making re-grabs feel broken).
@@ -13061,6 +13745,20 @@
           if (viewer.inputHandler.hoveredElements) viewer.inputHandler.hoveredElements = [];
         }
         return;
+      }
+      // In-progress measurement: Potree runs the moving point as a "floating drag",
+      // which makes ANY left-drag move+place a point (even off the cloud / when the
+      // user just wants to orbit for a better view). Detach that drag here (capture
+      // phase, before Potree's onMouseDown) so a left-drag ORBITS instead; remember
+      // the moving sphere + down position so mouseup can decide place-vs-orbit.
+      if (e.button === 0 && pendingMeasurement && !_draggingMeasureSphere) {
+        _measDownPos = { x: e.clientX, y: e.clientY };
+        _measMovingSphere = (pendingMeasurement.spheres && pendingMeasurement.spheres.length)
+          ? pendingMeasurement.spheres[pendingMeasurement.spheres.length - 1] : null;
+        if (viewer.inputHandler) {
+          viewer.inputHandler.drag = null;   // let Potree's onMouseDown start an orbit scene-drag
+          if (viewer.inputHandler.hoveredElements) viewer.inputHandler.hoveredElements = [];
+        }
       }
       // Station / Note pin click candidates (left-click only, no other tool/drag
       // mode active). We don't stopPropagation here — Potree's orbit still works
@@ -13267,14 +13965,22 @@
       // crosshair cursor as the visual cue across all placement tools.
       if ((notePickMode && _notePreviewSphere) ||
           (constraintPickMode && _constraintPreviewSphere) ||
+          (zBasePickMode && _zbasePreviewSphere) ||
           (MARK_MODE && _markPreviewSphere)) {
         var _hpRect = renderArea.getBoundingClientRect();
         var _hpMouse = { x: e.clientX - _hpRect.left, y: e.clientY - _hpRect.top };
         if (MARK_MODE && _markPreviewSphere) {
-          _updatePreviewSphereAt(_markPreviewSphere, _hpMouse, !!_customAxes);
+          // Always route through the inference/focus picker so the preview matches
+          // placement (global gizmo inference is always on; focus restriction applies).
+          _updatePreviewSphereAt(_markPreviewSphere, _hpMouse, true);
+        }
+        if (zBasePickMode && _zbasePreviewSphere) {
+          _updatePreviewSphereAt(_zbasePreviewSphere, _hpMouse, true);
         }
         if (notePickMode && _notePreviewSphere) {
           _updatePreviewSphereAt(_notePreviewSphere, _hpMouse);
+          // Notes use the raw picker (no snapping); still respect the focus restriction.
+          if (_notePreviewSphere.visible && _focusBlocksPick(_notePreviewSphere.position)) _notePreviewSphere.visible = false;
         }
         if (constraintPickMode && _constraintPreviewSphere) {
           _updatePreviewSphereAt(_constraintPreviewSphere, _hpMouse);
@@ -13531,6 +14237,34 @@
       // flags. A press+release with no hold just clears the pending timer.
       if (_pgArmed) { _pgArmed = false; document.body.classList.remove('hold-grabbing'); }
       _pgClear();
+      // In-progress measurement: decide PLACE vs ORBIT/empty. A clean click (moved
+      // <5px) over a valid target commits (fall through to Potree's insertionCallback);
+      // a drag orbits, and a click off the cloud does nothing — neither drops a point.
+      if (e.button === 0 && pendingMeasurement && !_draggingMeasureSphere && _measDownPos) {
+        var _mdp = _measDownPos; _measDownPos = null;
+        var _movedPx = Math.sqrt((e.clientX - _mdp.x) * (e.clientX - _mdp.x) + (e.clientY - _mdp.y) * (e.clientY - _mdp.y));
+        var _mrect = renderArea.getBoundingClientRect();
+        var _mpix = { x: e.clientX - _mrect.left, y: e.clientY - _mrect.top };
+        var _mcam = viewer.scene.getActiveCamera();
+        // Same picker the moving point uses (honours focus restriction + axis snap).
+        var _mhit = Potree.Utils.getMousePointCloudIntersection(_mpix, _mcam, viewer, viewer.scene.pointclouds, { pickClipped: true });
+        var _validTarget = !!(_mhit && _mhit.location);
+        var _sphere = _measMovingSphere; _measMovingSphere = null;
+        if (_movedPx > 5 || !_validTarget) {
+          // DRAG (orbit) or EMPTY-space click → do NOT place. Re-arm Potree's floating
+          // insertion drag so the moving point keeps following the cursor afterward.
+          if (viewer.inputHandler && _sphere) { try { viewer.inputHandler.startDragging(_sphere); } catch (_) {} }
+          e.stopPropagation();   // block Potree's insertionCallback commit
+          return;
+        }
+        // Clean click on a valid target → a point WILL commit. If it snapped to a
+        // gizmo axis, keep a PERSISTENT guide (dashed connector + white highlight of
+        // the actual referenced point) so it stays visible after placement.
+        if (_activeInferAxis && _axisRawTarget && _axisSnapPos) {
+          _axisGuides.push({ measure: pendingMeasurement, snapPos: _axisSnapPos.clone(), rawTarget: _axisRawTarget.clone() });
+        }
+        // fall through — Potree's insertionCallback commits the point.
+      }
       // Tool workflow active → make sure Potree's own onMouseUp (which runs after
       // this capture-phase handler) can't select a hovered volume (e.g. the clip
       // box) on this click. Belt-and-suspenders with the mousedown clear above.
@@ -13706,6 +14440,7 @@
           var targetVol = zBasePickTargetVol;
           cancelZBasePick();
           assignZBaseMark(targetVol, existing.id);
+          reselectBoxAfterPick(targetVol);
           return;
         }
         // Otherwise place a new mark at the picked location
@@ -13718,6 +14453,7 @@
           placeMarker(zbPick.location);
           var newMark = markedPoints[markedPoints.length - 1];
           if (newMark) assignZBaseMark(targetVol, newMark.id);
+          reselectBoxAfterPick(targetVol);
         } else {
           showToast('No point found under cursor');
         }
@@ -13755,7 +14491,8 @@
         } else if (constraintPickMode) {
           handleConstraintPick(pos);
         } else if (notePickMode) {
-          placeNote(pos);
+          if (_focusBlocksPick(pos)) showToast('Outside the focus box — turn on "Snap/select outside focus" to place here');
+          else placeNote(pos);
           cancelNotePick(); // also disposes the preview sphere
         } else if (_normDimArmed) {
           placeNormDimension(pos);
@@ -14167,6 +14904,20 @@
       hasCustomAxes:            function () { return !!_customAxes; },
       getAxesGizmoVis:          function () { return _customAxesVisible; },
       toggleAxesGizmoVis:       function () { setAxesGizmoVisible(!_customAxesVisible); return _customAxesVisible; },
+      // Rename an elevation box by its current name (used by chrome.js's right-panel
+      // header rename). Rebuilds both toolbars + the legend title.
+      renameElevBox:            function (oldName, newName) {
+        if (!newName || !newName.trim()) return false;
+        newName = newName.trim();
+        for (var i = 0; i < elevationCropVolumes.length; i++) {
+          if (elevationCropVolumes[i].name === oldName) {
+            elevationCropVolumes[i].name = newName;
+            rebuildElevationBoxList();
+            return true;
+          }
+        }
+        return false;
+      },
       get undoStack()           { return undoStack;           },
       // Called from chrome.js after a clean 1-finger tap on touch. Exits any
       // single-action pick mode (Mark, Note, Constraint) so the user can

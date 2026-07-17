@@ -132,11 +132,12 @@ html, body {
   flex-direction: row;
   align-items: center;
   box-sizing: border-box;
-  /* Match the sidebar's OUTER edge (280px content + 1px right border) so this
-     area's right border lines up with the sidebar's right border below it.
-     Without border-box the 12px h-padding + border overhang it by ~25px and
-     also shove the tools right. */
-  width: calc(var(--sidebar-width) + 1px);
+  /* Fit the logo/name block (was pinned to the sidebar width) so the tool
+     dropdowns can stretch left into the empty space beside the logo. Capped at
+     the old sidebar width so a long project name never pushes the tools past
+     where they used to start. */
+  width: auto;
+  max-width: calc(var(--sidebar-width) + 1px);
   flex: 0 0 auto;
   padding: 4px 12px;
   border-right: 1px solid var(--tb-divider);
@@ -167,7 +168,7 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+  max-width: 220px;
 }
 
 /* Company contact, beside the brand — matches .dev2-tb-project-name font so it
