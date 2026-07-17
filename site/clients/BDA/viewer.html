@@ -4213,7 +4213,11 @@
       // pick that lands OUTSIDE the focus box(es) is rejected for EVERY tool that
       // funnels through this picker (mark / measure / member / constraint / datum),
       // regardless of the dimmed points' opacity. The Scans-panel toggle lifts it.
-      if (result && result.location && _focusBlocksPick(result.location)) return null;
+      // EXCEPTION: while PLACING a box (pendingVolume) the pick must follow the
+      // cursor freely — focus/cut-out/etc. boxes can be placed anywhere, even
+      // outside an existing focus box. The restriction only blocks point-snapping
+      // tools (mark/measure/member/constraint/datum/note).
+      if (result && result.location && !pendingVolume && _focusBlocksPick(result.location)) return null;
       return result;
     };
 
