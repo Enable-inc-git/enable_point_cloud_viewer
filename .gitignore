@@ -131,3 +131,6 @@ site/clients/MurrayFranks/1531 Dupont (steel canopy)/
 # only; NEVER pushed. Agents read this file for R2 uploads. See reference_r2_migration.
 .r2creds.json
 .r2creds*
+
+# St. Joseph's Hamilton model (served from R2, not git)
+site/clients/BDA/St. Joseph's Hamilton/models/

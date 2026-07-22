@@ -3819,7 +3819,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] MurrayFranks build 2026-07-17 — colourize + gizmo + per-box legends + measure/legend fixes'); } catch (e) {}
+    try { console.info('[Enable] MurrayFranks build 2026-07-22 — LAS multi-scan export fix + per-project model offset'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -6756,36 +6756,51 @@
       var pos = [], col = [], inten = [], capped = false;
       var dedup = voxelM > 0.002;               // ≤2mm ⇒ treat as full-res (no voxel dedup)
       var seen = dedup ? new Set() : null, inv = 1 / Math.max(voxelM, 1e-4);
-      for (var pi = 0; pi < pcs.length && !capped; pi++) {
-        var geo = pcs[pi].pcoGeometry, o = geo.offset, ox = o.x, oy = o.y, oz = o.z;
+      // Collect the loaded nodes of every visible cloud up front, then walk them
+      // ROUND-ROBIN across clouds. Walking cloud-by-cloud (primary first) would
+      // let a big main scan hit _LAS_MAXPTS before a secondary scan (Columns) was
+      // ever reached — the export would then contain ZERO points from the second
+      // cloud. The dedup `seen` set is shared, so points where the two clouds
+      // overlap collapse to one.
+      var perCloud = pcs.map(function (pc) {
+        var geo = pc.pcoGeometry, o = geo.offset;
         var nodes = [];
         (function collect(node) {
           if (!node) return;
           if (node.loaded && node.geometry && node.geometry.attributes.position) nodes.push(node);
           if (node.children) for (var i = 0; i < 8; i++) if (node.children[i]) collect(node.children[i]);
         })(geo.root);
-        for (var ni = 0; ni < nodes.length && !capped; ni++) {
-          var a = nodes[ni].geometry.attributes;
-          var pa = a.position.array, cnt = a.position.count;
-          var ra = a.rgba ? a.rgba.array : null;
-          var ia = a.intensity ? a.intensity.array : null;
-          var iaNorm = ia && (ia instanceof Float32Array);   // normalized 0..1 → scale to 16-bit
-          var bb = nodes[ni].boundingBox ? nodes[ni].boundingBox.min : { x: 0, y: 0, z: 0 };
-          var tx = ox + bb.x, ty = oy + bb.y, tz = oz + bb.z;
-          for (var i = 0; i < cnt; i++) {
-            var x = pa[i * 3] + tx, y = pa[i * 3 + 1] + ty, z = pa[i * 3 + 2] + tz;
-            if (!keep(x, y, z)) continue;
-            if (dedup) {
-              var key = Math.floor(x * inv) + '_' + Math.floor(y * inv) + '_' + Math.floor(z * inv);
-              if (seen.has(key)) continue;
-              seen.add(key);
-            }
-            pos.push(x, y, z);
-            if (ra) col.push(ra[i * 4], ra[i * 4 + 1], ra[i * 4 + 2]); else col.push(0, 0, 0);
-            var iv = ia ? (iaNorm ? ia[i] * 65535 : ia[i]) : 0;
-            inten.push(iv < 0 ? 0 : (iv > 65535 ? 65535 : (iv | 0)));
-            if (pos.length >= _LAS_MAXPTS * 3) { capped = true; break; }
+        return { ox: o.x, oy: o.y, oz: o.z, nodes: nodes };
+      });
+      function processNode(cl, node) {
+        var a = node.geometry.attributes;
+        var pa = a.position.array, cnt = a.position.count;
+        var ra = a.rgba ? a.rgba.array : null;
+        var ia = a.intensity ? a.intensity.array : null;
+        var iaNorm = ia && (ia instanceof Float32Array);   // normalized 0..1 → scale to 16-bit
+        var bb = node.boundingBox ? node.boundingBox.min : { x: 0, y: 0, z: 0 };
+        var tx = cl.ox + bb.x, ty = cl.oy + bb.y, tz = cl.oz + bb.z;
+        for (var i = 0; i < cnt; i++) {
+          var x = pa[i * 3] + tx, y = pa[i * 3 + 1] + ty, z = pa[i * 3 + 2] + tz;
+          if (!keep(x, y, z)) continue;
+          if (dedup) {
+            var key = Math.floor(x * inv) + '_' + Math.floor(y * inv) + '_' + Math.floor(z * inv);
+            if (seen.has(key)) continue;
+            seen.add(key);
           }
+          pos.push(x, y, z);
+          if (ra) col.push(ra[i * 4], ra[i * 4 + 1], ra[i * 4 + 2]); else col.push(0, 0, 0);
+          var iv = ia ? (iaNorm ? ia[i] * 65535 : ia[i]) : 0;
+          inten.push(iv < 0 ? 0 : (iv > 65535 ? 65535 : (iv | 0)));
+          if (pos.length >= _LAS_MAXPTS * 3) { capped = true; return; }
+        }
+      }
+      var maxNodes = 0;
+      perCloud.forEach(function (cl) { if (cl.nodes.length > maxNodes) maxNodes = cl.nodes.length; });
+      for (var ni = 0; ni < maxNodes && !capped; ni++) {
+        for (var pi = 0; pi < perCloud.length && !capped; pi++) {
+          var cl = perCloud[pi];
+          if (ni < cl.nodes.length) processNode(cl, cl.nodes[ni]);
         }
       }
       return { pos: pos, col: col, inten: inten, n: pos.length / 3, capped: capped };
@@ -6839,7 +6854,17 @@
       if (!aabb) showToast('No clip/focus box — exporting the FULL scan (may be large/slow)…', 6000);
       else showToast('Loading full-resolution points in the region…', 120000);
       var prevBudget = viewer.getPointBudget();
-      try { viewer.setPointBudget(60000000); } catch (e) {}
+      // Per-cloud budgets (set by rebalanceScanBudgets) otherwise cap each cloud
+      // at ~3M and let Potree's render loop dispose forced-loaded nodes past that
+      // — which starves a secondary scan (Columns) and churns the force-load.
+      // Lift them for the duration so every visible cloud loads its full region.
+      var prevPCBudgets = pcs.map(function (pc) { return pc.pointBudget; });
+      function restoreBudgets() {
+        try { viewer.setPointBudget(prevBudget); } catch (e) {}
+        pcs.forEach(function (pc, i) { pc.pointBudget = prevPCBudgets[i]; });
+        try { if (typeof rebalanceScanBudgets === 'function') rebalanceScanBudgets(); } catch (e) {}
+      }
+      try { viewer.setPointBudget(60000000); pcs.forEach(function (pc) { pc.pointBudget = Infinity; }); } catch (e) {}
       Promise.all(pcs.map(function (pc) { return forceLoadAllNodes(pc, aabb, {}); })).then(function () {
         setTimeout(function () {
           try {
@@ -6850,9 +6875,9 @@
             _downloadBinary('subscan.las', buf);
             showToast('Exported ' + g.n.toLocaleString() + ' points → LAS (' + (buf.byteLength / 1048576).toFixed(1) + ' MB)' + (g.capped ? ' — capped at ' + _LAS_MAXPTS.toLocaleString() + '; raise spacing' : ''), 6000);
           } catch (e) { console.warn('LAS export failed', e); showToast('LAS export failed — see console'); }
-          finally { try { viewer.setPointBudget(prevBudget); } catch (e) {} }
+          finally { restoreBudgets(); }
         }, 40);
-      }).catch(function (e) { console.warn(e); showToast('LAS export failed during load'); try { viewer.setPointBudget(prevBudget); } catch (e2) {} });
+      }).catch(function (e) { console.warn(e); showToast('LAS export failed during load'); restoreBudgets(); });
     }
 
     // Plane fills render in the depth_overlay pass so they depth-test against the
@@ -8697,44 +8722,64 @@
           visit(geo.root);
           return n;
         }
-        // BFS by level so depth and point-budget caps are easy to enforce.
-        // Trigger loads on each in-AABB node up to maxDepth; stop early if
-        // already-loaded points exceed maxPoints between levels.
-        function triggerLoadsBFS() {
-          var current = [geo.root];
-          var depth = 0;
-          while (current.length > 0 && depth <= maxDepth) {
-            var next = [];
-            for (var i = 0; i < current.length; i++) {
-              var node = current[i];
-              if (!node || !nodeIntersects(node)) continue;
-              if (!node.loaded) node.load();
-              if (node.children) {
-                for (var j = 0; j < 8; j++) {
-                  if (node.children[j]) next.push(node.children[j]);
-                }
-              }
+        function nodeLevel(node) {
+          return (node.level != null) ? node.level : (node.name ? node.name.length - 1 : 0);
+        }
+        // One depth-first pass over the CURRENTLY-KNOWN tree: trigger a load on
+        // every intersecting, not-yet-loaded node up to maxDepth. Returns the
+        // count of intersecting nodes still unloaded (0 ⇒ the intersecting
+        // subtree is fully loaded as far as the hierarchy is presently known).
+        //
+        // This MUST be re-run repeatedly, not once: node.load() no-ops whenever
+        // the global loading queue is full (numNodesLoading ≥ maxNodesLoading),
+        // and a node's children are unknown until its hierarchy chunk loads. A
+        // single pass therefore drops every node past the first ~60 and every
+        // node below a not-yet-loaded hierarchy boundary. The primary cloud hides
+        // this (its deep nodes are already loaded from normal viewing), but a
+        // secondary cloud (e.g. the "Columns" scan) only has its root known, so a
+        // one-shot pass left it with just the sparse root — which can miss a small
+        // focus/clip region entirely. Re-triggering each poll tick fills it in.
+        function triggerPass() {
+          var pending = 0;
+          var stack = [geo.root];
+          while (stack.length) {
+            var node = stack.pop();
+            if (!node || !nodeIntersects(node)) continue;
+            if (nodeLevel(node) > maxDepth) continue;
+            if (!node.loaded) { pending++; node.load(); }
+            if (node.children) {
+              for (var i = 0; i < 8; i++) if (node.children[i]) stack.push(node.children[i]);
             }
-            current = next;
-            depth++;
-            if (countLoadedPoints() >= maxPoints) break;
           }
+          return pending;
         }
         var origMax = Potree.maxNodesLoading || 4;
         // CDNs over HTTP/2 multiplex many streams over one connection; the
         // default cap of 4 (and previous bump to 20) leaves throughput on the
         // table during a force-load burst.
         Potree.maxNodesLoading = 60;
-        triggerLoadsBFS();
+        function finish() { clearInterval(poll); Potree.maxNodesLoading = origMax; resolve(); }
+        var prevLoaded = -1, stallTicks = 0;
+        triggerPass();
         var poll = setInterval(function () {
+          var loaded = countLoadedPoints();
           if (onProgress) {
-            try { onProgress({ loaded: countLoadedPoints(), inFlight: Potree.numNodesLoading }); } catch (_) {}
+            try { onProgress({ loaded: loaded, inFlight: Potree.numNodesLoading }); } catch (_) {}
           }
-          if (Potree.numNodesLoading === 0) {
-            clearInterval(poll);
-            Potree.maxNodesLoading = origMax;
-            resolve();
+          // Soft point cap (elevation's depth-bounded load path relies on it).
+          if (loaded >= maxPoints) { finish(); return; }
+          var pending = triggerPass();   // re-trigger newly-discovered / queue-dropped nodes
+          // Done once nothing is in flight AND a full pass found nothing left to load.
+          if (Potree.numNodesLoading === 0 && pending === 0) { finish(); return; }
+          // Stall guard: if the queue is idle and no new points have arrived for
+          // ~5s while nodes are still "pending" (e.g. a node stuck after a failed
+          // fetch), give up rather than hang the export forever.
+          if (Potree.numNodesLoading === 0 && loaded === prevLoaded) {
+            if (++stallTicks >= 25) { finish(); return; }
+          } else {
+            stallTicks = 0;
           }
+          prevLoaded = loaded;
         }, 200);
       });
     }
@@ -13213,7 +13258,14 @@
       var group = new THREE.Group();
       group.name = 'EnableModel:' + rec.name;
       group.add(scene3d);
-      group.position.set(0, 0, 0);          // model already shares scan coords
+      // Model normally shares the scan's coords → position (0,0,0). A project can
+      // override with meta.modelOffset {x,y,z} (world metres, Potree Z-up frame)
+      // when the model was aligned to the scan by a translation. We shift the
+      // MODEL rather than the point cloud so the panorama stations, second scan,
+      // and any placed marks stay put — set modelOffset to the NEGATIVE of the
+      // offset that was applied to the scan to line it up with the model.
+      var _mo = (meta && meta.modelOffset) || null;
+      group.position.set(_mo ? (+_mo.x || 0) : 0, _mo ? (+_mo.y || 0) : 0, _mo ? (+_mo.z || 0) : 0);
       group.rotation.x = MODEL_X_ROTATION;  // glTF Y-up -> scan Z-up
       group.visible = true;
       viewer.scene.scene.add(group);

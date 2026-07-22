@@ -6,6 +6,34 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-07-22 — ALL 7 VIEWERS: LAS multi-scan export fix + model offset ***
+#############################################################################
+- MULTI-SCAN LAS EXPORT FIX (BDA St Joseph has 2 scans: Main + Columns). The
+  "Sub-scan -> LAS" export was dropping the SECONDARY cloud entirely. Two causes,
+  both fixed in viewer.html (generic; propagated to all 7):
+  * forceLoadAllNodes() only triggered loads ONCE. node.load() no-ops when the
+    60-slot queue is full and a node's children are unknown until its hierarchy
+    chunk loads, so a secondary cloud (only its root known) barely loaded. Now it
+    RE-TRIGGERS every poll tick (function triggerPass) until the whole intersecting
+    subtree is resident, with a ~5s stall guard. Preserves maxDepth/maxPoints
+    (elevation) semantics.
+  * exportSubScanLAS() now lifts each cloud's per-cloud pc.pointBudget to Infinity
+    during the load (rebalanceScanBudgets caps them ~3M and the render loop would
+    dispose forced nodes), restoring after.
+  * _gatherLASPoints() now walks nodes ROUND-ROBIN across clouds (was cloud-by-
+    cloud, primary first) so the 5M cap can't wipe out the second cloud; shared
+    dedup set collapses overlap.
+- PER-PROJECT MODEL OFFSET: displayLoadedGroup() reads meta.modelOffset {x,y,z}
+  (world metres, Potree Z-up) to position a loaded GLB; defaults to (0,0,0). Set it
+  to the NEGATIVE of the translation applied to the SCAN to align it, so panorama
+  stations / second scan / marks stay put (we shift the MODEL, not the cloud).
+- NEW MODEL: BDA St Joseph "Structural Model" (model.ifc -> models/model.glb via
+  IfcConvert, 239 meshes). Uploaded to R2 bda/stjoseph/models/{model.glb,models.json}
+  (discoverProjectModels reads it straight from R2 — loose glb/ifc gitignored).
+  projects.js stjoseph.modelOffset = {x:-9.15, y:-32.16695, z:0} (scan was shifted
+  +9150mm X / +32166.95mm Y). Build tag bumped to 2026-07-22 on all 7.
+
+#############################################################################
 # *** BIG FEATURE SYNC 2026-07-17 — ALL 7 VIEWERS (developed in WJ) ***
 #############################################################################
 - A large batch of viewer work was developed+eyeballed in WJ Properties, then
