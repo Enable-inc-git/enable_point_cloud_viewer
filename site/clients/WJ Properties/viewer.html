@@ -3819,7 +3819,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] WJ Properties build 2026-07-22 — LAS multi-scan export fix + per-project model offset'); } catch (e) {}
+    try { console.info('[Enable] WJ Properties build 2026-07-22b — gridlines overlay + model snapping (ends/mids/faces) + camera fixes'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -4135,6 +4135,8 @@
     })();
 
     // -- Monkey-patch point picking to apply active constraint --
+    // Reposition-drag tracking (see the empty-space follow + mouseup revert below).
+    var _measDragObj = null, _measDragLastGood = null, _measDragVoid = false;
     const _origPick = Potree.Utils.getMousePointCloudIntersection;
     Potree.Utils.getMousePointCloudIntersection = function(mouse, camera, viewer, pointclouds, params) {
       // ALWAYS respect the clip/crop boxes when picking. Potree's own tools (e.g.
@@ -4217,10 +4219,20 @@
           result.location = prior.clone().addScaledVector(bestAxis, bestT);
         }
       }
-      // Snap for the measurement tool (not during our custom picks or drags).
+      // Are we repositioning an existing measurement point? (dragging its sphere)
+      var _measDragObjNow = (viewer.inputHandler && viewer.inputHandler.drag) ? viewer.inputHandler.drag.object : null;
+      var _isMeasureDrag = false;
+      if (_measDragObjNow) {
+        var _msNow = viewer.scene.measurements || [];
+        for (var _mdI = 0; _mdI < _msNow.length && !_isMeasureDrag; _mdI++) { var _spN = _msNow[_mdI].spheres; if (_spN && _spN.indexOf(_measDragObjNow) !== -1) _isMeasureDrag = true; }
+      }
+      // Snap for the measurement tool (not during our custom picks or OTHER drags).
       // Runs even when the cloud pick missed, so a measurement point can land on
-      // an imported-model feature that has empty space (no cloud) behind it.
-      if (!constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
+      // an imported-model feature that has empty space (no cloud) behind it. Runs
+      // while a placement tool is armed OR while repositioning a placed point —
+      // but NOT on idle hover (that popped a snap highlight with no tool selected).
+      if ((pendingMeasurement || (typeof MARK_MODE !== 'undefined' && MARK_MODE) || _isMeasureDrag) &&
+          !constraintPickMode && !memberPickMode && !constraintDragActive && !memberDragActive) {
         // ONE raycast against the model: gives the surface point + hit triangle.
         var _mhit = modelSurfacePick(mouse);
         // Base location: follow the model SURFACE when it's the frontmost thing
@@ -4235,8 +4247,22 @@
         // Snap target: model vertex/edge (from the hit triangle) takes priority,
         // else an existing measurement/member/constraint point.
         var mfeat = null;
-        if (_mhit) { try { mfeat = modelFeatureNear(_mhit.point, mouse); } catch (e) {} }
+        if (_mhit) { try { mfeat = modelFeatureNear(_mhit.point, mouse, _mhit); } catch (e) {} }
         var snap = mfeat || findSnapTarget(mouse, SNAP_THRESHOLD_MEASUREMENT);
+        // Member-END centres: matched by SCREEN distance (independent of a surface
+        // hit), so they snap even when the centre is in a hollow section's hole.
+        // Wins when it's the closest thing to the cursor.
+        var _endSnap = _nearestModelEnd(mouse, SNAP_THRESHOLD_MEASUREMENT);
+        if (_endSnap) {
+          var _useEnd = true;
+          if (snap) {
+            var _ecm = viewer.scene.getActiveCamera(), _erct = renderArea.getBoundingClientRect();
+            var _eq = snap.position.clone().project(_ecm);
+            var _esd = Math.sqrt(Math.pow((_eq.x * 0.5 + 0.5) * _erct.width - mouse.x, 2) + Math.pow((1 - (_eq.y * 0.5 + 0.5)) * _erct.height - mouse.y, 2));
+            if (_esd <= _endSnap.dist) _useEnd = false;
+          }
+          if (_useEnd) snap = { position: _endSnap.position, label: _endSnap.label };
+        }
         _snapTargetPos = snap ? snap.position.clone() : null;
         if (window.__msDebug && (performance.now() - (window.__msLast || 0) > 250)) {
           window.__msLast = performance.now();
@@ -4250,7 +4276,6 @@
             var _scam = viewer.scene.getActiveCamera();
             result = { location: snap.position.clone(), distance: _scam ? _scam.position.distanceTo(snap.position) : 0, pointcloud: null, point: { position: snap.position.clone() } };
           }
-          showToast('Snapped to ' + snap.label, 1000);
         }
       }
       // ---- Plane-plane intersection snap (SketchUp-style proximity inference): if
@@ -4294,8 +4319,45 @@
       // outside an existing focus box. The restriction only blocks point-snapping
       // tools (mark/measure/member/constraint/datum/note).
       if (result && result.location && !pendingVolume && _focusBlocksPick(result.location)) return null;
+      // While REPOSITIONING a placed point: let it FOLLOW the cursor through empty
+      // space (a plane at its current depth) so the drag feels natural — but track
+      // the last position that was a REAL target (cloud / model / snap). If the drag
+      // is released over void, the mouseup handler snaps the point back to that last
+      // good spot, so it can never be dropped floating in the black void.
+      if (_isMeasureDrag) {
+        if (result && result.location) {
+          _measDragObj = _measDragObjNow; _measDragLastGood = result.location.clone(); _measDragVoid = false;
+        } else {
+          var _dcam = viewer.scene.getActiveCamera();
+          var _drect = renderArea.getBoundingClientRect();
+          var _dndc = new THREE.Vector2((mouse.x / _drect.width) * 2 - 1, -(mouse.y / _drect.height) * 2 + 1);
+          var _drc = new THREE.Raycaster(); _drc.setFromCamera(_dndc, _dcam);
+          var _ref = (_measDragObjNow && _measDragObjNow.getWorldPosition) ? _measDragObjNow.getWorldPosition(new THREE.Vector3()) : viewer.scene.view.getPivot();
+          var _depth = _dcam.position.distanceTo(_ref);
+          if (isFinite(_depth) && _depth > 1e-4) {
+            var _loc = _drc.ray.origin.clone().addScaledVector(_drc.ray.direction, _depth);
+            result = { location: _loc, distance: _depth, pointcloud: null, point: { position: _loc.clone() } };
+            _measDragObj = _measDragObjNow; _measDragVoid = true;   // over void → revert on release
+          }
+        }
+      }
       return result;
     };
+    // If a point-reposition drag is released while the point is hovering VOID
+    // (last pick wasn't a real cloud/model/snap target), snap it back to the last
+    // valid spot it passed over — so a placed point can't be dropped floating in
+    // empty space. Runs on the same mouseup that fires Potree's 'drop'.
+    document.addEventListener('mouseup', function () {
+      if (_measDragVoid && _measDragLastGood && _measDragObj) {
+        var ms = viewer.scene.measurements || [];
+        for (var i = 0; i < ms.length; i++) {
+          var sp = ms[i].spheres; if (!sp) continue;
+          var idx = sp.indexOf(_measDragObj);
+          if (idx !== -1) { try { ms[i].setPosition(idx, _measDragLastGood); } catch (e) {} break; }
+        }
+      }
+      _measDragObj = null; _measDragVoid = false;
+    }, false);
 
     // ===== ORBIT AROUND THE CURSOR =====
     // Stock OrbitControls orbits around the look-at pivot (screen centre), so
@@ -6595,7 +6657,47 @@
       // (Model vertex/edge snapping is handled in the picker, which shares the one
       // model raycast it already does for surface-follow — see modelFeatureNear.)
 
+      // Gridline snapping (only when the overlay is shown). Grid CROSSINGS snap as
+      // priority points (via check()); then, if no point snap landed, fall back to
+      // snapping anywhere ALONG a grid line.
+      if (_gridlinesVisible && _gridGroup) {
+        for (var gn = 0; gn < _gridSnapNodes.length; gn++) check(_gridSnapNodes[gn].p, _gridSnapNodes[gn].label);
+        if (!bestResult) {
+          var gl = _gridLineSnap(mousePixel, threshold, camera, rect);
+          if (gl) bestResult = gl;
+        }
+      }
+
       return bestResult;
+    }
+
+    // Nearest point ALONG any grid line to the cursor (fallback tier). Returns
+    // { position, label } or null. Uses the true 3D closest point between the pick
+    // RAY (camera → cursor) and each segment, so the snapped point sits directly
+    // under the cursor in any view (a screen-space lerp drifts under perspective).
+    var _gridRay = null, _gridD1 = new THREE.Vector3(), _gridR = new THREE.Vector3(), _gridP = new THREE.Vector3();
+    function _gridLineSnap(mousePixel, threshold, camera, rect) {
+      if (!_gridRay) _gridRay = new THREE.Raycaster();
+      var ndc = _gridTmpV2.set((mousePixel.x / rect.width) * 2 - 1, -(mousePixel.y / rect.height) * 2 + 1);
+      _gridRay.setFromCamera(ndc, camera);
+      var O = _gridRay.ray.origin, D = _gridRay.ray.direction;   // D is unit
+      var best = null, bestD = threshold;
+      for (var i = 0; i < _gridSnapSegs.length; i++) {
+        var s = _gridSnapSegs[i], A = s.a, B = s.b;
+        _gridD1.subVectors(B, A);                                // segment dir
+        _gridR.subVectors(A, O);
+        var a = _gridD1.dot(_gridD1), b = _gridD1.dot(D), e = D.dot(_gridR), f = _gridD1.dot(_gridR);
+        var den = a - b * b;                                     // (c = D·D = 1)
+        var t = Math.abs(den) > 1e-9 ? (b * e - f) / den : 0;    // param along the segment
+        t = Math.max(0, Math.min(1, t));
+        _gridP.copy(A).addScaledVector(_gridD1, t);              // closest point on segment to the ray
+        var pr = _gridP.clone().project(camera);
+        if (pr.z > 1) continue;                                  // behind camera
+        var sx = (pr.x * 0.5 + 0.5) * rect.width, sy = (1 - (pr.y * 0.5 + 0.5)) * rect.height;
+        var dx = sx - mousePixel.x, dy = sy - mousePixel.y, d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestD) { bestD = d; best = { position: _gridP.clone(), label: s.label }; }
+      }
+      return best;
     }
 
     // -- Export members as DXF --
@@ -12739,8 +12841,14 @@
     // Extracted hard edges/vertices (world space) of loaded+visible models. These
     // are the REAL feature edges (EdgesGeometry drops flat interior tessellation),
     // which is what you actually want to snap to on a dense model.
-    let modelSnapVerts = [];   // Array<Vector3>
+    let modelSnapVerts = [];   // Array<Vector3> — corners + edge midpoints
+    let modelSnapVertLabels = []; // parallel to modelSnapVerts: 'corner' | 'edge mid'
     let modelSnapEdges = [];   // Array<[Vector3, Vector3]>
+    // Member END centres (from the end vertex rings). Kept SEPARATE from snapVerts
+    // because they can sit in EMPTY SPACE (the hole of a hollow section), so they
+    // must be matched by screen distance only — NOT filtered by 3D proximity to a
+    // surface hit, which would always reject a point floating in the hole.
+    let modelSnapEnds = [];    // Array<Vector3> (world)
     let modelEdgeLines = null; // THREE.LineSegments overlay (toggleable)
     let showModelEdges = false;
     let modelFeatureGrid = null; // spatial hash → only project features near the cursor
@@ -12771,6 +12879,67 @@
       return { point: hits[0].point.clone(), distance: hits[0].distance, object: hits[0].object, face: hits[0].face };
     }
 
+    // Robust "member end" snap: the area-weighted CENTRE of the flat face under the
+    // cursor. When you hover a member's end cap (or any flat face), we gather every
+    // triangle of the hit mesh that is coplanar with the hit triangle and return
+    // their centroid in WORLD space. This needs no per-mesh axis guessing (the old
+    // PCA approach was unreliable for posts) — hover the end, snap to its centre.
+    var _hfcA = new THREE.Vector3(), _hfcB = new THREE.Vector3(), _hfcC = new THREE.Vector3();
+    var _hfcE1 = new THREE.Vector3(), _hfcE2 = new THREE.Vector3(), _hfcN = new THREE.Vector3(), _hfcCt = new THREE.Vector3();
+    function _hoverFaceCenter(hit) {
+      if (!hit || !hit.object || !hit.face) return null;
+      var geom = hit.object.geometry, posAttr = geom && geom.attributes && geom.attributes.position;
+      if (!posAttr) return null;
+      var idx = geom.index, triCount = idx ? (idx.count / 3) : (posAttr.count / 3);
+      if (triCount < 1 || triCount > 6000) return null;           // too big → skip to keep picking snappy
+      // Reference plane = the hit triangle's normal + a point on it (all LOCAL).
+      var nx = hit.face.normal.x, ny = hit.face.normal.y, nz = hit.face.normal.z;
+      _hfcA.fromBufferAttribute(posAttr, hit.face.a);
+      var planeD = nx * _hfcA.x + ny * _hfcA.y + nz * _hfcA.z;
+      var NRM_TOL = 0.03, PLANE_TOL = 0.004;                      // parallel-normal & on-plane tolerances (metres)
+      var cx = 0, cy = 0, cz = 0, wsum = 0;
+      function vi(t, k) { return idx ? idx.getX(t * 3 + k) : (t * 3 + k); }
+      for (var t = 0; t < triCount; t++) {
+        _hfcA.fromBufferAttribute(posAttr, vi(t, 0));
+        _hfcB.fromBufferAttribute(posAttr, vi(t, 1));
+        _hfcC.fromBufferAttribute(posAttr, vi(t, 2));
+        _hfcE1.subVectors(_hfcB, _hfcA); _hfcE2.subVectors(_hfcC, _hfcA);
+        _hfcN.crossVectors(_hfcE1, _hfcE2);
+        var area2 = _hfcN.length();
+        if (area2 < 1e-12) continue;
+        _hfcN.multiplyScalar(1 / area2);
+        if (Math.abs(_hfcN.x * nx + _hfcN.y * ny + _hfcN.z * nz) < 1 - NRM_TOL) continue;   // not parallel
+        if (Math.abs(nx * _hfcA.x + ny * _hfcA.y + nz * _hfcA.z - planeD) > PLANE_TOL) continue; // not on plane
+        _hfcCt.copy(_hfcA).add(_hfcB).add(_hfcC).multiplyScalar(1 / 3);
+        var w = area2 * 0.5;
+        cx += _hfcCt.x * w; cy += _hfcCt.y * w; cz += _hfcCt.z * w; wsum += w;
+      }
+      if (wsum <= 0) return null;
+      return hit.object.localToWorld(new THREE.Vector3(cx / wsum, cy / wsum, cz / wsum));
+    }
+
+    // Precompute a member's two END centres from its geometry (no cursor needed):
+    // cluster the mesh's triangles into flat faces (by normal + plane offset), take
+    // each face's area-weighted centroid, and return the centroids of the two faces
+    // that are FARTHEST apart — for an elongated member those are its two end caps,
+    // Nearest member-END centre to the cursor, matched by SCREEN distance only (no
+    // 3D-proximity / surface-hit requirement) so it snaps even when the centre sits
+    // in the hole of a hollow section. Returns { position, label } or null.
+    function _nearestModelEnd(mousePixel, threshold) {
+      if (!modelSnapEnds.length) return null;
+      var cam = viewer.scene.getActiveCamera();
+      if (!cam) return null;
+      var rect = renderArea.getBoundingClientRect(), best = null, bestD = threshold, p = new THREE.Vector3();
+      for (var i = 0; i < modelSnapEnds.length; i++) {
+        p.copy(modelSnapEnds[i]).project(cam);
+        if (p.z > 1) continue;
+        var sx = (p.x * 0.5 + 0.5) * rect.width, sy = (1 - (p.y * 0.5 + 0.5)) * rect.height;
+        var dx = sx - mousePixel.x, dy = sy - mousePixel.y, d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestD) { bestD = d; best = modelSnapEnds[i]; }
+      }
+      return best ? { position: best.clone(), label: 'member end', dist: bestD } : null;
+    }
+
     // Extract a model's hard edges/vertices (world space) via EdgesGeometry, run
     // in time-sliced chunks so a 3.5M-tri model never freezes the viewer. ~18°
     // keeps real feature edges (deck boards, slats, rims) and drops flat interior
@@ -12778,11 +12947,17 @@
     function scheduleEdgeExtract(rec) {
       rec.snapEdges = [];
       rec.snapVerts = [];
+      rec.snapVertLabels = [];
+      rec.snapEnds = [];
       var vkeys = new Set();
+      function addVert(V, label) { var k = _vkey(V); if (!vkeys.has(k)) { vkeys.add(k); rec.snapVerts.push(V); rec.snapVertLabels.push(label); } }
       var meshes = [];
       rec.group.updateMatrixWorld(true);
       rec.group.traverse(function(o) { if (o.isMesh && o.geometry && o.geometry.attributes && o.geometry.attributes.position) meshes.push(o); });
       var mi = 0, tick = 0;
+      var MID_MIN_LEN = 0.05;     // add a midpoint for any feature edge ≥5cm
+      var MEMBER_MIN_LEN = 0.30;  // only add end centres for parts ≥30cm long
+      var nMid = 0, nEnd = 0;
       function step() {
         var t0 = performance.now();
         while (mi < meshes.length && (performance.now() - t0) < 15) {
@@ -12790,32 +12965,58 @@
           try {
             var eg = new THREE.EdgesGeometry(o.geometry, 18);
             var ep = eg.attributes.position, a = new THREE.Vector3(), b = new THREE.Vector3();
+            var lgA = new THREE.Vector3(), lgB = new THREE.Vector3(), lgLen2 = 0;   // longest edge = member axis
             for (var i = 0; i + 1 < ep.count; i += 2) {
               a.fromBufferAttribute(ep, i); b.fromBufferAttribute(ep, i + 1);
               o.localToWorld(a); o.localToWorld(b);
               var A = a.clone(), B = b.clone();
               rec.snapEdges.push([A, B]);
-              var ka = _vkey(A); if (!vkeys.has(ka)) { vkeys.add(ka); rec.snapVerts.push(A); }
-              var kb = _vkey(B); if (!vkeys.has(kb)) { vkeys.add(kb); rec.snapVerts.push(B); }
+              addVert(A, 'corner'); addVert(B, 'corner');
+              var el2 = A.distanceToSquared(B);
+              if (el2 >= MID_MIN_LEN * MID_MIN_LEN) { addVert(new THREE.Vector3().addVectors(A, B).multiplyScalar(0.5), 'edge mid'); nMid++; }
+              if (el2 > lgLen2) { lgLen2 = el2; lgA.copy(A); lgB.copy(B); }
             }
             if (eg.dispose) eg.dispose();
+            // Member END centres = centroid of the vertex RING at each extreme along
+            // the member axis (the longest feature edge). Uses vertices, not faces,
+            // so it works for HOLLOW sections (open or capped) — the wall ring of
+            // vertices averages to the section centre, even though that centre sits
+            // in empty space (the hole). Stored in snapEnds (screen-distance match).
+            if (Math.sqrt(lgLen2) > MEMBER_MIN_LEN) {
+              var axis = new THREE.Vector3().subVectors(lgB, lgA).normalize();  // world axis
+              var pos = o.geometry.attributes.position, nP = pos.count, wv = new THREE.Vector3();
+              var tmin = Infinity, tmax = -Infinity, k;
+              for (k = 0; k < nP; k++) { wv.fromBufferAttribute(pos, k); o.localToWorld(wv); var tt = wv.dot(axis); if (tt < tmin) tmin = tt; if (tt > tmax) tmax = tt; }
+              var band = Math.max(0.006, (tmax - tmin) * 0.02);
+              var aX = 0, aY = 0, aZ = 0, aN = 0, bX = 0, bY = 0, bZ = 0, bN = 0;
+              for (k = 0; k < nP; k++) {
+                wv.fromBufferAttribute(pos, k); o.localToWorld(wv); var t2 = wv.dot(axis);
+                if (t2 <= tmin + band) { aX += wv.x; aY += wv.y; aZ += wv.z; aN++; }
+                if (t2 >= tmax - band) { bX += wv.x; bY += wv.y; bZ += wv.z; bN++; }
+              }
+              if (aN > 0) { rec.snapEnds.push(new THREE.Vector3(aX / aN, aY / aN, aZ / aN)); nEnd++; }
+              if (bN > 0) { rec.snapEnds.push(new THREE.Vector3(bX / bN, bY / bN, bZ / bN)); nEnd++; }
+            }
           } catch (e) {}
         }
         rebuildModelFeatures();
         if (showModelEdges && (++tick % 6 === 0)) rebuildEdgeLines(); // fill in the overlay as it builds
         if (mi < meshes.length) setTimeout(step, 0);
-        else { buildFeatureGrid(); rebuildEdgeLines(); console.log('[msnap] edges extracted "' + rec.name + '":', rec.snapEdges.length, 'edges,', rec.snapVerts.length, 'verts'); }
+        else { buildFeatureGrid(); rebuildEdgeLines(); console.log('[msnap] "' + rec.name + '":', rec.snapEdges.length, 'edges,', rec.snapVerts.length, 'verts (' + nMid + ' edge-mids,', nEnd, 'member-ends)'); }
       }
       setTimeout(step, 0);
     }
     function rebuildModelFeatures() {
       modelSnapVerts = [];
+      modelSnapVertLabels = [];
       modelSnapEdges = [];
+      modelSnapEnds = [];
       for (var i = 0; i < models.length; i++) {
         var r = models[i];
         if (!r.group || !r.visible || !r.snapVerts) continue;
-        for (var v = 0; v < r.snapVerts.length; v++) modelSnapVerts.push(r.snapVerts[v]);
+        for (var v = 0; v < r.snapVerts.length; v++) { modelSnapVerts.push(r.snapVerts[v]); modelSnapVertLabels.push((r.snapVertLabels && r.snapVertLabels[v]) || 'model vertex'); }
         for (var e = 0; e < r.snapEdges.length; e++) modelSnapEdges.push(r.snapEdges[e]);
+        if (r.snapEnds) for (var n = 0; n < r.snapEnds.length; n++) modelSnapEnds.push(r.snapEnds[n]);
       }
     }
     // Cyan overlay of all snappable edges (toggle in the Models panel) so you can
@@ -12878,8 +13079,8 @@
       console.log('[msnap] feature grid built: cell=' + cell.toFixed(3) + ' vcells=' + vgrid.size + ' ecells=' + egrid.size);
     }
 
-    function modelFeatureNear(H, mousePixel) {
-      if (!modelSnapVerts.length && !modelSnapEdges.length) return null;
+    function modelFeatureNear(H, mousePixel, hit) {
+      if (!modelSnapVerts.length && !modelSnapEdges.length && !hit) return null;
       var camera = viewer.scene.getActiveCamera();
       var rect = renderArea.getBoundingClientRect();
       var dist = camera.position.distanceTo(H);
@@ -12900,10 +13101,17 @@
           var ea = g.egrid.get(k); if (ea) for (var ie = 0; ie < ea.length; ie++) eCand.add(ea[ie]);
         }
       }
-      var bV = null, bVd = RV;
-      function checkVert(idx) { var V = modelSnapVerts[idx]; if (V.distanceToSquared(H) > r3d2) return; s = scr(V); dx = s.x - mousePixel.x; dy = s.y - mousePixel.y; d = Math.sqrt(dx * dx + dy * dy); if (d < bVd) { bVd = d; bV = V; } }
+      var bV = null, bVd = RV, bVlabel = 'model vertex';
+      function checkVert(idx) { var V = modelSnapVerts[idx]; if (V.distanceToSquared(H) > r3d2) return; s = scr(V); dx = s.x - mousePixel.x; dy = s.y - mousePixel.y; d = Math.sqrt(dx * dx + dy * dy); if (d < bVd) { bVd = d; bV = V; bVlabel = modelSnapVertLabels[idx] || 'model vertex'; } }
       if (vCand) vCand.forEach(checkVert); else for (var i = 0; i < modelSnapVerts.length; i++) checkVert(i);
-      if (bV) return { position: bV.clone(), label: 'model vertex' };
+      // Robust member-END snap: centre of the flat face under the cursor. Competes
+      // in the same (24px) tier, so hovering an end cap's middle snaps to its centre
+      // while hovering near a corner still grabs the corner.
+      if (hit) {
+        var fc = _hoverFaceCenter(hit);
+        if (fc) { s = scr(fc); dx = s.x - mousePixel.x; dy = s.y - mousePixel.y; d = Math.sqrt(dx * dx + dy * dy); if (d < bVd) { bVd = d; bV = fc; bVlabel = 'member end'; } }
+      }
+      if (bV) return { position: bV.clone(), label: bVlabel };
       var bEpos = null, bEd = RE;
       function checkEdge(idx) {
         var A = modelSnapEdges[idx][0], B = modelSnapEdges[idx][1];
@@ -12918,21 +13126,11 @@
       return null;
     }
 
-    // Does a finalized measurement point sit on the model surface? (camera-ray test;
-    // used to colour model points teal vs cloud points red.)
+    // Measurement points/labels are ALWAYS red now — the teal "on model" styling
+    // was confusing (some points teal, some red on the same member), so this
+    // always reports false and every point/label/edge renders red.
     function isPositionOnModel(pos) {
-      if (!modelSnapMeshes.length) return false;
-      var camera = viewer.scene.getActiveCamera();
-      if (!camera) return false;
-      if (!_modelRaycaster) _modelRaycaster = new THREE.Raycaster();
-      var dir = pos.clone().sub(camera.position);
-      var dist = dir.length();
-      if (dist < 1e-6) return false;
-      dir.multiplyScalar(1 / dist);
-      _modelRaycaster.set(camera.position.clone(), dir);
-      var hits = _modelRaycaster.intersectObjects(modelSnapMeshes, false);
-      if (!hits.length) return false;
-      return Math.abs(hits[0].distance - dist) < Math.max(0.03, dist * 0.01);
+      return false;
     }
     var MODEL_TEAL = 0x00e5ff;
 
@@ -13366,6 +13564,244 @@
         });
     }
 
+    // ===== Structural gridlines overlay (<models>/gridlines.json) =====
+    // Tekla IfcGrid axes, extracted to flat line segments per grid ELEVATION
+    // (metres, IFC-native Z-up frame). Rendered always-on-top in its own overlay
+    // scene and shifted by meta.modelOffset so it aligns with the offset model +
+    // the scan. Toggled from the top-bar eye dropdown ("Gridlines").
+    var gridScene = new THREE.Scene();
+    gridScene.name = 'EnableGridScene';
+    var _gridGroup = null;            // all lines + label bubbles, positioned at modelOffset
+    var _gridLabelSprites = [];       // for per-frame screen-space scaling (ortho + perspective)
+    var _gridlinesVisible = false;    // OFF by default; toggled from the Models panel
+    var _gridlinesLoaded = false;
+    var _gridSnapSegs = [];           // [{a,b:Vector3 WORLD, label}] for along-line snapping
+    var _gridSnapNodes = [];          // [{p:Vector3 WORLD, label}] axis intersections (priority)
+
+    function _gridLabelSprite(text) {
+      var fs = 30, pad = 7;
+      var c = document.createElement('canvas'), ctx = c.getContext('2d');
+      ctx.font = 'bold ' + fs + 'px sans-serif';
+      var w = Math.ceil(ctx.measureText(text).width) + pad * 2, h = fs + pad * 2;
+      c.width = Math.max(40, w); c.height = h;
+      ctx = c.getContext('2d');
+      ctx.font = 'bold ' + fs + 'px sans-serif';
+      var r = h / 2;
+      ctx.fillStyle = 'rgba(18,26,38,0.86)';
+      ctx.beginPath();
+      ctx.moveTo(r, 0); ctx.arcTo(c.width, 0, c.width, h, r); ctx.arcTo(c.width, h, 0, h, r);
+      ctx.arcTo(0, h, 0, 0, r); ctx.arcTo(0, 0, c.width, 0, r); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(120,170,255,0.95)'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.fillStyle = '#d6e6ff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, c.width / 2, h / 2 + 1);
+      var tex = new THREE.CanvasTexture(c); tex.minFilter = THREE.LinearFilter;
+      // sizeAttenuation:true so our per-frame scale is the sole size authority;
+      // scaled each frame via Potree.Utils.projectedRadius, which is correct for
+      // BOTH perspective and orthographic cameras (sizeAttenuation:false sprites
+      // vanish in ortho — three skips their screen-constant scaling there).
+      var mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: true });
+      var sp = new THREE.Sprite(mat);
+      sp.userData.gridLabelAspect = c.width / c.height;
+      return sp;
+    }
+
+    function buildGridlines(data) {
+      if (_gridGroup) { gridScene.remove(_gridGroup); _gridGroup = null; }
+      _gridLabelSprites = []; _gridSnapSegs = []; _gridSnapNodes = [];
+      if (!data || !data.grids || !data.grids.length) return;
+      // Only the LOWEST Tekla elevation (grid at min Z) — the others stack the
+      // same plan labels and just add clutter.
+      var minZ = Math.min.apply(null, data.grids.map(function (g) { return g.z; }));
+      var grids = data.grids.filter(function (g) { return Math.abs(g.z - minZ) < 1e-4; });
+      var group = new THREE.Group();
+      var mo = (meta && meta.modelOffset) || null;      // same shift as the model
+      group.position.set(mo ? (+mo.x || 0) : 0, mo ? (+mo.y || 0) : 0, mo ? (+mo.z || 0) : 0);
+      var lineMat = new THREE.LineBasicMaterial({ color: 0x5a9bff, transparent: true, opacity: 0.85, depthTest: true, depthWrite: false });
+      grids.forEach(function (g) {
+        (g.axes || []).forEach(function (ax) {
+          var a = ax.a, b = ax.b;
+          if (!a || !b) return;
+          var geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(b[0], b[1], b[2])]);
+          var line = new THREE.Line(geo, lineMat); line.renderOrder = 999; group.add(line);
+          if (ax.label) {
+            // Bubble at BOTH ends so the axis reads from either side (Tekla style).
+            // Store the anchor (line end, group-local) + OUTWARD axis direction so
+            // the render pass can push a bubble out along its own line when it
+            // collides with a neighbour (see the declutter loop below).
+            var A = new THREE.Vector3(a[0], a[1], a[2]), B = new THREE.Vector3(b[0], b[1], b[2]);
+            // World segment for snapping (group only translates by modelOffset).
+            _gridSnapSegs.push({ a: A.clone().add(group.position), b: B.clone().add(group.position), label: ax.label });
+            var dir = new THREE.Vector3().subVectors(B, A); if (dir.lengthSq() > 1e-9) dir.normalize();
+            var s1 = _gridLabelSprite(ax.label); s1.position.copy(A); s1.renderOrder = 1000;
+            s1.userData.gridAnchor = A.clone(); s1.userData.gridOutward = dir.clone().multiplyScalar(-1);
+            group.add(s1); _gridLabelSprites.push(s1);
+            var s2 = _gridLabelSprite(ax.label); s2.position.copy(B); s2.renderOrder = 1000;
+            s2.userData.gridAnchor = B.clone(); s2.userData.gridOutward = dir.clone();
+            group.add(s2); _gridLabelSprites.push(s2);
+          }
+        });
+      });
+      gridScene.add(group);
+      _gridGroup = group; _gridlinesLoaded = true;
+      group.visible = _gridlinesVisible;
+      _computeGridNodes();      // axis intersections (grid crossings) for snapping
+      _declutterGridLabels();   // bake fixed positions ONCE (top-view plan) so they don't drift on orbit
+      updateModelsPanel();      // surface the Gridlines toggle now that data exists
+    }
+
+    // Grid crossings = intersections of every non-parallel axis pair (all axes are
+    // coplanar at the grid elevation, so we solve in that plane). These snap with
+    // priority over along-line snaps.
+    function _computeGridNodes() {
+      _gridSnapNodes = [];
+      var segs = _gridSnapSegs;
+      for (var i = 0; i < segs.length; i++) {
+        var s1 = segs[i], p1 = s1.a, p2 = s1.b, d1x = p2.x - p1.x, d1y = p2.y - p1.y;
+        for (var j = i + 1; j < segs.length; j++) {
+          var s2 = segs[j], p3 = s2.a, p4 = s2.b, d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+          var den = d1x * d2y - d1y * d2x;
+          if (Math.abs(den) < 1e-9) continue;                 // parallel / collinear
+          var t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / den;
+          var u = ((p3.x - p1.x) * d1y - (p3.y - p1.y) * d1x) / den;
+          if (t < -1e-4 || t > 1 + 1e-4 || u < -1e-4 || u > 1 + 1e-4) continue;   // outside either segment
+          var p = new THREE.Vector3(p1.x + d1x * t, p1.y + d1y * t, (p1.z + p2.z) * 0.5);
+          _gridSnapNodes.push({ p: p, label: s1.label + '/' + s2.label });
+        }
+      }
+    }
+
+    // Resolve label overlaps ONCE, in the grid's own plan (top view), then BAKE
+    // the positions. Labels then stay put on orbit (only their pixel size tracks
+    // the camera). A colliding bubble is pushed OUT along its own axis line, in
+    // the plan, until it clears — matching what you'd want looking straight down.
+    function _declutterGridLabels() {
+      var sprites = _gridLabelSprites;
+      if (!sprites.length) return;
+      var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+      sprites.forEach(function (sp) { var a = sp.userData.gridAnchor; if (!a) return; minx = Math.min(minx, a.x); maxx = Math.max(maxx, a.x); miny = Math.min(miny, a.y); maxy = Math.max(maxy, a.y); });
+      var maxDim = Math.max(maxx - minx, maxy - miny) || 1;
+      // Reference: grid fits ~90% of a ~1000px top view → world units per pixel.
+      var wpp = maxDim / 900, TARGET_PX = 23;
+      var placed = [];
+      sprites.forEach(function (sp) {
+        var a = sp.userData.gridAnchor, o = sp.userData.gridOutward;
+        if (!a) return;
+        var aspect = sp.userData.gridLabelAspect || 2;
+        var hw = (TARGET_PX * aspect * 0.5 + 1) * wpp, hh = (TARGET_PX * 0.5 + 1) * wpp;
+        var stepW = TARGET_PX * 0.62 * wpp, rank = 0, cx = 0, cy = 0;
+        for (;;) {
+          cx = a.x + o.x * rank * stepW; cy = a.y + o.y * rank * stepW;
+          var hit = false;
+          for (var k = 0; k < placed.length; k++) { var q = placed[k]; if (Math.abs(cx - q.cx) < hw + q.hw && Math.abs(cy - q.cy) < hh + q.hh) { hit = true; break; } }
+          if (!hit || rank >= 14) break;
+          rank++;
+        }
+        placed.push({ cx: cx, cy: cy, hw: hw, hh: hh });
+        sp.position.copy(a).addScaledVector(o, rank * stepW);   // baked, group-local
+      });
+    }
+
+    function setGridlinesVisible(v) {
+      _gridlinesVisible = !!v;
+      if (_gridGroup) _gridGroup.visible = _gridlinesVisible;
+      updateModelsPanel();
+    }
+
+    function discoverGridlines() {
+      var root = meta.folder.replace(/\/+$/, '').replace(/\/pointclouds\/[^/]*$/, '');
+      fetch(root + '/models/gridlines.json').then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) { if (data) { buildGridlines(data); console.log('[gridlines]', (data.grids || []).length, 'grids loaded'); } })
+        .catch(function () { /* none for this project */ });
+    }
+
+    // Rendered in perspective_overlay (after clearDepth). Label POSITIONS are
+    // baked (stationary on orbit) — here we only keep their pixel size constant.
+    // Before drawing, we re-render the loaded model's depth (colour-write off) so
+    // model members OCCLUDE the grid LINES; the point cloud does NOT (its depth was
+    // cleared), so the floor grid still reads over the scan. Labels (renderOrder
+    // 1000, depthTest:false) always draw on top so they stay readable.
+    var _gridTmpV3 = new THREE.Vector3(), _gridTmpV2 = new THREE.Vector2(), _gridTmpV3b = new THREE.Vector3();
+    var _gridDepthMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true, depthTest: true });
+    function _renderModelDepthForGrid(r, cam) {
+      var swapped = [];
+      for (var i = 0; i < models.length; i++) {
+        var m = models[i];
+        if (!m.group || !m.visible) continue;
+        m.group.traverse(function (o) { if (o.isMesh && o.material) { swapped.push([o, o.material]); o.material = _gridDepthMat; } });
+      }
+      if (!swapped.length) return;
+      for (var j = 0; j < models.length; j++) { if (models[j].group && models[j].visible) r.render(models[j].group, cam); }
+      for (var k = 0; k < swapped.length; k++) swapped[k][0].material = swapped[k][1];
+    }
+    viewer.addEventListener("render.pass.perspective_overlay", function () {
+      if (!_gridGroup || !_gridlinesVisible) return;
+      var cam = viewer.scene.getActiveCamera(), r = viewer.renderer;
+      if (_gridLabelSprites.length) {
+        var rsz = r.getSize(_gridTmpV2), TARGET_PX = 23;    // ~33% smaller than before
+        var gp = _gridGroup.position;                       // group only translates (modelOffset)
+        for (var i = 0; i < _gridLabelSprites.length; i++) {
+          var sp = _gridLabelSprites[i];
+          var wp = _gridTmpV3b.copy(sp.position).add(gp);   // baked local pos → world
+          var pr = Potree.Utils.projectedRadius(1, cam, cam.position.distanceTo(wp), rsz.width, rsz.height);
+          if (!pr || !isFinite(pr) || pr < 1e-6) pr = 1;
+          var hh = TARGET_PX / pr;
+          sp.scale.set(hh * (sp.userData.gridLabelAspect || 2), hh, 1);
+        }
+      }
+      var prevAutoClear = r.autoClear; r.autoClear = false;
+      _renderModelDepthForGrid(r, cam);   // members occlude the lines (cloud does not)
+      r.render(gridScene, cam);
+      r.autoClear = prevAutoClear;
+    });
+
+    // ===== Double-click re-focus (works with the point cloud hidden) =====
+    // Pan/zoom/orbit speed and the near-plane both scale with view.radius. When
+    // you zoom right in, radius shrinks (correct). But if the cloud is HIDDEN,
+    // Potree's own double-click (which raycasts only the cloud) can't reset it, so
+    // the camera gets stuck slow. This raycasts the MODEL too and re-seats the
+    // pivot depth (radius) on whatever is under the cursor — or the scene centre if
+    // nothing is — un-sticking the controls.
+    function _sceneFocusCenter() {
+      try {
+        var box = new THREE.Box3(), has = false;
+        for (var i = 0; i < models.length; i++) { if (models[i].group && models[i].visible) { box.expandByObject(models[i].group); has = true; } }
+        if (has && isFinite(box.min.x)) return box.getCenter(new THREE.Vector3());
+      } catch (e) {}
+      try { var pc = viewer.scene.pointclouds[0]; if (pc && pc.boundingBox) return pc.boundingBox.clone().applyMatrix4(pc.matrixWorld).getCenter(new THREE.Vector3()); } catch (e) {}
+      return null;
+    }
+    // Recenter the pivot on P and zoom in (keeps orientation). Un-sticks the
+    // radius-based pan/zoom/orbit speed and the near-plane at the same time.
+    function _zoomViewTo(P, zoomFactor) {
+      var view = viewer.scene.view, pos = view.position;
+      var d = pos.distanceTo(P);
+      if (!isFinite(d) || d < 1e-3) return;
+      var dir = view.getPivot().sub(pos);
+      if (dir.lengthSq() < 1e-9) dir.copy(P).sub(pos);
+      dir.normalize();
+      var newRadius = d * (zoomFactor || 1);
+      view.position.copy(P).addScaledVector(dir, -newRadius);
+      view.radius = newRadius;
+      try { viewer.setMoveSpeed(Math.min(newRadius, viewer._autoSpeedMax || 10)); } catch (e) {}
+    }
+    renderArea.addEventListener('dblclick', function (e) {
+      try {
+        var rect = renderArea.getBoundingClientRect();
+        var mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        var mh = modelSurfacePick(mouse);                       // model under cursor?
+        if (mh && mh.point) {
+          // Zoom-to the MODEL (Potree's own double-click only zooms to the cloud).
+          _zoomViewTo(mh.point, 0.6);
+          e.stopPropagation(); e.preventDefault();              // don't also zoom to a cloud point behind it
+          return;
+        }
+        // No model under the cursor: if there's no visible cloud either, Potree
+        // can't help — recentre on the scene so we're not stuck.
+        var anyCloudVis = (viewer.scene.pointclouds || []).some(function (pc) { return pc.visible; });
+        if (!anyCloudVis) { var c = _sceneFocusCenter(); if (c) _zoomViewTo(c, 1); }
+      } catch (err) {}
+    }, true);
+
     // =====================================================================
     // Multi-scan support — load >1 point cloud and view/hide each from the
     // right-hand "Scans" panel (adopted into Tool settings by chrome.js).
@@ -13585,12 +14021,20 @@
           '<span title="' + rec.name + '">' + rec.name + '</span>' + right + '</div>';
       }
       var anyLoaded = models.some(function(m) { return m.group; });
+      // Structural gridlines toggle (only when this project shipped gridlines.json).
+      var gridRow = _gridlinesLoaded
+        ? '<div class="enable-models-row"><span title="Structural gridlines (lowest elevation)">Gridlines</span>' +
+            '<button class="enable-cp-eye" id="btn-toggle-gridlines" title="Show / hide gridlines">' + (_gridlinesVisible ? '\u{1F441}' : '\u{1F6AB}') + '</button></div>'
+        : '';
       p.innerHTML =
         '<div class="enable-cp-title">' + _cpIcon('box') + '<span>Models</span></div>' +
         (models.length ? rows : '<div style="opacity:0.6;font-size:12px;margin:2px 0 8px">No model loaded.</div>') +
+        gridRow +
         (anyLoaded ? '<div style="margin-top:8px"><button id="btn-toggle-edges" style="width:100%">' + (showModelEdges ? 'Hide' : 'Show') + ' snappable edges</button></div>' : '') +
         '<div style="margin-top:8px"><button id="btn-load-model" style="width:100%">Load model from file (.glb)…</button></div>' +
         '<input type="file" id="model-file-input" accept=".glb,.gltf" style="display:none">';
+      var tg = p.querySelector('#btn-toggle-gridlines');
+      if (tg) tg.addEventListener('click', function () { setGridlinesVisible(!_gridlinesVisible); });
       var te = p.querySelector('#btn-toggle-edges');
       if (te) te.addEventListener('click', toggleModelEdges);
       p.querySelectorAll('.enable-model-load').forEach(function(b) { b.addEventListener('click', function() { var r = models[+this.dataset.idx]; if (r) loadModelRec(r); }); });
@@ -14840,7 +15284,6 @@
           var snap = findSnapTarget(mouse, SNAP_THRESHOLD_MEMBER);
           if (snap) {
             pos = snap.position;
-            showToast('Snapped to ' + snap.label, 1500);
           }
         }
         if (_axesPickMode) {
@@ -14889,6 +15332,7 @@
       scene.addPointCloud(pc);
       loadedPointCloud = pc; // used by model import
       discoverProjectModels(); // list this project's models/ folder (load on demand)
+      discoverGridlines();     // structural gridlines overlay (if models/gridlines.json exists)
       updateModelsPanel();     // show the Models panel (with "Load model from file") even before any model is discovered
 
       // material defaults

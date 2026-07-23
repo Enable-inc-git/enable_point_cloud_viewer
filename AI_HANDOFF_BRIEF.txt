@@ -6,6 +6,42 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-07-22b — ALL 7 VIEWERS: structural gridlines + model snapping ***
+#############################################################################
+- STRUCTURAL GRIDLINES OVERLAY (data-driven; only shows if <project>/models/
+  gridlines.json exists on R2). Extracted from a Tekla IFC's IfcGrid axes by a
+  standalone python STEP parser (scratchpad extract_grids.py) -> gridlines.json
+  (line segments, metres, IFC-native Z-up). Viewer: discoverGridlines() fetches it,
+  shows the LOWEST grid elevation as blue lines + label bubbles. Toggle = "Gridlines"
+  row in the Models panel (OFF by default). Positioned by meta.modelOffset (same as
+  the model). Labels are billboarded, screen-constant size (works in ortho), and
+  DECLUTTERED ONCE at build (baked, so they don't drift on orbit). Lines are occluded
+  by loaded model members (depth-prepass in perspective_overlay) but NOT by the cloud.
+  Grid lines + intersections are SNAPPABLE. St Joseph has gridlines.json on R2
+  (bda/stjoseph/models/); no other project does yet.
+- MODEL FEATURE SNAPPING (measurement/mark/member tools, via findSnapTarget +
+  modelFeatureNear): now snaps to corners, EDGE MIDPOINTS (edges >=5cm), and MEMBER
+  END CENTRES. End centres are the centroid of the end VERTEX RING (extreme band
+  along the member's longest edge = its axis) — works for HOLLOW/open sections where
+  the centre sits in the hole (empty space). Ends are matched by SCREEN distance only
+  (modelSnapEnds list, _nearestModelEnd), NOT the 3D-proximity filter (which rejected
+  hole-centre points). Also a live "centre of the hovered flat face" snap
+  (_hoverFaceCenter). Console logs counts: [msnap] "<name>": E edges, V verts
+  (M edge-mids, N member-ends).
+- MEASUREMENT points/labels are now ALWAYS RED (isPositionOnModel -> false; dropped
+  the teal on-model styling). No more "Snapped to X" toast, and hover no longer pops
+  a snap highlight unless a placement tool is armed (or you're repositioning a point).
+- POINT REPOSITION: dragging a placed measurement point now snaps to features while
+  moving, follows the cursor through empty space, and if released over the void it
+  snaps BACK to the last real target (can't be dropped floating). Gated on the sphere
+  being a measurement marker.
+- CAMERA: double-click now zooms/recentres on the MODEL too (not just the cloud);
+  works with the cloud hidden. potree.js near/far no longer FREEZES when no cloud is
+  visible (was clipping the model up close) — falls back to near=0.1/far>=10000.
+- Files: all 7 viewer.html (generic; propagated from BDA) + shared potree.js. Build
+  tag -> 2026-07-22b. gridlines.json/model.glb live on R2 (gitignored locally).
+
+#############################################################################
 # *** 2026-07-22 — ALL 7 VIEWERS: LAS multi-scan export fix + model offset ***
 #############################################################################
 - MULTI-SCAN LAS EXPORT FIX (BDA St Joseph has 2 scans: Main + Columns). The

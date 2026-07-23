@@ -90424,7 +90424,12 @@ ENDSEC
 					camera.near = near;
 					camera.far = far;
 				}else {
-					// don't change near and far in this case
+					// No visible point cloud to drive near/far (e.g. the cloud is
+					// hidden while inspecting a loaded model). Freezing the last
+					// values makes the stale near-plane clip the model when the
+					// camera moves close, so fall back to a wide, safe range.
+					camera.near = 0.1;
+					camera.far = Math.max(camera.far || 0, 10000);
 				}
 
 				if(this.scene.cameraMode == CameraMode.ORTHOGRAPHIC) {
