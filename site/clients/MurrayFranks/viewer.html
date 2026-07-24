@@ -3819,7 +3819,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] MurrayFranks build 2026-07-22b — gridlines overlay + model snapping (ends/mids/faces) + camera fixes'); } catch (e) {}
+    try { console.info('[Enable] MurrayFranks build 2026-07-24 — model scale support (meta.modelScale) + gridlines/snapping'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -13465,6 +13465,12 @@
       var _mo = (meta && meta.modelOffset) || null;
       group.position.set(_mo ? (+_mo.x || 0) : 0, _mo ? (+_mo.y || 0) : 0, _mo ? (+_mo.z || 0) : 0);
       group.rotation.x = MODEL_X_ROTATION;  // glTF Y-up -> scan Z-up
+      // Optional uniform scale (meta.modelScale). glTF is spec'd in metres, but some
+      // exports leave the geometry in the model's own units (e.g. mm) — set 0.001 to
+      // bring a millimetre GLB into the metre-based scan frame. Applied before the
+      // rotation/offset (Object3D matrix = T·R·S).
+      var _msc = (meta && +meta.modelScale) || 1;
+      group.scale.setScalar(isFinite(_msc) && _msc > 0 ? _msc : 1);
       group.visible = true;
       viewer.scene.scene.add(group);
       group.updateMatrixWorld(true);
