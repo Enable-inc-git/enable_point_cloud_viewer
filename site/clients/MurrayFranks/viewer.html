@@ -2729,6 +2729,21 @@
 
     // -- Inference: which point is the current placement measuring FROM? --
     function _axisInferAnchor() {
+      // Repositioning a measurement point (esp. the TOUCH "drag the 2nd point out"
+      // flow, which is a sphere drag, not an insertion): the anchor is the point
+      // NEXT TO the one being dragged, so the drag locks onto its axis.
+      var _dObj = (viewer.inputHandler && viewer.inputHandler.drag) ? viewer.inputHandler.drag.object : null;
+      if (_dObj) {
+        var ms = viewer.scene.measurements || [];
+        for (var mi = 0; mi < ms.length; mi++) {
+          var sp = ms[mi].spheres; if (!sp) continue;
+          var idx = sp.indexOf(_dObj);
+          if (idx !== -1 && ms[mi].points && ms[mi].points.length >= 2) {
+            var o = ms[mi].points[idx === 0 ? 1 : idx - 1];
+            return (o && o.position) ? o.position : o;
+          }
+        }
+      }
       if (pendingMeasurement && pendingMeasurement.points && pendingMeasurement.points.length >= 2) {
         var pm = pendingMeasurement.points[pendingMeasurement.points.length - 2];
         return (pm && pm.position) ? pm.position : pm;
@@ -3827,7 +3842,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] MurrayFranks build 2026-07-27b — touch axis-snap panel (Adv touch controls) + GLB fixes'); } catch (e) {}
+    try { console.info('[Enable] MurrayFranks build 2026-07-27c — touch axis-snap works during point drag + panel + GLB fixes'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -4307,7 +4322,7 @@
       if (result && result.location && mouse && typeof mouse.x === 'number' &&
           !constraintPickMode && !constraintDragActive && !memberDragActive &&
           !markerDragActive && !planeHandleDragActive &&
-          (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) {
+          (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE) || _isMeasureDrag)) {
         var _inf = applyAxisInference(result.location, mouse);
         if (_inf && (_axisLock || !_pointSnapped)) {
           _axisRawTarget = result.location.clone();   // the real point under the cursor (off-axis)
