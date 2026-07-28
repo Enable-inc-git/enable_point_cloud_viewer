@@ -648,6 +648,77 @@
     // ---- Visibility "eye" dropdown: clip box / panoramas / notes ----
     var eyeMenu = el('div', { className: 'dev2-tb-menu', id: 'dev2-menu-visibility', dataset: { open: 'false' } });
     document.body.appendChild(eyeMenu);
+    // ===== Adv touch controls: a small MOVABLE axis-snap panel for tablets =====
+    // Tablets have no arrow keys to lock the X/Y/Z inference axis, so this exposes
+    // the same setAxisLock() as three big touch targets you can drag anywhere.
+    function _makePanelDraggable(panel, handle) {
+      handle.style.cursor = 'move'; handle.style.touchAction = 'none';
+      var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+      function move(e) {
+        if (!dragging) return;
+        panel.style.left = (ox + (e.clientX - sx)) + 'px';
+        panel.style.top = (oy + (e.clientY - sy)) + 'px';
+        panel.style.right = 'auto'; panel.style.bottom = 'auto';
+      }
+      function up() { dragging = false; document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); }
+      handle.addEventListener('pointerdown', function (e) {
+        dragging = true;
+        var r = panel.getBoundingClientRect(); ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY;
+        e.preventDefault();
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+      });
+    }
+    function refreshAxisTouchPanel() {
+      var p = document.getElementById('dev2-axis-touch-panel'); if (!p) return;
+      var d = window.__dev2 || {}, cur = d.getAxisLock ? d.getAxisLock() : null;
+      Array.prototype.forEach.call(p.querySelectorAll('.dev2-atp-btn'), function (b) {
+        var on = (b.dataset.axis === cur);
+        b.style.background = on ? b.dataset.color : 'transparent';
+        b.style.color = on ? '#fff' : b.dataset.color;
+      });
+    }
+    function ensureAxisTouchPanel() {
+      var p = document.getElementById('dev2-axis-touch-panel'); if (p) return p;
+      p = el('div', { id: 'dev2-axis-touch-panel', style: {
+        position: 'fixed', top: '110px', left: '16px', zIndex: '10000', display: 'none',
+        background: 'rgba(20,24,32,0.95)', border: '1px solid rgba(255,255,255,0.18)',
+        borderRadius: '10px', padding: '6px', boxShadow: '0 6px 24px rgba(0,0,0,0.45)',
+        minWidth: '160px', userSelect: 'none', touchAction: 'none'
+      } });
+      var hdr = el('div', { style: {
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '2px 2px 6px', fontSize: '12px', color: '#cbd5e1', fontWeight: '600'
+      } }, [ el('span', { text: '⠿ Axis snap' }) ]);
+      hdr.appendChild(el('button', { text: '✕', style: {
+        background: 'transparent', border: 'none', color: '#94a3b8', fontSize: '15px', cursor: 'pointer', padding: '0 4px', lineHeight: '1'
+      }, onClick: function () { p.style.display = 'none'; } }));
+      p.appendChild(hdr);
+      var row = el('div', { style: { display: 'flex', gap: '6px' } });
+      [['x', '#ff5a5a'], ['y', '#4ad86a'], ['z', '#5a9bff']].forEach(function (a) {
+        row.appendChild(el('button', {
+          className: 'dev2-atp-btn', dataset: { axis: a[0], color: a[1] }, text: 'Snap ' + a[0].toUpperCase(),
+          style: {
+            flex: '1', padding: '14px 8px', fontSize: '14px', fontWeight: '700',
+            border: '2px solid ' + a[1], borderRadius: '8px', background: 'transparent',
+            color: a[1], cursor: 'pointer', touchAction: 'manipulation'
+          },
+          onClick: function () { var d = window.__dev2 || {}; if (d.setAxisLock) d.setAxisLock(a[0]); refreshAxisTouchPanel(); }
+        }));
+      });
+      p.appendChild(row);
+      document.body.appendChild(p);
+      _makePanelDraggable(p, hdr);
+      // Stay in sync if the lock changes elsewhere (arrow keys / Esc).
+      window.addEventListener('enable:axislock-changed', refreshAxisTouchPanel);
+      return p;
+    }
+    function toggleAxisTouchPanel() {
+      var p = ensureAxisTouchPanel();
+      var show = (p.style.display === 'none' || !p.style.display);
+      p.style.display = show ? 'block' : 'none';
+      if (show) refreshAxisTouchPanel();
+    }
+
     function rebuildEyeMenu() {
       eyeMenu.innerHTML = '';
       var d = window.__dev2 || {};
@@ -674,6 +745,13 @@
         if (!r.avail) mi.style.opacity = '0.45';
         eyeMenu.appendChild(mi);
       });
+      // Advanced touch controls — a small MOVABLE panel with axis-snap buttons, for
+      // tablets that have no arrow keys to lock the X/Y/Z inference axis.
+      eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
+      eyeMenu.appendChild(el('button', {
+        className: 'dev2-tb-menu-item', type: 'button',
+        onClick: function () { toggleAxisTouchPanel(); closeOpenMenu(); }
+      }, [ svg('move', 16), el('span', { text: 'Adv touch controls' }) ]));
       // Point size (moved here from the top toolbar to reclaim toolbar room).
       eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-sep' }));
       eyeMenu.appendChild(el('div', { className: 'dev2-tb-menu-label', text: 'Point size' }));

@@ -2798,6 +2798,16 @@
       _axisTagEl.style.display = 'block';
     }
 
+    // Set/toggle the axis-inference lock. Shared by the arrow keys AND the tablet
+    // "Adv touch controls" panel (chrome.js). 'x'|'y'|'z' toggles that axis (tap the
+    // active one again to release); anything else clears.
+    function setAxisLock(axis) {
+      if (axis === 'x' || axis === 'y' || axis === 'z') _axisLock = (_axisLock === axis) ? null : axis;
+      else _axisLock = null;
+      try { showToast(_axisLock ? ('Locked to ' + AXIS_NAMES[_axisLock] + ' axis') : 'Axis lock released'); } catch (e) {}
+      try { window.dispatchEvent(new CustomEvent('enable:axislock-changed', { detail: _axisLock })); } catch (e) {}
+      return _axisLock;
+    }
     // -- Arrow-key axis locks (→ X, ← Y, ↑ Z; press same again / ↓ / Esc release).
     // Only while a placement tool is active and custom axes are set. --
     window.addEventListener('keydown', function (e) {
@@ -2811,9 +2821,7 @@
       else if (e.key === 'ArrowDown') want = '__clear';
       else return;
       e.preventDefault(); e.stopPropagation();
-      if (want === '__clear') { _axisLock = null; showToast('Axis lock released'); }
-      else if (_axisLock === want) { _axisLock = null; showToast('Axis lock released'); }
-      else { _axisLock = want; showToast('Locked to ' + AXIS_NAMES[want] + ' axis'); }
+      setAxisLock(want === '__clear' ? null : want);
     }, true);
     // Position the on-screen axis tag while a placement tool is active. Reads the
     // axis chosen by the most recent pick (one-frame lag is imperceptible).
@@ -3819,7 +3827,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] WJ Properties build 2026-07-27 — GLB specGloss material fix (no white-screen) + model scale'); } catch (e) {}
+    try { console.info('[Enable] WJ Properties build 2026-07-27b — touch axis-snap panel (Adv touch controls) + GLB fixes'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -15737,6 +15745,9 @@
       hasCustomAxes:            function () { return !!_customAxes; },
       getAxesGizmoVis:          function () { return _customAxesVisible; },
       toggleAxesGizmoVis:       function () { setAxesGizmoVisible(!_customAxesVisible); return _customAxesVisible; },
+      // Axis-snap lock for the tablet "Adv touch controls" panel (chrome.js).
+      getAxisLock:              function () { return _axisLock; },
+      setAxisLock:              function (a) { return setAxisLock(a); },
       // Rename an elevation box by its current name (used by chrome.js's right-panel
       // header rename). Rebuilds both toolbars + the legend title.
       getExportSpacingMM:       function () { return _exportSpacingMM; },
