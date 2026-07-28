@@ -97,6 +97,8 @@ site/clients/WJ Properties/140 Carlton/pointclouds/
 site/clients/WJ Properties/140 Carlton - Unit 2304/pointclouds/
 site/clients/WJ Properties/140 Carlton - Unit 2304/stations/
 site/clients/WJ Properties/140 Carlton - Unit 2304/HighResolution/
+site/clients/WJ Properties/140 Carlton - Unit 2304/models/
+site/clients/WJ Properties/140 Carlton - Unit 2304/*.glb
 site/clients/WJ Properties/2560 kingston rd/pointclouds/
 site/clients/Solar Restoration/pointclouds/
 site/clients/HRI/40 Larch 1/pointclouds/
