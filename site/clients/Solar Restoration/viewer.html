@@ -3819,7 +3819,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] Solar Restoration build 2026-07-24 — model scale support (meta.modelScale) + gridlines/snapping'); } catch (e) {}
+    try { console.info('[Enable] Solar Restoration build 2026-07-27 — GLB specGloss material fix (no white-screen) + model scale'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -13426,12 +13426,36 @@
       modelLightsAdded = true;
     }
 
+    // GLTF pbrSpecularGlossiness (KHR_materials_pbrSpecularGlossiness) materials are
+    // a CUSTOM shader material the GLTFLoader builds. Potree renders with its own
+    // bundled THREE, whose refreshUniformsCommon can't refresh that material's
+    // uniforms → "Cannot set properties of undefined (setting 'value')" and the whole
+    // viewer white-screens. Swap them for a plain MeshStandardMaterial (keep the
+    // diffuse colour + textures), which the renderer handles cleanly.
+    function _sanitizeModelMaterial(m) {
+      if (!m || !m.isGLTFSpecularGlossinessMaterial) return m;
+      var repl = new THREE.MeshStandardMaterial({
+        color: m.color ? m.color.clone() : new THREE.Color(0xcccccc),
+        map: m.map || null,
+        normalMap: m.normalMap || null,
+        emissive: m.emissive ? m.emissive.clone() : new THREE.Color(0x000000),
+        transparent: !!m.transparent,
+        opacity: (m.opacity != null ? m.opacity : 1),
+        metalness: 0.0,
+        roughness: 0.9
+      });
+      repl.name = m.name;
+      return repl;
+    }
     function prepModelMaterials(root) {
       // SketchUp faces are often single-sided/reversed (render black or invisible)
       // and its PBR export can be fully metallic (renders black without an env map).
       // Make materials double-sided and non-metallic so colors/textures show.
       root.traverse(function(obj) {
         if (!obj.isMesh || !obj.material) return;
+        // Replace any crash-prone specGloss materials FIRST (see above).
+        if (Array.isArray(obj.material)) obj.material = obj.material.map(_sanitizeModelMaterial);
+        else obj.material = _sanitizeModelMaterial(obj.material);
         var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         mats.forEach(function(m) {
           if (!m) return;
