@@ -6,6 +6,40 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-07-29b — ALL 7 VIEWERS: plane-deviation + plane UX around +Z ***
+#     (commit 5f87886f; dev viewer = WJ Properties; see memory
+#      project_plane_deviation_zaxis_batch for full detail)
+#############################################################################
+- UNIFYING IDEA: a plane constraint's basis +Z (basis.Z = X x Y from
+  computePlaneBasis) is now THE canonical positive/up direction. The raw fit
+  `normal` has an arbitrary sign (can flip when recomputeConstraint re-fits after
+  a translate) so it must NOT drive direction anywhere.
+- ELEVATION PLANE-DEVIATION: removed the click-a-point "Pick Side" flow.
+  Selecting a reference plane defaults positive to +Z (refSide=1, sideSet=true,
+  refPlane.normal=basis.Z); a "Flip +/-" button reverses it. onComputeElevation
+  refreshes refPlane from the LIVE constraint (was a stale snapshot -> moving the
+  plane then Recompute measured against the OLD position).
+- RECOMPUTE AUTO MIN/MAX: new cfg.zRangeUserSet flag (default false). Auto range
+  is cached for display but only REUSED as a fixed range when the user typed BOTH
+  min AND max (Apply). Blank = auto. Reset on plane change / forceRecomputeBox;
+  persisted in save/load (old sessions -> re-auto). Fixes "Recompute keeps the
+  old min/max".
+- PLANE CREATION: new planes size to the TIGHT bounding rect of the picked points
+  (+8% margin), not maxDist*3. Arrows scale to the rect.
+- PLANE X/Y EDGES: the two edges at the (xMin,yMin) corner are coloured red (+X)
+  and green (+Y) (userData.isAxisEdge, always bright) so X/Y/+Z read at a glance.
+- SELECT FORCE-SHOWS A PLANE: constraintShouldShow(c) = c.visible!==false ||
+  selected. Highlighting a plane in the list shows it over its visibility toggle;
+  deselect reverts. Drives group visibility, fill sheet, handles/arrows, toggle btn.
+- PLANE MOVE ALONG +Z: planePosDir(c)=basis.Z; offsetPlaneAlongNormal /
+  movePlaneToPoint translate along it, not c.normal (fixed wrong-first-move).
+- TOP-SURFACE TOLERANCE: plane-deviation surface filter now reuses the
+  compute-time tolerance (cfg.surfaceTol, raw-depth based) at colour time instead
+  of 10%-of-colour-range -> in-box points stop dropping out of the heat map.
+- CAVEAT: legacy saved plane-deviation boxes may come back inverted after a
+  Recompute (now keyed off basis.Z); one Flip +/- fixes it. New boxes unaffected.
+
+#############################################################################
 # *** 2026-07-22b — ALL 7 VIEWERS: structural gridlines + model snapping ***
 #############################################################################
 - STRUCTURAL GRIDLINES OVERLAY (data-driven; only shows if <project>/models/
