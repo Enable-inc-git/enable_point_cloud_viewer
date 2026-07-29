@@ -2823,11 +2823,23 @@
       try { window.dispatchEvent(new CustomEvent('enable:axislock-changed', { detail: _axisLock })); } catch (e) {}
       return _axisLock;
     }
+    // Throttled fading message when an axis-snapped dimension can't be moved because
+    // the matching axis isn't locked.
+    var _axisReposMsgAt = 0;
+    function _axisReposBlockMsg(axis) {
+      var now = Date.now();
+      if (now - _axisReposMsgAt < 1500) return;
+      _axisReposMsgAt = now;
+      try { showToast('This point was placed with ' + String(axis).toUpperCase() + '-axis snap — lock that axis to move it', 2500); } catch (e) {}
+    }
     // -- Arrow-key axis locks (→ X, ← Y, ↑ Z; press same again / ↓ / Esc release).
     // Only while a placement tool is active and custom axes are set. --
     window.addEventListener('keydown', function (e) {
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Down arrow ALWAYS releases the axis lock (back to free placement) — even with
+      // no tool active, so you can clear a lingering lock any time.
+      if (e.key === 'ArrowDown') { if (_axisLock) { e.preventDefault(); e.stopPropagation(); setAxisLock(null); } return; }
       if (!(pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE))) return;
       var want = null;
       if (e.key === 'ArrowRight') want = 'x';
@@ -3842,7 +3854,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] MurrayFranks build 2026-07-27c — touch axis-snap works during point drag + panel + GLB fixes'); } catch (e) {}
+    try { console.info('[Enable] MurrayFranks build 2026-07-29 — axis-dim reposition (rigid-translate start + reference handle) + touch axis-snap'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -4244,10 +4256,24 @@
       }
       // Are we repositioning an existing measurement point? (dragging its sphere)
       var _measDragObjNow = (viewer.inputHandler && viewer.inputHandler.drag) ? viewer.inputHandler.drag.object : null;
-      var _isMeasureDrag = false;
+      var _isMeasureDrag = false, _dragMeas = null, _dragIdx = -1;
       if (_measDragObjNow) {
         var _msNow = viewer.scene.measurements || [];
-        for (var _mdI = 0; _mdI < _msNow.length && !_isMeasureDrag; _mdI++) { var _spN = _msNow[_mdI].spheres; if (_spN && _spN.indexOf(_measDragObjNow) !== -1) _isMeasureDrag = true; }
+        for (var _mdI = 0; _mdI < _msNow.length && !_isMeasureDrag; _mdI++) {
+          var _spN = _msNow[_mdI].spheres; if (!_spN) continue;
+          var _ix = _spN.indexOf(_measDragObjNow);
+          if (_ix !== -1) { _isMeasureDrag = true; _dragMeas = _msNow[_mdI]; _dragIdx = _ix; }
+        }
+      }
+      // Axis-snapped Distance dimensions can only be repositioned while their OWN
+      // axis is locked (Adv touch controls / arrow keys). If a different axis (or
+      // none) is locked, block the drag and flash a fading message. Keeps an
+      // axis-aligned dimension from being knocked off its axis by a stray drag.
+      if (_isMeasureDrag && _dragMeas && _dragMeas.userData && _dragMeas.userData.enableAxisSnap &&
+          _axisLock !== _dragMeas.userData.enableAxisSnap) {
+        _axisReposBlockMsg(_dragMeas.userData.enableAxisSnap);
+        var _cp = _dragMeas.points[_dragIdx] && (_dragMeas.points[_dragIdx].position || _dragMeas.points[_dragIdx]);
+        if (_cp) { var _cpv = _cp.clone ? _cp.clone() : new THREE.Vector3(_cp.x, _cp.y, _cp.z); return { location: _cpv, distance: 0, pointcloud: null, point: { position: _cpv.clone() } }; }
       }
       // Snap for the measurement tool (not during our custom picks or OTHER drags).
       // Runs even when the cloud pick missed, so a measurement point can land on
@@ -13221,7 +13247,7 @@
     _axisVisScene.name = 'EnableAxisGuideScene';
     var _axisTargetHi = (function () {
       var mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
+        new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
       mesh.renderOrder = 99997; mesh.visible = false; mesh.frustumCulled = false;
       _axisVisScene.add(mesh);
       return mesh;
@@ -13230,7 +13256,7 @@
       var geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
       var line = new THREE.Line(geo, new THREE.LineDashedMaterial({
-        color: 0xbdbdbd, dashSize: 0.1, gapSize: 0.06, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+        color: 0xff0000, dashSize: 0.1, gapSize: 0.06, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
       line.renderOrder = 99996; line.visible = false; line.frustumCulled = false;
       _axisVisScene.add(line);
       return line;
@@ -13270,12 +13296,12 @@
     _axisGuideScene.name = 'EnableAxisGuidePersistScene';
     function _makeGuideObjs(g) {
       g.hi = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
+        new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
       g.hi.renderOrder = 99995; g.hi.frustumCulled = false;
       var lgeo = new THREE.BufferGeometry();
       lgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
       g.line = new THREE.Line(lgeo, new THREE.LineDashedMaterial({
-        color: 0xbdbdbd, dashSize: 0.1, gapSize: 0.06, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+        color: 0xff0000, dashSize: 0.1, gapSize: 0.06, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
       g.line.renderOrder = 99994; g.line.frustumCulled = false;
       _axisGuideScene.add(g.hi); _axisGuideScene.add(g.line);
     }
@@ -13312,10 +13338,149 @@
         g.line.material.dashSize = dash; g.line.material.gapSize = dash * 0.6;
         g.line.computeLineDistances();
       }
+      // White hover highlight on the START handle (drag = rigid-translate).
+      if (_axisDimHoverHi && _axisDimHoverHi.visible && _axisDimHoverHi.userData._p) {
+        var _hp = _axisDimHoverHi.userData._p;
+        _axisDimHoverHi.position.copy(_hp);
+        var _hpr = Potree.Utils.projectedRadius(1, cam, cam.position.distanceTo(_hp), sz.x, sz.y);
+        _axisDimHoverHi.scale.setScalar(_hpr > 0.0001 ? (7 / _hpr) : 0.06);
+      }
       viewer.renderer.render(_axisGuideScene, cam);
     });
     // A deleted measurement takes its guides with it.
     try { viewer.scene.addEventListener('measurement_removed', function (e) { if (e && e.measurement) _clearAxisGuidesFor(e.measurement); }); } catch (e) {}
+
+    // ===== Axis-snapped Distance dimension — direct drag handles =====
+    // Two grab handles per dim: the START point (drag = rigid-translate the whole
+    // dimension; reference stays) and the RED REFERENCE point (drag = move the 2nd
+    // point along the locked axis; the 2nd point isn't grabbed directly). Only while
+    // the dim's OWN axis is locked. Self-contained pointer layer (mouse + touch),
+    // intercepting in the capture phase; we also neuter the two measurement spheres'
+    // Potree drag so nothing else fights it.
+    var _axisDimDrag = null, _axisDimHoverHi = null;
+    function _neuterAxisDimSpheres(m) {
+      try { if (m && m.spheres) m.spheres.forEach(function (s) { if (s && s._listeners) { delete s._listeners.drag; delete s._listeners.drop; } }); } catch (e) {}
+    }
+    function _axisDimScreen(p, cam, rect) {
+      var q = p.clone().project(cam);
+      return { x: (q.x * 0.5 + 0.5) * rect.width + rect.left, y: (1 - (q.y * 0.5 + 0.5)) * rect.height + rect.top, behind: q.z > 1 };
+    }
+    function _axisDimHandleAt(clientX, clientY) {
+      if (!_axisGuides.length) return null;
+      var cam = viewer.scene.getActiveCamera(); if (!cam) return null;
+      var rect = renderArea.getBoundingClientRect();
+      var best = null, bestD = 26 * 26;
+      for (var i = 0; i < _axisGuides.length; i++) {
+        var g = _axisGuides[i];
+        if (!g.measure || !g.axis || !g.measure.points || g.measure.points.length !== 2) continue;
+        var p0 = g.measure.points[0].position || g.measure.points[0];
+        var p1 = g.measure.points[1].position || g.measure.points[1];
+        var hs = [['start', p0], ['ref', g.rawTarget], ['end', p1]];
+        for (var k = 0; k < hs.length; k++) {
+          var s = _axisDimScreen(hs[k][1], cam, rect); if (s.behind) continue;
+          var d = (s.x - clientX) * (s.x - clientX) + (s.y - clientY) * (s.y - clientY);
+          if (d < bestD) { bestD = d; best = { guide: g, kind: hs[k][0] }; }
+        }
+      }
+      return best;
+    }
+    function _axisDimPickWorld(clientX, clientY, depthRef) {
+      var cam = viewer.scene.getActiveCamera(), rect = renderArea.getBoundingClientRect();
+      var mouse = { x: clientX - rect.left, y: clientY - rect.top };
+      try { var h = _origPick(mouse, cam, viewer, viewer.scene.pointclouds, { pickClipped: true }); if (h && h.location) return h.location.clone(); } catch (e) {}
+      try { var mh = modelSurfacePick(mouse); if (mh && mh.point) return mh.point.clone(); } catch (e) {}
+      var ndc = new THREE.Vector2((mouse.x / rect.width) * 2 - 1, -(mouse.y / rect.height) * 2 + 1);
+      var rc = new THREE.Raycaster(); rc.setFromCamera(ndc, cam);
+      var depth = cam.position.distanceTo(depthRef || viewer.scene.view.getPivot());
+      return rc.ray.origin.clone().addScaledVector(rc.ray.direction, depth);
+    }
+    function _beginAxisDimDrag(handle) {
+      var g = handle.guide;
+      _neuterAxisDimSpheres(g.measure);   // now that we own this dim's drag, disable Potree's sphere drag
+      if (_axisLock !== g.axis) { _axisReposBlockMsg(g.axis); return true; }   // handled (blocked)
+      if (handle.kind === 'end') { try { showToast('Drag the red reference point to change the length', 2000); } catch (e) {} return true; }
+      var pts = g.measure.points;
+      _axisDimDrag = {
+        guide: g, kind: handle.kind,
+        p0: (pts[0].position || pts[0]).clone(),
+        p1: (pts[1].position || pts[1]).clone(),
+        axisVec: _activeAxes()[g.axis].clone().normalize()
+      };
+      // Suspend Potree's own controls so it can't orbit under the drag (its
+      // mousedown fires before ours).
+      try { viewer.inputHandler.enabled = false; } catch (e) {}
+      try { document.body.style.cursor = 'grabbing'; } catch (e) {}
+      return true;
+    }
+    function _moveAxisDimDrag(clientX, clientY) {
+      if (!_axisDimDrag) return;
+      var d = _axisDimDrag, g = d.guide, meas = g.measure;
+      var loc = _axisDimPickWorld(clientX, clientY, d.kind === 'start' ? d.p0 : g.rawTarget);
+      if (!loc) return;
+      if (d.kind === 'start') {
+        var delta = loc.clone().sub(d.p0);
+        // The 2nd point keeps its LOCKED-AXIS coordinate fixed — it only follows the
+        // start's movement in the plane perpendicular to the locked axis. So it moves
+        // by the perpendicular component of the delta (delta minus its axis part).
+        var perp = delta.clone().addScaledVector(d.axisVec, -delta.dot(d.axisVec));
+        var np1 = d.p1.clone().add(perp);
+        try { meas.setPosition(0, d.p0.clone().add(delta)); meas.setPosition(1, np1); } catch (e) {}
+        g.snapPos.copy(np1);   // reference (rawTarget) stays put
+      } else {
+        g.rawTarget.copy(loc);
+        var t = loc.clone().sub(d.p0).dot(d.axisVec);
+        var np1 = d.p0.clone().addScaledVector(d.axisVec, t);
+        try { meas.setPosition(1, np1); } catch (e) {}
+        g.snapPos.copy(np1);
+      }
+    }
+    function _endAxisDimDrag() { _axisDimDrag = null; try { viewer.inputHandler.enabled = true; } catch (e) {} try { document.body.style.cursor = ''; } catch (e) {} }
+    // Down handler (returns true if it took the gesture → caller stops the event).
+    function _axisDimTryDown(clientX, clientY) {
+      var h = _axisDimHandleAt(clientX, clientY);
+      if (!h) return false;
+      return _beginAxisDimDrag(h);
+    }
+    function _axisDimPlacing() { return pendingMeasurement || memberPickMode || constraintPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE) || notePickMode || pendingVolume; }
+    renderArea.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || _axisDimPlacing()) return;   // never intercept while placing points
+      if (_axisDimTryDown(e.clientX, e.clientY)) {
+        e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation(); e.preventDefault();
+        var mm = function (ev) { _moveAxisDimDrag(ev.clientX, ev.clientY); };
+        var mu = function () { _endAxisDimDrag(); document.removeEventListener('mousemove', mm, true); document.removeEventListener('mouseup', mu, true); };
+        document.addEventListener('mousemove', mm, true); document.addEventListener('mouseup', mu, true);
+      }
+    }, true);
+    renderArea.addEventListener('touchstart', function (e) {
+      if (!e.touches || e.touches.length !== 1 || _axisDimPlacing()) return;   // never intercept while placing points
+      var t = e.touches[0];
+      if (_axisDimTryDown(t.clientX, t.clientY)) {
+        e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation(); e.preventDefault();
+        var tm = function (ev) { if (ev.touches && ev.touches[0]) { _moveAxisDimDrag(ev.touches[0].clientX, ev.touches[0].clientY); ev.preventDefault(); } };
+        var te = function () { _endAxisDimDrag(); document.removeEventListener('touchmove', tm, true); document.removeEventListener('touchend', te, true); document.removeEventListener('touchcancel', te, true); };
+        document.addEventListener('touchmove', tm, { capture: true, passive: false }); document.addEventListener('touchend', te, true); document.addEventListener('touchcancel', te, true);
+      }
+    }, true);
+    // White hover highlight on the START handle so it reads as grabbable.
+    renderArea.addEventListener('mousemove', function (e) {
+      if (_axisDimDrag) return;
+      if (_axisDimPlacing()) { if (_axisDimHoverHi && _axisDimHoverHi.visible) _axisDimHoverHi.visible = false; return; }
+      var h = _axisGuides.length ? _axisDimHandleAt(e.clientX, e.clientY) : null;
+      var startHit = h && h.kind === 'start' && _axisLock === h.guide.axis;
+      if (startHit) {
+        if (!_axisDimHoverHi) {
+          _axisDimHoverHi = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
+            new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
+          _axisDimHoverHi.renderOrder = 99998; _axisDimHoverHi.frustumCulled = false; _axisGuideScene.add(_axisDimHoverHi);
+        }
+        _axisDimHoverHi.userData._p = (h.guide.measure.points[0].position || h.guide.measure.points[0]);
+        _axisDimHoverHi.visible = true;
+        try { document.body.style.cursor = 'grab'; } catch (er) {}
+      } else if (_axisDimHoverHi && _axisDimHoverHi.visible) {
+        _axisDimHoverHi.visible = false;
+        try { document.body.style.cursor = ''; } catch (er) {}
+      }
+    });
 
     // -- Diagnostic: run __msInfo() in the console to check model snap state /
     //    whether the model and cloud overlap. --
@@ -15117,7 +15282,14 @@
         // gizmo axis, keep a PERSISTENT guide (dashed connector + white highlight of
         // the actual referenced point) so it stays visible after placement.
         if (_activeInferAxis && _axisRawTarget && _axisSnapPos) {
-          _axisGuides.push({ measure: pendingMeasurement, snapPos: _axisSnapPos.clone(), rawTarget: _axisRawTarget.clone() });
+          _axisGuides.push({ measure: pendingMeasurement, axis: _activeInferAxis, snapPos: _axisSnapPos.clone(), rawTarget: _axisRawTarget.clone() });
+          // Remember which axis this dimension was built on (Distance only) so a
+          // later reposition is gated to that axis. Set on the 2nd point's snap.
+          // Mark the measurement as axis-built (any axis-snapped point). Do NOT
+          // neuter the spheres here — during a multi-point (running) distance the
+          // still-inserting floating point is a sphere too, and neutering it kills
+          // the elastic/next point. The custom drag layer neuters lazily on grab.
+          try { if (pendingMeasurement) { pendingMeasurement.userData = pendingMeasurement.userData || {}; pendingMeasurement.userData.enableAxisSnap = _activeInferAxis; } } catch (e) {}
         }
         // fall through — Potree's insertionCallback commits the point.
       }
