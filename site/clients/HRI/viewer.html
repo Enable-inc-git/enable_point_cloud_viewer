@@ -2939,6 +2939,11 @@
           thicknessGrid: null,        // built per-compute, persistent until clear
           zMin: null,   // null = auto-detect
           zMax: null,
+          zRangeUserSet: false,   // true ONLY when the user typed an explicit min+max.
+                                  // Auto-detected values are cached in zMin/zMax for
+                                  // display but must NOT be treated as an override —
+                                  // otherwise every Recompute reuses the stale range
+                                  // instead of re-detecting from the box's points.
           contourStep: 0.05,
           legendTicks: 8,         // number of ticks/labels on THIS box's legend (density)
           active: false,          // true once this box has been computed
@@ -3063,6 +3068,7 @@
       // Reset auto-detect range so it picks up the new offset
       cfg.zMin = null;
       cfg.zMax = null;
+      cfg.zRangeUserSet = false;
       if (cfg.active) {
         _selectedElevBox = vol;
         syncElevGlobals();
@@ -3854,7 +3860,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] HRI build 2026-07-29 — axis-dim reposition (rigid-translate start + reference handle) + touch axis-snap'); } catch (e) {}
+    try { console.info('[Enable] HRI build 2026-07-29b — plane-deviation +Z default (flip button) + tight plane sizing + red/green X/Y edges + select force-shows plane + move-along-+Z + recompute auto min/max'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -5123,11 +5129,32 @@
         constraint._quadY = localY.clone();
 
         // Rectangle extents = local-frame distances from centroid along X/Y.
-        // Default = symmetric square; the user stretch handles mutate these.
+        // Default = the tight bounding rectangle of the PICKED points (plus a
+        // small margin) so a new plane comes in sized to what the user clicked,
+        // not a giant square. The user's stretch handles mutate these afterward.
         // Purely visual — they do NOT affect the plane math.
         if (!constraint.rectExtent) {
-          var half = quadSize / 2;
-          constraint.rectExtent = { xMin: -half, xMax: half, yMin: -half, yMax: half };
+          var exMinX = Infinity, exMaxX = -Infinity, exMinY = Infinity, exMaxY = -Infinity;
+          for (var pi = 0; pi < pts.length; pi++) {
+            var dxp = pts[pi].x - constraint.centroid.x;
+            var dyp = pts[pi].y - constraint.centroid.y;
+            var dzp = pts[pi].z - constraint.centroid.z;
+            var lu = dxp * localX.x + dyp * localX.y + dzp * localX.z;
+            var lv = dxp * localY.x + dyp * localY.y + dzp * localY.z;
+            if (lu < exMinX) exMinX = lu; if (lu > exMaxX) exMaxX = lu;
+            if (lv < exMinY) exMinY = lv; if (lv > exMaxY) exMaxY = lv;
+          }
+          if (!isFinite(exMinX) || (exMaxX - exMinX) < 1e-6 || (exMaxY - exMinY) < 1e-6) {
+            // Degenerate (single point / collinear picks) — small square fallback.
+            var halfF = Math.max(maxDist, 0.5) / 2;
+            exMinX = -halfF; exMaxX = halfF; exMinY = -halfF; exMaxY = halfF;
+          } else {
+            // Small margin so picked points sit just inside the rectangle edges.
+            var padX = Math.max((exMaxX - exMinX) * 0.08, 0.02);
+            var padY = Math.max((exMaxY - exMinY) * 0.08, 0.02);
+            exMinX -= padX; exMaxX += padX; exMinY -= padY; exMaxY += padY;
+          }
+          constraint.rectExtent = { xMin: exMinX, xMax: exMaxX, yMin: exMinY, yMax: exMaxY };
         }
         var ex = constraint.rectExtent;
         var rectW = Math.max(ex.xMax - ex.xMin, 0.01);
@@ -5165,6 +5192,27 @@
         edgeLine.position.copy(rectCenter);
         edgeLine.quaternion.copy(quat);
         group.add(edgeLine);
+
+        // Colour the two edges that meet at the (xMin,yMin) corner with the
+        // gizmo axis colours: the edge running along +X is red, the edge running
+        // along +Y is green. This gives an at-a-glance read of the plane's X/Y
+        // directions — and therefore +Z (right-hand rule X×Y), which is the
+        // default positive direction for the elevation deviation heat map.
+        var _cornerLL = constraint.centroid.clone().addScaledVector(localX, ex.xMin).addScaledVector(localY, ex.yMin);
+        var _cornerLR = constraint.centroid.clone().addScaledVector(localX, ex.xMax).addScaledVector(localY, ex.yMin);
+        var _cornerUL = constraint.centroid.clone().addScaledVector(localX, ex.xMin).addScaledVector(localY, ex.yMax);
+        var _xEdge = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([_cornerLL, _cornerLR]),
+          new THREE.LineBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false }));
+        var _yEdge = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([_cornerLL, _cornerUL]),
+          new THREE.LineBasicMaterial({ color: 0x30ff30, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false }));
+        [_xEdge, _yEdge].forEach(function(ln) {
+          ln.renderOrder = 3;
+          ln.userData.isAxisEdge = true;   // updateConstraintVisuals leaves these alone
+        });
+        group.add(_xEdge);
+        group.add(_yEdge);
 
         // Stretch handles: 4 at the edge midpoints (move one edge) + 4 at the
         // corners (move two edges diagonally). Visible/pickable only when the
@@ -5205,7 +5253,7 @@
         // the user-defined basis if present, falling back to auto-basis.
         var basis = constraint.basis || computePlaneBasis(constraint);
         if (basis) {
-          var arrowLen = Math.max(quadSize * 0.28, 0.3);
+          var arrowLen = Math.max(Math.max(rectW, rectH) * 0.35, 0.3);
           var headLen = arrowLen * 0.22;
           var headW = headLen * 0.55;
           var xArrow = new THREE.ArrowHelper(basis.X, constraint.centroid, arrowLen, 0xff3030, headLen, headW);
@@ -5274,11 +5322,20 @@
       updateConstraintVisuals();
     }
 
+    // A constraint is shown on screen if its visibility toggle is on OR it is
+    // currently highlighted (selected) in the list — highlighting forces it
+    // visible, and deselecting reverts to the toggle.
+    function constraintShouldShow(c) {
+      return c.visible !== false || c.id === selectedConstraintId;
+    }
+
     // -- Update visual opacity based on active state --
     function updateConstraintVisuals() {
       for (var ci = 0; ci < constraints.length; ci++) {
         var c = constraints[ci];
         if (!c.visual) continue;
+        // Force-show while highlighted; otherwise obey the visibility toggle.
+        c.visual.visible = constraintShouldShow(c);
         var isSel = c.id === selectedConstraintId;
         c.visual.traverse(function(obj) {
           if (obj.material) {
@@ -5289,6 +5346,8 @@
               obj.material.opacity = 0.95;
             } else if (obj.userData && obj.userData.isBasisArrow) {
               // Basis arrows manage their own opacity (always visible).
+            } else if (obj.userData && obj.userData.isAxisEdge) {
+              // X/Y axis-coloured edges stay bright (always visible).
             } else if (obj.isMesh) {
               obj.material.opacity = isSel ? 0.2 : 0.08;
             } else if (obj.isLine || obj.isLineSegments) {
@@ -5468,7 +5527,10 @@
           visBtn.title = 'Toggle visibility';
           visBtn.addEventListener('click', function() {
             c.visible = !c.visible;
-            if (c.visual) c.visual.visible = c.visible;
+            // Respect the highlight override: a selected plane stays shown even
+            // when its toggle is off (it hides once deselected). The button icon
+            // still reflects the underlying toggle state.
+            if (c.visual) c.visual.visible = constraintShouldShow(c);
             visBtn.classList.toggle('hidden', !c.visible);
           });
           row.appendChild(visBtn);
@@ -5684,8 +5746,8 @@
       var bestResult = null;
       for (var ci = 0; ci < constraints.length; ci++) {
         var c = constraints[ci];
-        if (c.type !== 'plane' || c.visible === false || !c.visual) continue;
-        if (c.id !== selectedConstraintId) continue; // handles only on the selected plane
+        if (c.type !== 'plane' || !c.visual) continue;
+        if (c.id !== selectedConstraintId) continue; // handles only on the selected plane (which is force-shown)
         c.visual.traverse(function(obj) {
           if (!obj.userData || !obj.userData.isPlaneStretchHandle) return;
           var wp = obj.getWorldPosition(new THREE.Vector3()).project(camera);
@@ -6011,11 +6073,22 @@
       return nc;
     }
 
-    // Offset a plane by a signed distance (metres) along its normal. doCopy →
-    // leave the original and offset a duplicate instead.
+    // The plane's positive direction = its basis +Z (X×Y), which is the same
+    // +Z shown by the red/green X-Y edges and used by the elevation heat map.
+    // The raw fit `normal` has an arbitrary sign that can even flip when
+    // recomputeConstraint re-fits after a translate, so NEVER move along it —
+    // moves must track the visible +Z so "positive" is stable and intuitive.
+    function planePosDir(c) {
+      var basis = c.basis || computePlaneBasis(c);
+      if (basis && basis.Z && basis.Z.lengthSq() > 1e-9) return basis.Z.clone().normalize();
+      return c.normal.clone().normalize();
+    }
+
+    // Offset a plane by a signed distance (metres) along its +Z direction.
+    // doCopy → leave the original and offset a duplicate instead.
     function offsetPlaneAlongNormal(c, signedMeters, doCopy) {
       if (!c || c.type !== 'plane') return;
-      var vec = c.normal.clone().normalize().multiplyScalar(signedMeters);
+      var vec = planePosDir(c).multiplyScalar(signedMeters);
       if (doCopy) {
         var target = duplicatePlane(c);
         _translatePlane(target, vec);
@@ -6033,7 +6106,9 @@
     // distance from that point along the normal (Tekla reference+distance).
     function movePlaneToPoint(c, worldPoint, extraMeters, doCopy) {
       if (!c || c.type !== 'plane') return;
-      var n = c.normal.clone().normalize();
+      // Measure the offset-to-point along the SAME +Z direction the move uses,
+      // so the extra distance and the through-point offset are sign-consistent.
+      var n = planePosDir(c);
       var signedToPoint = new THREE.Vector3().subVectors(worldPoint, c.centroid).dot(n);
       offsetPlaneAlongNormal(c, signedToPoint + (extraMeters || 0), doCopy);
     }
@@ -7059,13 +7134,14 @@
             }
             if (obj.userData && obj.userData.isPlaneStretchHandle) {
               // Handles are visibility-only (don't affect the plane math), so they
-              // show whenever the plane is SELECTED — independent of lock state.
-              obj.visible = (c.id === selectedConstraintId) && c.visible !== false;
+              // show whenever the plane is SELECTED — independent of lock state and
+              // of the visibility toggle (selecting force-shows the plane).
+              obj.visible = (c.id === selectedConstraintId);
             }
             if (obj.userData && obj.userData.isBasisArrow) {
               // X/Y (red/green) axis arrows show only when the plane is selected,
               // same as the stretch handles.
-              obj.visible = (c.id === selectedConstraintId) && c.visible !== false;
+              obj.visible = (c.id === selectedConstraintId);
             }
             if (obj.userData && obj.userData.isMarkerSphere) {
               _scaleMarkerSphere(obj, camera, _defRSize);
@@ -8428,6 +8504,7 @@
                 thicknessGapTol: cfg.thicknessGapTol,
                 zMin: cfg.zMin,
                 zMax: cfg.zMax,
+                zRangeUserSet: cfg.zRangeUserSet,
                 contourStep: cfg.contourStep,
                 legendTicks: cfg.legendTicks,
                 active: cfg.active
@@ -8762,6 +8839,8 @@
               if (sv.config.thicknessGapTol != null) cfg.thicknessGapTol = sv.config.thicknessGapTol;
               cfg.zMin = sv.config.zMin;
               cfg.zMax = sv.config.zMax;
+              // Old sessions lack this flag → default false so Recompute re-autos.
+              cfg.zRangeUserSet = !!sv.config.zRangeUserSet;
               cfg.contourStep = sv.config.contourStep || 0.05;
               if (sv.config.legendTicks != null) cfg.legendTicks = sv.config.legendTicks;
               cfg.active = !!sv.config.active;
@@ -9203,9 +9282,16 @@
         // are THICKNESS values (~10s of cm) and cfg.surfaceGrid is in Z
         // space, so 10% of thickness range is far too tight (rejects the
         // whole top surface). Use a fixed slab-friendly Z tolerance instead.
+        // Top-surface tolerance. Thickness mode keeps its fixed slab-friendly
+        // value. Plane/Z modes reuse the tolerance captured at COMPUTE time
+        // (cfg.surfaceTol) so the "what counts as the surface" decision stays
+        // fixed even after the colour range gets percentile-clamped or the user
+        // narrows zMin/zMax for saturation — otherwise the surface filter would
+        // silently reject most in-box points at colour time. Fall back to the
+        // old range-derived value for boxes computed before surfaceTol existed.
         var tol = (cfg.mode === 'thickness')
           ? 0.10  // 100mm — generous for slab top-surface variation
-          : (cfg.zMax - cfg.zMin) * 0.10;
+          : (cfg.surfaceTol != null ? cfg.surfaceTol : (cfg.zMax - cfg.zMin) * 0.10);
         // Hoist per-box mode constants once so the per-point loops in
         // applyElevationColors / colorNodeByElevation don't re-resolve
         // them N times.
@@ -11093,62 +11179,56 @@
             planeSel.addEventListener('change', function() {
               var ci2 = parseInt(planeSel.value);
               if (!isNaN(ci2) && ci2 >= 0 && ci2 < constraints.length) {
+                var con = constraints[ci2];
+                // Positive direction defaults to the plane's +Z (basis Z, which
+                // is what the red/green X/Y edges visually imply). basis.Z may be
+                // sign-flipped vs the raw fit normal, so use basis.Z when present.
+                var basis = con.basis || computePlaneBasis(con);
+                var nrm = (basis && basis.Z) ? basis.Z.clone() : con.normal.clone();
                 cfg.refConstraintIdx = ci2;
-                cfg.refPlane = { normal: constraints[ci2].normal.clone(), centroid: constraints[ci2].centroid.clone() };
+                cfg.refPlane = { normal: nrm, centroid: con.centroid.clone() };
+                cfg.refSide = 1;      // +Z is positive by default
+                cfg.sideSet = true;   // no point-pick needed anymore
+                cfg.zRangeUserSet = false; // new plane → re-auto the range on Compute
               } else {
                 cfg.refConstraintIdx = -1;
                 cfg.refPlane = null;
+                cfg.sideSet = false;
               }
-              cfg.sideSet = false;
               syncElevGlobals();
               rebuildElevationBoxList();
             });
             refRow.appendChild(planeSel);
             panel.appendChild(refRow);
 
-            // Side picker
-            var sideRow = document.createElement('div');
-            sideRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0';
-            var sideBtn = document.createElement('button');
-            sideBtn.textContent = 'Pick Side';
-            sideBtn.style.cssText = btnStyle;
-            sideBtn.title = 'Click on the point cloud to choose viewing side';
-            var sideLabel = document.createElement('span');
-            sideLabel.style.cssText = 'color:var(--muted,#9aa3b2);font-size:10px';
-            sideLabel.textContent = cfg.sideSet ? (cfg.refSide > 0 ? 'Positive' : 'Negative') : 'Not set';
-
-            sideBtn.addEventListener('click', function() {
+            // Positive direction. Defaults to the plane's +Z axis (its normal /
+            // basis Z — the same direction implied by the red/green X/Y edges on
+            // the plane). No point-picking needed; the Flip button reverses which
+            // side reads as positive deviation.
+            var dirRow = document.createElement('div');
+            dirRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0';
+            dirRow.innerHTML = '<span style="min-width:40px">+Dir:</span>';
+            var flipBtn = document.createElement('button');
+            flipBtn.textContent = 'Flip +/−';
+            flipBtn.style.cssText = btnStyle;
+            flipBtn.title = 'Positive deviation defaults to the plane\'s +Z direction (X = red edge, Y = green edge; +Z follows the right-hand rule). Click to flip which side reads as positive.';
+            var dirLabel = document.createElement('span');
+            dirLabel.style.cssText = 'color:var(--muted,#9aa3b2);font-size:10px';
+            function updDirLabel() { dirLabel.textContent = (cfg.refSide > 0 ? '+Z (default)' : '−Z (flipped)'); }
+            updDirLabel();
+            flipBtn.addEventListener('click', function() {
               if (!cfg.refPlane) { showToast('Select a reference plane first'); return; }
-              sideBtn.textContent = 'Click cloud...';
-              sideBtn.disabled = true;
-              document.body.style.cursor = 'crosshair';
-              setTimeout(function() {
-                viewer.renderer.domElement.addEventListener('click', function onSideClick(evt) {
-                  var rect = viewer.renderer.domElement.getBoundingClientRect();
-                  var mouse = { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
-                  var pickResult = _origPick(mouse, viewer.scene.getActiveCamera(), viewer, viewer.scene.pointclouds);
-                  if (pickResult && pickResult.location) {
-                    var pt = pickResult.location;
-                    var n = cfg.refPlane.normal, c2 = cfg.refPlane.centroid;
-                    var dist = (pt.x - c2.x) * n.x + (pt.y - c2.y) * n.y + (pt.z - c2.z) * n.z;
-                    cfg.refSide = dist >= 0 ? 1 : -1;
-                    cfg.sideSet = true;
-                    syncElevGlobals();
-                    showToast('Side set: ' + (cfg.refSide > 0 ? 'positive' : 'negative'));
-                  } else {
-                    showToast('Could not detect point');
-                  }
-                  document.body.style.cursor = '';
-                  sideBtn.textContent = 'Pick Side';
-                  sideBtn.disabled = false;
-                  sideLabel.textContent = cfg.sideSet ? (cfg.refSide > 0 ? 'Positive' : 'Negative') : 'Not set';
-                }, { once: true });
-              }, 100);
+              cfg.refSide = (cfg.refSide > 0 ? -1 : 1);
+              cfg.sideSet = true;
+              syncElevGlobals();
+              updDirLabel();
+              // Flipping changes which face is the "top surface", so a recompute
+              // is needed for an already-computed box.
+              if (cfg.active) { _selectedElevBox = vol; onComputeElevation(); }
             });
-
-            sideRow.appendChild(sideBtn);
-            sideRow.appendChild(sideLabel);
-            panel.appendChild(sideRow);
+            dirRow.appendChild(flipBtn);
+            dirRow.appendChild(dirLabel);
+            panel.appendChild(dirRow);
           }
 
           // Compute button for this box
@@ -11257,6 +11337,9 @@
             // field silently kept the old value instead of reverting to auto).
             cfg.zMin = mn;
             cfg.zMax = mx;
+            // A full explicit min+max is a user override that Recompute must keep;
+            // any blank field means "auto", which lets Recompute re-detect.
+            cfg.zRangeUserSet = (mn !== null && mx !== null);
             cfg.contourStep = sp;
 
             if (cfg.active && elevationActive && elevationPositions) {
@@ -11353,8 +11436,20 @@
       var targetVol = _selectedElevBox;
       var selCfg = getBoxConfig(targetVol);
       if (targetVol._disabled) { showToast('Box is hidden'); return; }
+      // Refresh the reference plane from the LIVE constraint (position + basis Z)
+      // so a plane that was moved/edited since selection is measured at its
+      // CURRENT location — refPlane is otherwise a stale snapshot from selection
+      // time, which would leave the deviation (and its min/max) unchanged.
+      if (selCfg.mode === 'plane' && selCfg.refConstraintIdx >= 0 && selCfg.refConstraintIdx < constraints.length) {
+        var _rc = constraints[selCfg.refConstraintIdx];
+        if (_rc && _rc.type === 'plane' && _rc.centroid && _rc.normal) {
+          var _rb = _rc.basis || computePlaneBasis(_rc);
+          var _rnrm = (_rb && _rb.Z && _rb.Z.lengthSq() > 1e-9) ? _rb.Z.clone().normalize() : _rc.normal.clone().normalize();
+          selCfg.refPlane = { normal: _rnrm, centroid: _rc.centroid.clone() };
+        }
+      }
       if (selCfg.mode === 'plane' && !selCfg.refPlane) { showToast('Select a reference plane first'); return; }
-      if (selCfg.mode === 'plane' && !selCfg.sideSet) { showToast('Pick the viewing side first'); return; }
+      if (selCfg.mode === 'plane' && !selCfg.sideSet) { showToast('Pick the positive side first'); return; }
 
       showComputeOverlay('Preparing region...');
 
@@ -11618,6 +11713,10 @@
         if (selCfg.surfaceGrid || selCfg.planeSurfGrid) {
           var range = zMax - zMin;
           var tol = range > 0 ? range * 0.10 : (rawZMax - rawZMin) * 0.10;
+          // Persist the surface tolerance so colour time (buildActiveBoxDrawList)
+          // uses the SAME value — it's derived from the raw in-box depth range
+          // here, before the percentile clamp / user override narrows zMin/zMax.
+          selCfg.surfaceTol = tol;
           var tsMin = Infinity, tsMax = -Infinity;
           var planeGrid = selCfg.planeSurfGrid, zGrid = selCfg.surfaceGrid;
           var thickGrid = selCfg.thicknessGrid;
@@ -11678,8 +11777,12 @@
           return;
         }
 
-        // Respect user-overridden range if set on this box's cfg
-        if (selCfg.zMin !== null && selCfg.zMax !== null && selCfg.zMin < selCfg.zMax) {
+        // Respect the range ONLY when the user explicitly typed a min+max.
+        // Otherwise always use the freshly auto-detected range and cache it back
+        // into cfg (for legend/UI display) — so moving/resizing the box or the
+        // reference plane and hitting Recompute re-optimises min/max from the
+        // current points instead of reusing the previous auto range.
+        if (selCfg.zRangeUserSet && selCfg.zMin !== null && selCfg.zMax !== null && selCfg.zMin < selCfg.zMax) {
           zMin = selCfg.zMin;
           zMax = selCfg.zMax;
         } else {
@@ -12266,7 +12369,7 @@
       for (var i = 0; i < constraints.length; i++) {
         var c = constraints[i];
         if (c.type !== 'plane' || !c._fillMesh) continue;
-        c._fillMesh.visible = c.visible !== false;
+        c._fillMesh.visible = constraintShouldShow(c);
         if (c._fillMesh.material) {
           c._fillMesh.material.opacity = (c.id === selectedConstraintId) ? 0.32 : 0.20;
         }
