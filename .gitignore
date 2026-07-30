@@ -90,6 +90,8 @@ site/clients/demo/demo1/
 # r2.dev URL). Kept locally for re-testing but never committed. See reference_r2_migration.
 site/clients/WJ Properties/7 St Dennis - South Garage Slab/pointclouds/
 site/clients/WJ Properties/7 St Dennis - South Garage Slab/stations/
+site/clients/WJ Properties/7 St Dennis - South Garage Slab/models/
+site/clients/WJ Properties/7 St Dennis - South Garage Slab/*.glb
 site/clients/WJ Properties/7 St Dennis - Lounge/HighResolution/
 site/clients/WJ Properties/7 St Dennis - Lounge/pointclouds/
 site/clients/WJ Properties/7 St Dennis - Lounge/stations/
