@@ -2823,14 +2823,22 @@
       try { window.dispatchEvent(new CustomEvent('enable:axislock-changed', { detail: _axisLock })); } catch (e) {}
       return _axisLock;
     }
-    // Throttled fading message when an axis-snapped dimension can't be moved because
-    // the matching axis isn't locked.
-    var _axisReposMsgAt = 0;
-    function _axisReposBlockMsg(axis) {
+    // Adopt an axis WITHOUT toggling: grabbing an axis-built dimension switches the
+    // lock to the axis that dimension was placed on, so the user is never frozen
+    // out by whatever lock happened to be active. The equality guard makes this a
+    // no-op once adopted, so it's safe to call from the per-move pick path
+    // (setAxisLock itself toggles when handed the axis that's already locked).
+    function _adoptAxisLock(axis) {
+      if (!axis || _axisLock === axis) return;
+      setAxisLock(axis);
+    }
+    // Throttled nudge for someone trying to drag an axis-snapped point directly.
+    var _axisTipMsgAt = 0;
+    function _axisTipPinMsg() {
       var now = Date.now();
-      if (now - _axisReposMsgAt < 1500) return;
-      _axisReposMsgAt = now;
-      try { showToast('This point was placed with ' + String(axis).toUpperCase() + '-axis snap — lock that axis to move it', 2500); } catch (e) {}
+      if (now - _axisTipMsgAt < 1500) return;
+      _axisTipMsgAt = now;
+      try { showToast('This point is locked to its axis — drag its red reference point to move it', 2500); } catch (e) {}
     }
     // -- Arrow-key axis locks (→ X, ← Y, ↑ Z; press same again / ↓ / Esc release).
     // Only while a placement tool is active and custom axes are set. --
@@ -3860,7 +3868,7 @@
     var nextViewId = 1;
     var _activeViewId = null;
     var _nextMeasureMid = 1;  // stable per-measurement id (Potree Measures have no persistent id)
-    try { console.info('[Enable] WJ Properties build 2026-07-29b — plane-deviation +Z default (flip button) + tight plane sizing + red/green X/Y edges + select force-shows plane + move-along-+Z + recompute auto min/max'); } catch (e) {}
+    try { console.info('[Enable] WJ Properties build 2026-07-31b — axis-dim reposition on touch (guides recorded on drag-out) + multi-point chain drag (each point holds its own axis) + no axis lockout (grab adopts that dimension axis) + reference-point hover highlight'); } catch (e) {}
 
     function _viewEsc(s) {
       return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
@@ -4271,15 +4279,29 @@
           if (_ix !== -1) { _isMeasureDrag = true; _dragMeas = _msNow[_mdI]; _dragIdx = _ix; }
         }
       }
-      // Axis-snapped Distance dimensions can only be repositioned while their OWN
-      // axis is locked (Adv touch controls / arrow keys). If a different axis (or
-      // none) is locked, block the drag and flash a fading message. Keeps an
-      // axis-aligned dimension from being knocked off its axis by a stray drag.
-      if (_isMeasureDrag && _dragMeas && _dragMeas.userData && _dragMeas.userData.enableAxisSnap &&
-          _axisLock !== _dragMeas.userData.enableAxisSnap) {
-        _axisReposBlockMsg(_dragMeas.userData.enableAxisSnap);
-        var _cp = _dragMeas.points[_dragIdx] && (_dragMeas.points[_dragIdx].position || _dragMeas.points[_dragIdx]);
-        if (_cp) { var _cpv = _cp.clone ? _cp.clone() : new THREE.Vector3(_cp.x, _cp.y, _cp.z); return { location: _cpv, distance: 0, pointcloud: null, point: { position: _cpv.clone() } }; }
+      // Axis-snapped Distance dimensions. Fallback for a raw Potree sphere drag that
+      // our own handle layer didn't intercept:
+      //   - an axis-snapped TIP is PINNED. It may only be moved by dragging its red
+      //     reference point, so a direct drag holds it exactly where it is.
+      //   - every other point was never axis-snapped, so it moves FREELY in 3D
+      //     (no lock, no inference) — the initial point must never freeze the user out.
+      var _dragFreeBase = false;
+      if (_isMeasureDrag && _dragMeas) {
+        var _dInfo = _axisDimInfo(_dragMeas);
+        if (_dInfo) {
+          var _dTip = _dInfo.tips[_dragIdx];
+          if (_dTip) {
+            _adoptAxisLock(_dTip.axis);
+            _axisTipPinMsg();
+            // Nothing is being inferred while a point is pinned — drop any stale
+            // snap state so the release handler can't rebuild a guide from it.
+            _activeInferAxis = null; _axisRawTarget = null; _axisSnapPos = null;
+            var _cp = _dragMeas.points[_dragIdx] && (_dragMeas.points[_dragIdx].position || _dragMeas.points[_dragIdx]);
+            if (_cp) { var _cpv = _cp.clone ? _cp.clone() : new THREE.Vector3(_cp.x, _cp.y, _cp.z); return { location: _cpv, distance: 0, pointcloud: null, point: { position: _cpv.clone() } }; }
+          } else {
+            _dragFreeBase = true;
+          }
+        }
       }
       // Snap for the measurement tool (not during our custom picks or OTHER drags).
       // Runs even when the cloud pick missed, so a measurement point can land on
@@ -4354,7 +4376,8 @@
       if (result && result.location && mouse && typeof mouse.x === 'number' &&
           !constraintPickMode && !constraintDragActive && !memberDragActive &&
           !markerDragActive && !planeHandleDragActive &&
-          (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE) || _isMeasureDrag)) {
+          (pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE) ||
+           (_isMeasureDrag && !_dragFreeBase))) {
         var _inf = applyAxisInference(result.location, mouse);
         if (_inf && (_axisLock || !_pointSnapped)) {
           _axisRawTarget = result.location.clone();   // the real point under the cursor (off-axis)
@@ -4398,6 +4421,51 @@
       }
       return result;
     };
+    // A measurement point that was REPOSITIONED (dragged) while snapped to a gizmo
+    // axis earns the SAME persistent guide + axis lock as one placed by clicking.
+    // This is the TOUCH path for the 2nd point of a distance: on tablet/phone the
+    // insertion auto-finishes at the first tap (maxMarkers 2) and the user drags
+    // the stacked sphere out, so the placement-time recorder (the mouseup handler
+    // that runs while `pendingMeasurement` is live) never fires. Without this the
+    // red reference dot + dashed connector never appeared on touch and the dim
+    // stayed freely draggable, unlike on desktop. Skipped while an insertion IS
+    // live — that path records its own guide. Must run BEFORE the void-revert
+    // handler below, which clears `_measDragObj`.
+    document.addEventListener('mouseup', function () {
+      if (pendingMeasurement || !_measDragObj || _measDragVoid) return;
+      if (!_activeInferAxis || !_axisRawTarget || !_axisSnapPos) return;
+      var ms = viewer.scene.measurements || [];
+      for (var i = 0; i < ms.length; i++) {
+        var sp = ms[i].spheres; if (!sp) continue;
+        var di = sp.indexOf(_measDragObj);
+        if (di === -1) continue;
+        var m = ms[i];
+        if (m.points && m.points.length >= 2) {
+          // Replace only THIS point's guide — a running distance's other segments
+          // keep theirs.
+          for (var gi = _axisGuides.length - 1; gi >= 0; gi--) {
+            if (_axisGuides[gi].measure === m && _axisDimTipIdx(_axisGuides[gi]) === di) {
+              _disposeGuide(_axisGuides[gi]); _axisGuides.splice(gi, 1);
+            }
+          }
+          _axisGuides.push({
+            measure: m, axis: _activeInferAxis,
+            snapPos: _axisSnapPos.clone(), rawTarget: _axisRawTarget.clone(),
+            // The dragged point is the axis-snapped TIP; its neighbour (the same
+            // one applyAxisInference anchored to) is the BASE. On touch both
+            // spheres start stacked, so the finger can grab either index — the
+            // guide carries which is which instead of assuming the desktop 0/1.
+            tipIdx: di, baseIdx: (di === 0 ? 1 : di - 1)
+          });
+          try { m.userData = m.userData || {}; m.userData.enableAxisSnap = _activeInferAxis; } catch (e) {}
+          // Placement is finished here, so it's safe to hand the spheres to our
+          // own drag layer immediately (on touch, chrome.js only grabs spheres
+          // that still carry Potree drag listeners).
+          _neuterAxisDimSpheres(m);
+        }
+        break;
+      }
+    }, false);
     // If a point-reposition drag is released while the point is hovering VOID
     // (last pick wasn't a real cloud/model/snap target), snap it back to the last
     // valid spot it passed over — so a placed point can't be dropped floating in
@@ -13366,7 +13434,11 @@
     })();
     var _axisVisSize = new THREE.Vector2();
     viewer.addEventListener("render.pass.perspective_overlay", function () {
-      var toolActive = pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE);
+      // `_measDragObj` covers the TOUCH flow, where the 2nd point of a distance is
+      // dragged out of the stack rather than placed by a click — no insertion is
+      // live there (pendingMeasurement is null), so without it the live guide
+      // stayed hidden on tablet/phone.
+      var toolActive = pendingMeasurement || memberPickMode || (typeof MARK_MODE !== 'undefined' && MARK_MODE) || _measDragObj;
       var show = !!(_activeInferAxis && _axisRawTarget && _axisSnapPos && toolActive);
       _axisTargetHi.visible = show;
       _axisDashLine.visible = show;
@@ -13411,6 +13483,22 @@
     function _disposeGuide(g) {
       if (g.hi) { _axisGuideScene.remove(g.hi); g.hi.geometry.dispose(); g.hi.material.dispose(); g.hi = null; }
       if (g.line) { _axisGuideScene.remove(g.line); g.line.geometry.dispose(); g.line.material.dispose(); g.line = null; }
+    }
+    // Everything the drag layer needs to know about one dimension: its guides (one
+    // per axis-snapped segment — a running distance has several) and a map of which
+    // POINT INDICES are axis-snapped tips. A tip is only movable via its own red
+    // reference; every other index is a free base that rigid-translates the whole
+    // dimension. Returns null for dimensions with no axis history at all.
+    function _axisDimInfo(measure) {
+      if (!_axisGuides || !measure || !measure.points || measure.points.length < 2) return null;
+      var gs = [], tips = {};
+      for (var i = 0; i < _axisGuides.length; i++) {
+        var g = _axisGuides[i];
+        if (g.measure !== measure || !g.axis) continue;
+        gs.push(g);
+        tips[_axisDimTipIdx(g)] = g;
+      }
+      return gs.length ? { measure: measure, guides: gs, tips: tips } : null;
     }
     function _clearAxisGuidesFor(measure) {
       for (var i = _axisGuides.length - 1; i >= 0; i--) {
@@ -13468,21 +13556,45 @@
       var q = p.clone().project(cam);
       return { x: (q.x * 0.5 + 0.5) * rect.width + rect.left, y: (1 - (q.y * 0.5 + 0.5)) * rect.height + rect.top, behind: q.z > 1 };
     }
-    function _axisDimHandleAt(clientX, clientY) {
+    // Which point of the dim is the BASE (rigid-translate handle) and which is the
+    // axis-snapped TIP. Desktop places the tip second (0 = base, 1 = tip); the touch
+    // flow drags the tip out of the stack and ends up with them reversed, so the
+    // guide records the indices. Older guides without them keep the desktop order.
+    function _axisDimBaseIdx(g) { return (g.baseIdx == null) ? 0 : g.baseIdx; }
+    function _axisDimTipIdx(g) { return (g.tipIdx == null) ? 1 : g.tipIdx; }
+    // Nearest grab handle to the cursor across every axis-built dimension. Three
+    // kinds, and they work for a 2-point dim and an N-point running distance alike:
+    //   'ref'   — a guide's red reference point → slides ITS tip along ITS axis.
+    //   'end'   — an axis-snapped tip → not draggable, nudges you to the reference.
+    //   'start' — any point that was never axis-snapped → rigid-translates the dim.
+    function _axisDimHandleAt(clientX, clientY, radiusPx) {
       if (!_axisGuides.length) return null;
       var cam = viewer.scene.getActiveCamera(); if (!cam) return null;
       var rect = renderArea.getBoundingClientRect();
-      var best = null, bestD = 26 * 26;
+      var r = radiusPx || 26;
+      var best = null, bestD = r * r;
+      var seen = [];
       for (var i = 0; i < _axisGuides.length; i++) {
         var g = _axisGuides[i];
-        if (!g.measure || !g.axis || !g.measure.points || g.measure.points.length !== 2) continue;
-        var p0 = g.measure.points[0].position || g.measure.points[0];
-        var p1 = g.measure.points[1].position || g.measure.points[1];
-        var hs = [['start', p0], ['ref', g.rawTarget], ['end', p1]];
-        for (var k = 0; k < hs.length; k++) {
-          var s = _axisDimScreen(hs[k][1], cam, rect); if (s.behind) continue;
-          var d = (s.x - clientX) * (s.x - clientX) + (s.y - clientY) * (s.y - clientY);
-          if (d < bestD) { bestD = d; best = { guide: g, kind: hs[k][0] }; }
+        var info = _axisDimInfo(g.measure);
+        if (!info) continue;
+        var sr = _axisDimScreen(g.rawTarget, cam, rect);
+        if (!sr.behind) {
+          var dr = (sr.x - clientX) * (sr.x - clientX) + (sr.y - clientY) * (sr.y - clientY);
+          if (dr < bestD) { bestD = dr; best = { measure: g.measure, guide: g, kind: 'ref' }; }
+        }
+        if (seen.indexOf(g.measure) !== -1) continue;   // points only need walking once per dim
+        seen.push(g.measure);
+        var pts = g.measure.points;
+        for (var k = 0; k < pts.length; k++) {
+          var p = pts[k].position || pts[k]; if (!p) continue;
+          var sp = _axisDimScreen(p, cam, rect); if (sp.behind) continue;
+          var dp = (sp.x - clientX) * (sp.x - clientX) + (sp.y - clientY) * (sp.y - clientY);
+          if (dp >= bestD) continue;
+          bestD = dp;
+          var tipG = info.tips[k];
+          best = tipG ? { measure: g.measure, guide: tipG, kind: 'end', idx: k }
+                      : { measure: g.measure, guide: g, kind: 'start', idx: k };
         }
       }
       return best;
@@ -13498,17 +13610,27 @@
       return rc.ray.origin.clone().addScaledVector(rc.ray.direction, depth);
     }
     function _beginAxisDimDrag(handle) {
-      var g = handle.guide;
-      _neuterAxisDimSpheres(g.measure);   // now that we own this dim's drag, disable Potree's sphere drag
-      if (_axisLock !== g.axis) { _axisReposBlockMsg(g.axis); return true; }   // handled (blocked)
-      if (handle.kind === 'end') { try { showToast('Drag the red reference point to change the length', 2000); } catch (e) {} return true; }
-      var pts = g.measure.points;
-      _axisDimDrag = {
-        guide: g, kind: handle.kind,
-        p0: (pts[0].position || pts[0]).clone(),
-        p1: (pts[1].position || pts[1]).clone(),
-        axisVec: _activeAxes()[g.axis].clone().normalize()
-      };
+      var meas = handle.measure || (handle.guide && handle.guide.measure);
+      var info = _axisDimInfo(meas);
+      if (!info) return false;
+      _neuterAxisDimSpheres(meas);   // now that we own this dim's drag, disable Potree's sphere drag
+      // Never freeze the user out: grabbing a snapped handle ADOPTS that segment's
+      // axis instead of demanding it already be locked. The START handle is a free
+      // 3D rigid translate driven off each point's stored axis, so it needs no lock.
+      if (handle.kind !== 'start') _adoptAxisLock(handle.guide.axis);
+      if (handle.kind === 'end') { _axisTipPinMsg(); return true; }
+      // Snapshot every point plus the axis it is pinned to (null = free). A rigid
+      // translate has to know each point's own axis, because in a running distance
+      // consecutive segments can be snapped to DIFFERENT axes.
+      var pts = meas.points, snap = [];
+      for (var k = 0; k < pts.length; k++) {
+        var p = pts[k].position || pts[k];
+        var tg = info.tips[k];
+        snap.push({ pos: p.clone ? p.clone() : new THREE.Vector3(p.x, p.y, p.z),
+                    axis: tg ? _activeAxes()[tg.axis].clone().normalize() : null });
+      }
+      _axisDimDrag = { measure: meas, info: info, kind: handle.kind, guide: handle.guide, pts: snap,
+                       anchor: snap[handle.idx != null ? handle.idx : 0].pos.clone() };
       // Suspend Potree's own controls so it can't orbit under the drag (its
       // mousedown fires before ours).
       try { viewer.inputHandler.enabled = false; } catch (e) {}
@@ -13517,30 +13639,42 @@
     }
     function _moveAxisDimDrag(clientX, clientY) {
       if (!_axisDimDrag) return;
-      var d = _axisDimDrag, g = d.guide, meas = g.measure;
-      var loc = _axisDimPickWorld(clientX, clientY, d.kind === 'start' ? d.p0 : g.rawTarget);
-      if (!loc) return;
+      var d = _axisDimDrag, meas = d.measure;
       if (d.kind === 'start') {
-        var delta = loc.clone().sub(d.p0);
-        // The 2nd point keeps its LOCKED-AXIS coordinate fixed — it only follows the
-        // start's movement in the plane perpendicular to the locked axis. So it moves
-        // by the perpendicular component of the delta (delta minus its axis part).
-        var perp = delta.clone().addScaledVector(d.axisVec, -delta.dot(d.axisVec));
-        var np1 = d.p1.clone().add(perp);
-        try { meas.setPosition(0, d.p0.clone().add(delta)); meas.setPosition(1, np1); } catch (e) {}
-        g.snapPos.copy(np1);   // reference (rawTarget) stays put
+        var loc = _axisDimPickWorld(clientX, clientY, d.anchor);
+        if (!loc) return;
+        var delta = loc.clone().sub(d.anchor);
+        // Rigid translate. A point that was placed on an axis KEEPS its coordinate
+        // along that axis and only follows within the plane of the other two — it
+        // moves by the perpendicular component of the delta (delta minus its axis
+        // part). Points that were never snapped follow the full delta.
+        for (var k = 0; k < d.pts.length; k++) {
+          var s = d.pts[k], np;
+          if (s.axis) np = s.pos.clone().add(delta.clone().addScaledVector(s.axis, -delta.dot(s.axis)));
+          else np = s.pos.clone().add(delta);
+          try { meas.setPosition(k, np); } catch (e) {}
+          var tg = d.info.tips[k];
+          if (tg) tg.snapPos.copy(np);   // reference points (rawTarget) stay put
+        }
       } else {
-        g.rawTarget.copy(loc);
-        var t = loc.clone().sub(d.p0).dot(d.axisVec);
-        var np1 = d.p0.clone().addScaledVector(d.axisVec, t);
-        try { meas.setPosition(1, np1); } catch (e) {}
-        g.snapPos.copy(np1);
+        // Red reference: slides ONLY its own tip, along its own axis, measured from
+        // that segment's base point (which doesn't move during this drag).
+        var g = d.guide;
+        var loc2 = _axisDimPickWorld(clientX, clientY, g.rawTarget);
+        if (!loc2) return;
+        g.rawTarget.copy(loc2);
+        var ti = _axisDimTipIdx(g), bi = _axisDimBaseIdx(g);
+        var basePos = (d.pts[bi] && d.pts[bi].pos) || d.anchor;
+        var av = _activeAxes()[g.axis].clone().normalize();
+        var np2 = basePos.clone().addScaledVector(av, loc2.clone().sub(basePos).dot(av));
+        try { meas.setPosition(ti, np2); } catch (e) {}
+        g.snapPos.copy(np2);
       }
     }
     function _endAxisDimDrag() { _axisDimDrag = null; try { viewer.inputHandler.enabled = true; } catch (e) {} try { document.body.style.cursor = ''; } catch (e) {} }
     // Down handler (returns true if it took the gesture → caller stops the event).
-    function _axisDimTryDown(clientX, clientY) {
-      var h = _axisDimHandleAt(clientX, clientY);
+    function _axisDimTryDown(clientX, clientY, radiusPx) {
+      var h = _axisDimHandleAt(clientX, clientY, radiusPx);
       if (!h) return false;
       return _beginAxisDimDrag(h);
     }
@@ -13557,26 +13691,36 @@
     renderArea.addEventListener('touchstart', function (e) {
       if (!e.touches || e.touches.length !== 1 || _axisDimPlacing()) return;   // never intercept while placing points
       var t = e.touches[0];
-      if (_axisDimTryDown(t.clientX, t.clientY)) {
+      // Fatter grab radius for a fingertip than for a cursor.
+      if (_axisDimTryDown(t.clientX, t.clientY, 36)) {
         e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation(); e.preventDefault();
         var tm = function (ev) { if (ev.touches && ev.touches[0]) { _moveAxisDimDrag(ev.touches[0].clientX, ev.touches[0].clientY); ev.preventDefault(); } };
         var te = function () { _endAxisDimDrag(); document.removeEventListener('touchmove', tm, true); document.removeEventListener('touchend', te, true); document.removeEventListener('touchcancel', te, true); };
         document.addEventListener('touchmove', tm, { capture: true, passive: false }); document.addEventListener('touchend', te, true); document.addEventListener('touchcancel', te, true);
       }
     }, true);
-    // White hover highlight on the START handle so it reads as grabbable.
+    // White hover highlight on the DRAGGABLE handles — the free base point and every
+    // red reference point — so they read as grabbable. Pinned tips get no highlight;
+    // they aren't draggable.
     renderArea.addEventListener('mousemove', function (e) {
       if (_axisDimDrag) return;
       if (_axisDimPlacing()) { if (_axisDimHoverHi && _axisDimHoverHi.visible) _axisDimHoverHi.visible = false; return; }
       var h = _axisGuides.length ? _axisDimHandleAt(e.clientX, e.clientY) : null;
-      var startHit = h && h.kind === 'start' && _axisLock === h.guide.axis;
-      if (startHit) {
+      var grabbable = h && (h.kind === 'start' || h.kind === 'ref');
+      if (grabbable) {
         if (!_axisDimHoverHi) {
           _axisDimHoverHi = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
             new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95 }));
           _axisDimHoverHi.renderOrder = 99998; _axisDimHoverHi.frustumCulled = false; _axisGuideScene.add(_axisDimHoverHi);
         }
-        _axisDimHoverHi.userData._p = (h.guide.measure.points[0].position || h.guide.measure.points[0]);
+        if (h.kind === 'ref') {
+          // The reference dot lives at rawTarget, and the guide's own red sphere is
+          // drawn at a lower renderOrder, so the white one covers it on hover.
+          _axisDimHoverHi.userData._p = h.guide.rawTarget;
+        } else {
+          var _hb = h.measure.points[h.idx];
+          _axisDimHoverHi.userData._p = (_hb.position || _hb);
+        }
         _axisDimHoverHi.visible = true;
         try { document.body.style.cursor = 'grab'; } catch (er) {}
       } else if (_axisDimHoverHi && _axisDimHoverHi.visible) {
@@ -15385,7 +15529,9 @@
         // gizmo axis, keep a PERSISTENT guide (dashed connector + white highlight of
         // the actual referenced point) so it stays visible after placement.
         if (_activeInferAxis && _axisRawTarget && _axisSnapPos) {
-          _axisGuides.push({ measure: pendingMeasurement, axis: _activeInferAxis, snapPos: _axisSnapPos.clone(), rawTarget: _axisRawTarget.clone() });
+          var _tipI = pendingMeasurement.points.length - 1;   // the point about to commit
+          _axisGuides.push({ measure: pendingMeasurement, axis: _activeInferAxis, snapPos: _axisSnapPos.clone(), rawTarget: _axisRawTarget.clone(),
+                             tipIdx: _tipI, baseIdx: Math.max(0, _tipI - 1) });
           // Remember which axis this dimension was built on (Distance only) so a
           // later reposition is gated to that axis. Set on the 2nd point's snap.
           // Mark the measurement as axis-built (any axis-snapped point). Do NOT

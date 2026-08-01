@@ -2593,7 +2593,13 @@
           var sy = (1 - (ndc.y + 1) * 0.5) * rect.height + rect.top;
           var dx = sx - clientX, dy = sy - clientY;
           var dsq = dx * dx + dy * dy;
-          if (dsq < bestPxSq) { bestPxSq = dsq; best = s; }
+          // Ties go to the LATER sphere. Right after a touch insertion the two
+          // points sit exactly on top of each other, so this is an exact tie —
+          // and the one the user drags out must be the LAST point, or the D#
+          // labels come out reversed (the dragged point would take the lower
+          // number and the point left behind the higher one). Only applies once
+          // a candidate exists, so the 18px threshold itself is unchanged.
+          if (dsq < bestPxSq || (best && dsq === bestPxSq)) { bestPxSq = dsq; best = s; }
         }
       }
       return best;
