@@ -6,6 +6,52 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-07-31b — ALL 7 VIEWERS: axis-dim touch parity + chain drag ***
+#     (commit eb309389; dev viewer = BDA; see memory
+#      project_axis_dim_touch_and_chain_2026_07_31b for full detail)
+#############################################################################
+- TOUCH WAS BROKEN because chrome.js caps touch Distance insertions at
+  maxMarkers=2, so the FIRST tap auto-finishes the measurement and the 2nd point
+  is produced by DRAGGING a stacked sphere out. The persistent-guide recorder was
+  gated on `pendingMeasurement`, so on tablet/phone no guide was ever created ->
+  no red reference dot / dashed connector, and the whole custom drag layer stayed
+  inert (it bails on an empty _axisGuides).
+- FIX: record the guide on the drag-out DROP (document mouseup, registered before
+  the void-revert handler that clears _measDragObj); show the live guide during a
+  reposition drag; store tipIdx/baseIdx on each guide instead of assuming the
+  desktop 0/1 order (on touch both spheres start stacked, so either index can be
+  the one grabbed).
+- MULTI-POINT CHAINS (closes the PENDING item from 2026-07-29): _axisDimInfo()
+  collects every guide belonging to a dimension and maps which point indices are
+  axis-snapped TIPS. Dragging a free base rigid-translates the WHOLE chain, each
+  point keeping its OWN axis coordinate (delta minus its axis component; full
+  delta for never-snapped points) — consecutive segments may be on DIFFERENT
+  axes. Tips are pinned and move only via their own red reference.
+- NO MORE LOCKOUT: _axisReposBlockMsg deleted; grabbing a handle ADOPTS that
+  segment's axis (_adoptAxisLock). The base point was never axis-snapped so it
+  needs no lock and always moves freely in 3D. NOTE setAxisLock() TOGGLES when
+  handed the axis already locked — guard on equality or it releases mid-drag.
+- Reference points now highlight white on hover, like the base point.
+- chrome.js findDraggableSphereAt: ties go to the LATER sphere. After a touch
+  insertion both points sit at the same position (an exact tie), so strict `<`
+  always grabbed the first one and the dragged-out point took the LOWER D#.
+- PROPAGATION TRAPS LEARNED THIS ROUND:
+  * `git apply` resolves patch paths against the REPO ROOT, not your cwd. Run
+    from a client subdirectory and it prints "Skipped patch 'viewer.html'." and
+    EXITS 0 — silently does nothing, and --check "passes" too. Use
+    `git apply --directory="site/clients/<C>/"` from the repo root and ALWAYS
+    verify with a grep for a string you just added.
+  * The build tag is a single-quoted JS string; an apostrophe in the summary
+    breaks the inline script in all 7 files at once. Syntax-check by extracting
+    the inline <script> and running `node --check`.
+  * WJ Properties carries uncommitted temporal work; its fix was staged without
+    that work via `git hash-object -w` + `git update-index --cacheinfo`.
+- NEW: RECOVERY.md in the repo root — how to rebuild this whole system on a new
+  machine (accounts, R2 creds, tooling, workflow, what is NOT in git). Read it
+  BEFORE this brief. scripts/backup_memory.py mirrors the Claude Code memory
+  directory to Google Drive; run it after notable work.
+
+#############################################################################
 # *** 2026-07-29b — ALL 7 VIEWERS: plane-deviation + plane UX around +Z ***
 #     (commit 5f87886f; dev viewer = WJ Properties; see memory
 #      project_plane_deviation_zaxis_batch for full detail)
