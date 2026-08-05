@@ -214,6 +214,36 @@
     is the follow-up if files get big (needs laz-perf WASM).
 
 #############################################################################
+# *** NEW PROJECT 2026-08-05 — WJ "7 St Dennis - Partial Slab Replacement" ***
+#############################################################################
+- p=partialslab. 16,789,410-pt slab scan from "july 31 processed scan.las"
+  (RGB+intensity, s0.2 octree, 3016 files / 288MB) + 14 full-res 4177 station
+  panoramas. Own R2 prefix wj/7stdennispartialslab/ (isolation trick again, so
+  its 14 panoramas stay out of wj/7stdennis/'s shared stations manifest).
+  0% duplicate XYZ -> converted linearly in 28s, no dedup needed.
+- *** THE "Area 1" TRAP BIT HERE — AND IT IS NOW FIXED IN THE TOOL. ***
+  This .scan has 17 Scan rows: 14 real stations named '1'..'14' PLUS 3 rows
+  named 'Area 1' (sub-scans duplicating the poses of stations 2, 5 and 7).
+  Those extra rows push Scan.Index OUT OF STEP with Scan.Name — DB Index 4 is
+  the station NAMED '3', and so on for every station after the first Area row.
+  extract_stations.py matched JPGs by Index, so 14 of 17 panoramas would have
+  been pinned to the WRONG physical location, silently. Added:
+    --match-by {index,name}   (default 'index' = old behaviour unchanged;
+                               use 'name' whenever the job has Area/sub-scan
+                               rows. When Name == str(Index) both are identical)
+    --min-pano-width N        (default 1024; rejects Trimble's tiny placeholder
+                               JPGs — this job had 2_1/5_1/7_1 at ~20x20 px)
+  Run used: --image-type 4177 --image-dir <proj>/HighResolution --match-by name
+  Result: 14 correct pairings, the 3 'Area 1' rows get has_panorama:false.
+- Alignment: offset 0,0,0 is CORRECT. 13 of 17 stations fall inside the cloud
+  footprint; stations named 1, 11, 12, 13 sit past the +Y edge because the LAS
+  is a CROP of a wider scan job (a bad offset would shift all 17 together, not
+  4). Expect 4 pins floating off the cloud edge — that is faithful.
+- Code push = projects.js + .gitignore + PUBLISHED_PROJECT_URLS.txt +
+  tools/extract_stations.py only. Prod:
+  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=partialslab
+
+#############################################################################
 # *** NEW PROJECT 2026-07-15 — WJ Properties "7 St Dennis - Lounge" ***
 #############################################################################
 - p=lounge. 2.42M-pt interior lounge scan (RGB+intensity, s0.2 octree, 43MB) +
@@ -266,6 +296,11 @@
   (Android finger-roll was defeating viewer.html's <5px click guards).
 - BDA St Joseph "Columns" scan reconverted (5.06M pts) + 15 new panoramas
   (idx 71-85) merged into bda/stjoseph/stations/stations.json on R2.
+  *** 2026-08-05: Columns REPLACED from a new columns.las -> 15,531,827 pts
+  (was 5.06M). R2-ONLY change at bda/stjoseph/pointclouds/columns - no code
+  edit, no commit, no Netlify deploy (projects.js already holds the R2 URL and
+  pointclouds/ is gitignored). 438 orphaned nodes from the old build deleted;
+  all 4537 objects ETag(MD5)-verified against local. Hard-refresh to see it. ***
 - NEW PROJECT 2026-07-14: WJ Properties "140 Carlton - Wall" (p=carltonwall),
   2.57M-pt vertical wall scan on R2 prefix wj/140carltonwall/ (separate from ph8's
   wj/140carlton/ so its 3 panoramas don't leak into ph8's shared stations). GOTCHA

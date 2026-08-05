@@ -35,5 +35,11 @@ window.PROJECTS = {
   "7_st_dennis_scan": {
     name: "7 St Dennis - South Garage Slab (original scan)",
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/7stdennis/pointclouds/7_st_dennis_scan"
+  },
+  "partialslab": {
+    name: "7 St Dennis - Partial Slab Replacement",
+    // Own R2 prefix (wj/7stdennispartialslab) so its 14 panoramas stay isolated from the
+    // other 7-St-Dennis projects' shared stations manifest.
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/wj/7stdennispartialslab/pointclouds/scan"
   }
 };

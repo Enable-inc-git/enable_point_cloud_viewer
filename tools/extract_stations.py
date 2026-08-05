@@ -139,6 +139,16 @@ def main():
                          "<idx>-<type>.jpg panoramas have been pulled into a flat folder.")
     ap.add_argument("--offset", nargs=3, type=float, metavar=("X", "Y", "Z"),
                     help="Subtracted from each station position to match the displayed Potree cloud frame")
+    ap.add_argument("--match-by", choices=("index", "name"), default="index",
+                    help="Which DB column the JPG filename prefix corresponds to. "
+                         "Default 'index' (Scan.Index). Use 'name' when the job contains extra "
+                         "sub-scan rows (e.g. 'Area 1') that push Index out of step with Name — "
+                         "matching by Index there pins the WRONG panorama to every later station. "
+                         "When Name == str(Index) (the usual case) both modes are identical.")
+    ap.add_argument("--min-pano-width", type=int, default=1024,
+                    help="Reject source JPGs narrower than this as panoramas (default 1024). "
+                         "Trimble emits tiny placeholder JPGs (a few dozen px) for sub-scan rows "
+                         "that have no real panorama; without this they'd be published as valid.")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--copy", action="store_true", default=True,
                       help="Copy JPEGs into output_dir/panoramas/ (default)")
@@ -189,12 +199,24 @@ def main():
             continue
         quat = rotation_matrix_to_quat(rot)
 
-        # Source panorama for this station + selected type
-        src_jpg = images_dir / "{}-{}.jpg".format(idx, image_type)
+        # Source panorama for this station + selected type.
+        # The filename prefix is the DB Index by default, but jobs containing sub-scan rows
+        # ('Area 1' etc.) have Index out of step with Name — see --match-by.
+        key = idx if args.match_by == "index" else str(name)
+        src_jpg = images_dir / "{}-{}.jpg".format(key, image_type)
         has_pano = src_jpg.exists()
         out_rel = None
         img_w = 0
         img_h = 0
+        if has_pano:
+            # Reject Trimble's tiny placeholder JPGs before they reach the manifest.
+            probe_w, probe_h = get_image_size(src_jpg)
+            if probe_w and probe_w < args.min_pano_width:
+                print("  --:  station {:>2d} ('{}') '{}' is {}x{}, below --min-pano-width {} "
+                      "- treating as NO panorama".format(idx, name, src_jpg.name, probe_w,
+                                                         probe_h, args.min_pano_width))
+                has_pano = False
+                n_skipped += 1
         if has_pano:
             out_name = "station_{:03d}.jpg".format(idx)
             out_path = panoramas_dir / out_name
@@ -215,7 +237,7 @@ def main():
                 n_with += 1
         else:
             n_skipped += 1
-            print("  --:  station {:>2d} ('{}') has no '{}-{}.jpg'".format(idx, name, idx, image_type))
+            print("  --:  station {:>2d} ('{}') has no '{}-{}.jpg'".format(idx, name, key, image_type))
 
         shifted = [trans[0] - offset[0], trans[1] - offset[1], trans[2] - offset[2]]
         for ax in range(3):
