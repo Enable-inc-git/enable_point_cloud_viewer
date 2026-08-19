@@ -55,6 +55,34 @@
   `Solar Restoration/Seneca/`, `.../80 St Claire Ave East, Toronto/pointclouds/`
   and `.../models/`. Raw .las/.ifc/.scan stay covered by the global rules.
 
+- LATER THE SAME DAY — two new GENERIC viewer.html features, both OPT-IN from
+  projects.js, currently committed for SOLAR RESTORATION ONLY (still to be
+  propagated to the other 6 so the files stay in sync; they are inert without
+  the projects.js keys, so propagating changes nothing for other clients):
+    * `meta.autoLoadModels: true` — load the project's models/ folder on startup
+      instead of leaving each model as an on-demand "Load" row.
+    * `meta.clipToModel` — pull all six faces of the INITIAL crop box to the
+      loaded model's bounding box, so the scan is trimmed to what the model
+      covers. Forms: `true` (flush) | `<number>` (same margin on all six faces) |
+      `{sides, z}` | `{x, y, z}`. Margins are METRES; POSITIVE leaves a gap
+      outside the model, NEGATIVE crops further IN past the model's own extents.
+      The result is intersected with the box's original cloud extents, so it can
+      only ever crop IN, never grow past the scan. It runs from BOTH
+      displayLoadedGroup() and just after the box is built, because the GLB fetch
+      can finish either side of the point cloud's load callback (a latch stops it
+      applying twice).
+    * `meta.clipModelsToBoxes: false` — that project's models are drawn WHOLE and
+      are not trimmed by the crop boxes until the user turns a model's ✂️ toggle
+      on. REQUIRED alongside a negative clipToModel margin, because the box then
+      cuts inside the model's own extents. Default stays TRUE, so every existing
+      project (BDA St Joseph's model, Pomerleau's shoring, MurrayFranks' Dupont
+      canopy) keeps clipping to its crop boxes exactly as before — all three new
+      keys are per-project opt-ins with zero effect on anything that omits them.
+  80 St Claire uses `autoLoadModels: true` + `clipToModel: {sides:-0.125, z:0}`
+  + `clipModelsToBoxes: false` — the four side faces cut 125 mm INSIDE the model
+  to shave the shaft walls off, top/bottom flush. Box 1.856 x 3.750 x 9.079 m
+  (from 2.371 x 4.179 x 11.022).
+
 #############################################################################
 # *** 2026-08-05 — ALL 7 VIEWERS: Tekla reference-model DXF export ***
 #     (dev viewer = BDA; tested on 222 Jarvis; see memory
