@@ -6,6 +6,107 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-08-19 — SOLAR RESTORATION: restructured + new "80 St Claire" site ***
+#     (no viewer-code change; data/layout only)
+#############################################################################
+- FOLDER RESTRUCTURE. Solar Restoration was the last client still using the old
+  nested layout `Solar Restoration/pointclouds/seneca/{pointclouds/NO, stations,
+  HighResolution, libs, NO.html}` — a whole standalone Potree 1.8 export dumped
+  in place. It now matches every other client, i.e. one folder PER SITE:
+      Solar Restoration/
+        Seneca/                          <- was pointclouds/seneca/
+          pointclouds/NO/  stations/  HighResolution/  "Scan Job 1.scan"
+        80 St Claire Ave East, Toronto/  <- NEW
+          pointclouds/stairwell/  models/{guard-handrail.glb, models.json}
+          "stairwell scan.las"  "guard and handrail model.ifc"
+        viewer.html chrome.js chrome.css icons.js custom.css projects.js
+  Deleted as dead weight: the vendored `libs/` Potree dist (53 MB / 600 files)
+  and `NO.html`, the old standalone page that was its only consumer. The viewer
+  loads Potree from `clients/libs/`, so nothing referenced them.
+- NOTHING ON R2 MOVED. Seneca still serves from `solar/seneca/...` and its
+  projects.js URL is byte-for-byte unchanged, so the published Seneca link keeps
+  working. The local folders are gitignored MIRRORS of R2 + raw source staging;
+  moving them locally cannot affect the live site. Verified before AND after the
+  move that cloud.js / r.hrc / r.bin / stations.json / a panorama all return 200
+  at identical byte sizes, then load-tested ?p=seneca (1.55M pts, stations OK).
+- NEW PROJECT `?p=stairwell` — "80 St Claire Ave East - Stairwell".
+  * Scan: `stairwell scan.las`, 5,041,864 pts, PDRF2 RGB+intensity, local coords,
+    bbox X[-1.99,0.38] Y[-0.58,3.60] Z[-0.09,10.93] (a 2.4 x 4.2 x 11.0 m
+    stairwell shaft). 0.00% duplicate XYZ -> no dedupe needed.
+  * Convert: PotreeConverter 1.7, the standard flags `-s 0.2 --scale 0.001
+    --attributes RGB INTENSITY --material RGB --overwrite`. 6.0 s, lossless
+    (5,041,864 written), 89 MB / 1186 files.
+  * NO PANORAMAS for this scan (by design — none were captured). The
+    stations.json fetch 404s harmlessly and the Panoramas toggle stays empty.
+  * Model: `guard and handrail model.ifc` (Tekla 2026 IFC4, mm, no
+    IFCMAPCONVERSION) -> `C:\IfcTools\IfcConvert.exe` with NO flags ->
+    models/guard-handrail.glb (3.4 MB, 271 meshes). The usual per-part 'CoG'
+    "Failed to convert" errors are points, not meshes — ignore them.
+    models.json manifest is REQUIRED (Netlify/R2 serve no directory listing).
+  * ALIGNMENT: model bounds per the viewer's own `[model] loaded ... bounds`
+    line are X[-1.78,0.33] Y[-0.48,3.52] Z[0.06,9.14] — inside the cloud on all
+    three axes, 1:1. Tekla was modelled in the scanner frame, so NO modelOffset
+    and NO modelScale. Confirmed visually: the rails track the scanned flights
+    and the landings sit on the scanned landing slabs.
+- R2: own prefix `solar/80stclaire/{pointclouds/stairwell, models}` (1188
+  objects), uploaded with a resumable boto3 sync, verified missing=0 and all
+  entry URLs 200 with correct Content-Type (model/gltf-binary for the GLB).
+- .gitignore: the stale `Solar Restoration/pointclouds/` rule was replaced by
+  `Solar Restoration/Seneca/`, `.../80 St Claire Ave East, Toronto/pointclouds/`
+  and `.../models/`. Raw .las/.ifc/.scan stay covered by the global rules.
+
+#############################################################################
+# *** 2026-08-05 — ALL 7 VIEWERS: Tekla reference-model DXF export ***
+#     (dev viewer = BDA; tested on 222 Jarvis; see memory
+#      project_tekla_reference_model_dxf_2026_08_05 for full detail)
+#############################################################################
+- WHY: Tekla Structures cannot show a point cloud in a DRAWING view (documented
+  limitation; the Open API does not expose the cloud renderer at all). It DOES
+  draw REFERENCE MODELS in drawing views, and clips them by each view's own crop
+  box + view depth. So one 3D DXF slab at true model coordinates serves every GA
+  view, and the per-view toggle is just reference-model visibility. No C#
+  Tekla.Structures.Drawing work is needed — Tekla does the trimming for free.
+- Save/Export menu -> "Points -> Tekla DXF (mm, crosses)" (icon: crop), plus
+  sliders for target cross count (25k-300k, default 100k) and cross size
+  (2-20 mm, default 6). Requires a crop/focus box — aborts without one, because
+  a whole-cloud Tekla DXF is never what is wanted.
+- COORDINATES (the part that surprises people): IfcConvert maps IFC Z-up ->
+  glTF Y-up and Tekla mm -> metres; the viewer's MODEL_X_ROTATION is the exact
+  inverse, so a loaded GLB already sits at its true IFC/Tekla coordinates. That
+  leaves only meta.modelOffset / meta.modelScale:
+      Tekla_mm = (world - modelOffset) / modelScale * 1000
+  Both are absent when the job is modelled directly in the scanner's own
+  coordinate system (the normal case for this shop — everything stays in the
+  X7/T100 frame), reducing it to metres -> mm. The DXF inserts into Tekla at
+  origin 0,0,0 scale 1. Whatever offset was eyeballed to seat the GLB on the
+  scan IS the scan->Tekla registration; no Tekla origin knowledge required.
+- WHY CROSSES, NOT POINTS: Tekla renders bare DXF POINT entities unreliably in
+  reference models. Each point becomes 2 LINE entities, and the arms lie along
+  the crop box's TWO LONGEST LOCAL AXES — i.e. in the slab plane. World-XY arms
+  would leave a VERTICAL section slab edge-on and effectively invisible.
+- DENSITY: reference models stay usable around 50-150k entities (the old
+  "Points -> 3D DXF" cap of 2M is fine for CAD, fatal here). Spacing is
+  AUTO-SOLVED: seed voxel from the slice footprint (count scales ~1/s^2 since a
+  scan is a surface, not a solid), deliberately overshoot the target, then
+  coarsen by re-voxelling the array already in hand — so the octree is walked
+  only ONCE. Solved spacing is reported in the toast.
+- LAYERS: one per crop box, name uppercased from the box name (fallback
+  CLOUD_1..n), plus <NAME>_EXTENT carrying the box mid-plane rectangle — a free
+  calibration check and a visible slab extent on the sheet.
+- SHARED REFACTOR (affects the LAS export too — regression-test it):
+  _withForcedRegion(pcs, aabb, fn) was extracted out of exportSubScanLAS. It
+  lifts the global + per-cloud point budgets, force-loads the region, runs fn,
+  and ALWAYS restores the budgets. The old "Points -> 3D/2D DXF" path still uses
+  extractPositions (currently-loaded LOD nodes only) and is left untouched.
+- TEKLA-SIDE GOTCHA: reference models are typically OFF by default in drawing
+  views. Double-click the view -> View Properties -> enable reference-object
+  visibility. If still blank, check VIEW DEPTH first (a thin slab outside the
+  view depth is clipped away entirely), then the view filter, then whether the
+  drawing predates the reference model and needs updating.
+- chrome.js buildSliderMenuItem now takes an optional item.fmt formatter (a
+  plain toFixed(1) rendered the target count as "100000.0").
+
+#############################################################################
 # *** 2026-07-31b — ALL 7 VIEWERS: axis-dim touch parity + chain drag ***
 #     (commit eb309389; dev viewer = BDA; see memory
 #      project_axis_dim_touch_and_chain_2026_07_31b for full detail)

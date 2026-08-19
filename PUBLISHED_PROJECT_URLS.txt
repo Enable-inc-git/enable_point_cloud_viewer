@@ -8,7 +8,7 @@
    - Spaces in the client folder name become %20
    - Netlify is case-insensitive and works with or without ".html"
 
- Last updated: 2026-08-01
+ Last updated: 2026-08-19
  AUTO-GENERATED from each client's projects.js by .claude/gen_published_urls.mjs
  (runs after every `git push` via a PostToolUse hook). Dev/sandbox clients are
  excluded. Do not hand-edit — change projects.js instead.
@@ -49,6 +49,7 @@ Pomerleau
 
 Solar Restoration
   Seneca                 https://viewer.enable-inc.com/clients/Solar%20Restoration/viewer.html?p=seneca
+  80 St Claire Ave East, Toronto  https://viewer.enable-inc.com/clients/Solar%20Restoration/viewer.html?p=80stclaire
 
 WJ Properties
   7 St Dennis - South Garage Slab  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=southGarageSlab
@@ -59,3 +60,4 @@ WJ Properties
   2560 Kingston Rd - Sprinkler Room  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=sprinkler_room
   7 St Dennis - South Garage Slab (original scan)  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=7_st_dennis_scan
   7 St Dennis - Partial Slab Replacement  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=partialslab
+  7 St Dennis - Ramp Temporal  https://viewer.enable-inc.com/clients/WJ%20Properties/viewer.html?p=ramptemporal

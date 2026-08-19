@@ -102,13 +102,20 @@ site/clients/WJ Properties/140 Carlton - Unit 2304/HighResolution/
 site/clients/WJ Properties/140 Carlton - Unit 2304/models/
 site/clients/WJ Properties/140 Carlton - Unit 2304/*.glb
 site/clients/WJ Properties/140 Carlton - wall/
+site/clients/WJ Properties/7 St Dennis - ramp temporal/
 # 7 St Dennis - Partial Slab Replacement: octree + panoramas served from R2, raw scan local-only
 site/clients/WJ Properties/7 St Dennis - Partial Slab Replacement/pointclouds/
 site/clients/WJ Properties/7 St Dennis - Partial Slab Replacement/stations/
 site/clients/WJ Properties/7 St Dennis - Partial Slab Replacement/HighResolution/
 site/clients/WJ Properties/7 St Dennis - Partial Slab Replacement/*.scan
 site/clients/WJ Properties/2560 kingston rd/pointclouds/
-site/clients/Solar Restoration/pointclouds/
+# Solar Restoration (restructured 2026-08-19 to the per-site layout): octrees + panoramas
+# + models served from R2. "Seneca/" is the old solar/seneca/... mirror (was the nested
+# pointclouds/seneca/ dump); "80 St Claire..." is solar/80stclaire/... . Raw .las/.ifc/.scan
+# are covered by the global rules above.
+site/clients/Solar Restoration/Seneca/
+site/clients/Solar Restoration/80 St Claire Ave East, Toronto/pointclouds/
+site/clients/Solar Restoration/80 St Claire Ave East, Toronto/models/
 site/clients/HRI/40 Larch 1/pointclouds/
 site/clients/HRI/40 Larch 1/stations/
 site/clients/HRI/40 Larch 1/models/
