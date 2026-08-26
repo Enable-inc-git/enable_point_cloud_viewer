@@ -154,3 +154,13 @@ site/clients/MurrayFranks/1531 Dupont (steel canopy)/
 
 # St. Joseph's Hamilton model (served from R2, not git)
 site/clients/BDA/St. Joseph's Hamilton/models/
+
+# ---------- August (2026-08-25): per-site layout, octrees + panoramas served from R2 ----------
+# "410 John Street/" mirrors august/410john/... ; "tomken_shoring/" is the legacy hydrovault
+# project, migrated off git to august/tomken_shoring/... on 2026-08-25 (folder name kept as-is
+# by request). Raw .las is covered by the global rule above; .scan is not, so list it.
+site/clients/August/410 John Street/pointclouds/
+site/clients/August/410 John Street/stations/
+site/clients/August/410 John Street/HighResolution/
+site/clients/August/410 John Street/*.scan
+site/clients/August/tomken_shoring/pointclouds/
