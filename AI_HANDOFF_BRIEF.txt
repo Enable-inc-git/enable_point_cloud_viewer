@@ -6,6 +6,39 @@
 ==============================================================================
 
 #############################################################################
+# *** NEW PROJECT 2026-08-26 — AUGUST "410 John Street" (p=410john) ***
+#############################################################################
+- p=410john. 30.9M-pt scan (s0.2 octree, 3020 files / ~537MB) + 14 full-res
+  4177 station panoramas. Own R2 prefix august/410john/ (pointclouds/410john
+  + stations/), so its panoramas stay out of any other site's manifest.
+  Source: cleaned_scan.las (767MB) + "Scan Job 1.scan"; both stay LOCAL, as do
+  the HighResolution/ pano originals — .gitignore covers all three.
+- *** THE UPLOAD WAS INTERRUPTED AND LOOKED FINISHED. *** The first R2 sync
+  stopped 30 objects short (20 octree .bin + 10 station panoramas) with NO
+  error surfaced; cloud.js / sources.json / stations.json were all present and
+  returned 200, so a spot-check of the obvious URLs would have passed. ALWAYS
+  diff a full list_objects_v2 of the prefix against a local os.walk (compare
+  BOTH the key set and the sizes) before flipping projects.js to the R2 URL.
+  Re-uploaded the 30 with explicit ContentType (.bin application/octet-stream,
+  .jpg image/jpeg); verified 3035 objects, 0 missing, 0 size mismatches.
+- projects.js folder is the ABSOLUTE r2.dev URL. The station-manifest code
+  (viewer.html ~line 16212) strips the last two path segments with a regex —
+  not split/join — precisely so "https://" survives, giving
+  august/410john/stations/stations.json. Verified 200.
+- Same commit brought the August viewer up to build 2026-08-05 (it had been
+  left behind at the old single-file layout): ADDS chrome.css / chrome.js /
+  icons.js, updates viewer.html + custom.css. Now byte-identical to HRI and
+  Solar Restoration except the client name in the build banner. August is
+  therefore a full member of the sync set going forward.
+- Legacy August project hydrovault (tomken_shoring/) is unchanged: still a
+  RELATIVE git-tracked folder, still live. Its data also exists at R2
+  august/tomken_shoring/ and .gitignore now lists it, but the 7567 files stay
+  TRACKED — .gitignore does not untrack, so nothing broke. If you ever want it
+  off git, git rm --cached it AND flip projects.js to the R2 URL in one commit.
+- Code push = .gitignore + the 6 August files + PUBLISHED_PROJECT_URLS.txt.
+  Prod: https://viewer.enable-inc.com/clients/August/viewer.html?p=410john
+
+#############################################################################
 # *** 2026-08-19 — SOLAR RESTORATION: restructured + new "80 St Claire" site ***
 #     (no viewer-code change; data/layout only)
 #############################################################################

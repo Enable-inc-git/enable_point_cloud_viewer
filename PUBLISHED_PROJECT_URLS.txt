@@ -8,7 +8,7 @@
    - Spaces in the client folder name become %20
    - Netlify is case-insensitive and works with or without ".html"
 
- Last updated: 2026-08-19
+ Last updated: 2026-08-26
  AUTO-GENERATED from each client's projects.js by .claude/gen_published_urls.mjs
  (runs after every `git push` via a PostToolUse hook). Dev/sandbox clients are
  excluded. Do not hand-edit — change projects.js instead.
@@ -18,6 +18,7 @@
 
 August
   hydrovault             https://viewer.enable-inc.com/clients/August/viewer.html?p=hydrovault
+  410 John Street        https://viewer.enable-inc.com/clients/August/viewer.html?p=410john
 
 BDA
   222 Jarvis Elevator 4  https://viewer.enable-inc.com/clients/BDA/viewer.html?p=jarvis
