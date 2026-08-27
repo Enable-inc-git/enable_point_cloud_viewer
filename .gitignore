@@ -164,3 +164,10 @@ site/clients/August/410 John Street/stations/
 site/clients/August/410 John Street/HighResolution/
 site/clients/August/410 John Street/*.scan
 site/clients/August/tomken_shoring/pointclouds/
+
+# ---------- Conterra "Partial Slab Replacement" (2026-08-27) ----------
+# Local R2 mirror of conterra/partialslab/... — projects.js points at the r2.dev URL.
+# The raw source LAS lives under the folder named after the address (kept off the
+# viewer path deliberately) and is covered by the global *.las rule.
+site/clients/Conterra/Partial Slab Replacement/pointclouds/
+site/clients/Conterra/7 St Dennis - Partial Slab Replacement/

@@ -6,6 +6,44 @@
 ==============================================================================
 
 #############################################################################
+# *** NEW PROJECT 2026-08-27 — CONTERRA "Partial Slab Replacement" ***
+#     (p=partialslab)  + Conterra viewer brought onto the current build
+#############################################################################
+- p=partialslab. 16,789,410-pt scan (s0.2 octree, 3016 files / ~302MB), no
+  panoramas, no models. Own R2 prefix conterra/partialslab/pointclouds/scan.
+  Source: "july 31 processed scan.las" (436MB), local coords (no projection),
+  bbox ~34.2 x 29.4 x 3.3 m. Converted with PotreeConverter 1.7:
+    -s 0.2 --scale 0.001 --attributes RGB INTENSITY --material RGB --overwrite
+  Clean linear convert, 26s, 100% of points written (no duplicate-point stall).
+- *** NAMING IS DELIBERATE — DO NOT "FIX" IT. *** The client asked that the
+  street address NOT appear in the link or anywhere in the viewer. So:
+    * project id  = partialslab      (not 7stdennispartialslab)
+    * project name= "Partial Slab Replacement"
+    * R2 prefix   = conterra/partialslab/
+    * served path = "Partial Slab Replacement/pointclouds/scan"
+  The raw LAS still sits in the address-named folder
+  "7 St Dennis - Partial Slab Replacement/" — that folder is gitignored and is
+  NEVER on the served path. viewer.html sets both the description and the tab
+  title from meta.name, and it only ever reads the ONE project named by ?p=,
+  so no other project's name can leak into this view.
+- NOTE: this is the SAME scan as WJ Properties p=partialslab (identical
+  16,789,410 point count), which points at wj/7stdennispartialslab/. That older
+  copy is untouched and still live. Two clients, two prefixes, one scan.
+- *** THE CONTERRA VIEWER WAS THE LEGACY 286-LINE POTREE PAGE *** (no chrome,
+  no toolbar, blue #4db6ff theme, title "Potree Viewer") — it had never been
+  brought onto the modern layout. This commit copies viewer.html, chrome.js,
+  chrome.css, icons.js and custom.css from August (the only client clean in the
+  working tree at build 2026-08-05) and retags the build banner to "Conterra".
+  Conterra is now a member of the sync set — propagate to it going forward.
+- Legacy Conterra project st_dennis_rear is unchanged: still a RELATIVE
+  git-tracked folder (7 St Dennis - Rear Entrance/pointclouds/rear_entrance),
+  still live. The modern viewer handles relative folders fine (August's
+  hydrovault proves it) — verified its cloud.js still returns 200.
+- Code push = .gitignore + the 6 Conterra files. The 294MB octree mirror and
+  the raw LAS are gitignored; only R2 has the data.
+  Prod: https://viewer.enable-inc.com/clients/Conterra/viewer.html?p=partialslab
+
+#############################################################################
 # *** NEW PROJECT 2026-08-26 — AUGUST "410 John Street" (p=410john) ***
 #############################################################################
 - p=410john. 30.9M-pt scan (s0.2 octree, 3020 files / ~537MB) + 14 full-res
