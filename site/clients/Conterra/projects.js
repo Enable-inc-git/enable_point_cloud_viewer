@@ -17,8 +17,11 @@ window.PROJECTS = {
     // on-demand "Load" row in the Models panel. Per-project opt-in — absent on
     // every other project, so nothing else changes.
     autoLoadModels: true,
-    // Shave 300mm off the TOP of the initial locked crop box (metres).
-    clipTopTrimZ: 0.3,
+    // Shave 600mm off the TOP of the initial locked crop box (metres).
+    // The top 300mm of this scan holds only 0.51% of the points (sparse ceiling
+    // clutter), so a 0.3 trim was invisible; 0.6 cuts into the deck soffit, the
+    // dense 2.47-2.81m band that is 38% of the cloud. ~0.84 would clear it fully.
+    clipTopTrimZ: 0.6,
     // Models start with their crop-box clipping toggle OFF, so the shoring model
     // draws whole instead of being sliced by the trimmed box. The ✂️ button in the
     // Models panel turns it on per model.

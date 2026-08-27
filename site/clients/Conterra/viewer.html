@@ -16242,8 +16242,14 @@
         // shave that much off the TOP of the initial locked clip box.
         var _topTrimZ = (meta && typeof meta.clipTopTrimZ === 'number') ? meta.clipTopTrimZ : 0;
         if (_topTrimZ > 0 && _topTrimZ < size.z) {
+          var _oldTopZ = center.z + size.z / 2;
           center.z -= _topTrimZ / 2;
           size.z   -= _topTrimZ;
+          // Log it: a small trim through a sparse band looks like nothing happened,
+          // so make the applied cut verifiable from the console.
+          console.log('[clip] clipTopTrimZ ' + _topTrimZ + 'm — box top ' +
+                      _oldTopZ.toFixed(3) + ' -> ' + (center.z + size.z / 2).toFixed(3) +
+                      ' (bottom ' + (center.z - size.z / 2).toFixed(3) + ' unchanged)');
         }
 
         let clipBox;
