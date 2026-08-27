@@ -12,6 +12,10 @@ window.PROJECTS = {
   "partialslab": {
     name: "Partial Slab Replacement",
     // Own R2 prefix (conterra/partialslab). 16.79M pts, no panoramas.
-    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/conterra/partialslab/pointclouds/scan"
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/conterra/partialslab/pointclouds/scan",
+    // Load models/ (shoring_model.glb) on startup instead of leaving it as an
+    // on-demand "Load" row in the Models panel. Per-project opt-in — absent on
+    // every other project, so nothing else changes.
+    autoLoadModels: true
   }
 };

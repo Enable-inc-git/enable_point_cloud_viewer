@@ -170,4 +170,5 @@ site/clients/August/tomken_shoring/pointclouds/
 # The raw source LAS lives under the folder named after the address (kept off the
 # viewer path deliberately) and is covered by the global *.las rule.
 site/clients/Conterra/Partial Slab Replacement/pointclouds/
+site/clients/Conterra/Partial Slab Replacement/models/
 site/clients/Conterra/7 St Dennis - Partial Slab Replacement/
