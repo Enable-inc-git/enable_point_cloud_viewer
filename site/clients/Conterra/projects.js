@@ -16,6 +16,12 @@ window.PROJECTS = {
     // Load models/ (shoring_model.glb) on startup instead of leaving it as an
     // on-demand "Load" row in the Models panel. Per-project opt-in — absent on
     // every other project, so nothing else changes.
-    autoLoadModels: true
+    autoLoadModels: true,
+    // Shave 300mm off the TOP of the initial locked crop box (metres).
+    clipTopTrimZ: 0.3,
+    // Models start with their crop-box clipping toggle OFF, so the shoring model
+    // draws whole instead of being sliced by the trimmed box. The ✂️ button in the
+    // Models panel turns it on per model.
+    clipModelsToBoxes: false
   }
 };

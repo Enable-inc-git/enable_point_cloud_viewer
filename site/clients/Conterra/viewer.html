@@ -16238,6 +16238,14 @@
         const center = worldBB.getCenter(new THREE.Vector3());
         const size   = worldBB.getSize(new THREE.Vector3());
 
+        // Optional per-project top-Z trim (projects.js: meta.clipTopTrimZ, metres):
+        // shave that much off the TOP of the initial locked clip box.
+        var _topTrimZ = (meta && typeof meta.clipTopTrimZ === 'number') ? meta.clipTopTrimZ : 0;
+        if (_topTrimZ > 0 && _topTrimZ < size.z) {
+          center.z -= _topTrimZ / 2;
+          size.z   -= _topTrimZ;
+        }
+
         let clipBox;
 
         // Preferred: use clippingTool if present
