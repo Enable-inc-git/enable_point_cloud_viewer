@@ -6,6 +6,45 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-09-17 — BDA 222 JARVIS: Tekla structural model, AUTO-LOADED ***
+#     (p=jarvis, commit ef9372fd, LIVE)
+#############################################################################
+- The user dropped "222 Jarvis Elevator 4/model.ifc" (Tekla Structures 2026,
+  IFC4, millimetres). Converted with the standard no-flags recipe:
+    C:\IfcTools\IfcConvert.exe model.ifc models/model.glb
+  298 KB, 19 meshes. IfcConvert logs one "Unexpected topology / Failed to
+  convert" per Tekla 'CoG' point representation — those are harmless, the solid
+  steel converts fine.
+- Uploaded models/model.glb + models/models.json to R2 bda/jarvis/models/ via
+    python tools/r2_upload.py "site/clients/BDA/222 Jarvis Elevator 4/models" bda/jarvis/models
+  (ends with the full key+size verify; RESULT: OK). models.json is
+    [{ "file": "model.glb", "name": "Structural Model" }]
+  and is MANDATORY — Netlify serves no directory listing, so the manifest is
+  what discoverProjectModels() actually finds in production. The local models/
+  folder is an R2 mirror and is NOT committed (same as St. Joseph's models/).
+- Startup auto-load: the meta.autoLoadModels opt-in described in the
+  2026-08-19 Solar Restoration section above was PORTED INTO BDA's viewer.html
+  by this commit, and projects.js sets `autoLoadModels: true` on JARVIS ONLY.
+  St Joseph's and every other client keep their on-demand "Load" rows. NOTE
+  this means BDA now has autoLoadModels but still NOT clipToModel /
+  clipModelsToBoxes — the other two Solar keys are still unpropagated.
+- Alignment: 1:1, NO modelOffset. Viewer-reported bounds (the figure to trust —
+  never an offline python GLB bbox parse) are
+    [-0.212, -0.964, 6.260] .. [2.567, -0.664, 6.660] m
+  = a 2.78 x 0.30 x 0.40 m beam seated in the shaft opening near the top of the
+  6.8 m-tall scan. Cloud tightBB is
+    [-0.863, -1.693, 0.020] .. [5.754, 4.344, 6.821]
+  so the model is entirely inside the initial crop box and needs no clip tweak.
+- COMMIT HYGIENE — THIS WILL BITE AGAIN: BDA's working-tree viewer.html still
+  carries the uncommitted +289/-20 Tekla-DXF batch, so a plain `git add` would
+  have shipped it. To commit ONE hunk out of a file with shelved work:
+    git show HEAD:<path> > tmp        # pristine copy
+    <re-apply just your edit to tmp>
+    BLOB=$(git hash-object -w tmp)
+    git update-index --cacheinfo 100644,$BLOB,<path>
+  Then check `git diff --cached` is only your change before committing.
+
+#############################################################################
 # *** NEW PROJECT 2026-08-27 — CONTERRA "Partial Slab Replacement" ***
 #     (p=partialslab)  + Conterra viewer brought onto the current build
 #############################################################################
