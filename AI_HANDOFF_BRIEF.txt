@@ -6,6 +6,50 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-09-17b — NEW GENERIC OPT-IN: meta.initialView (pinned opening view)
+#     (BDA only so far, commit 8ca80d27, LIVE on p=jarvis)
+#############################################################################
+- A project can now pin the camera AND the crop box the viewer OPENS on, so a
+  shared link always lands on the same framing. In projects.js:
+    initialView: {
+      cam:  { position:{x,y,z}, yaw, pitch, radius, mode },   // mode 1 = perspective
+      clip: { initial: { position:{x,y,z}, rotation:{x,y,z}, scale:{x,y,z} } }
+    }
+  Both halves are optional; omit the key entirely and startup behaviour is
+  exactly as before (fit the whole scan). The shape is DELIBERATELY identical to
+  a Saved View's own snapshot, and the implementation calls the Saved Views
+  appliers _applyClip() / _applyCamera(), so it restores precisely what
+  recalling that view would — there is no second code path to keep in sync.
+- HOW TO CAPTURE THE NUMBERS for a new project: have the user frame the scan in
+  a live viewer and hit "Save View", then read, in that same tab:
+      __dev2.viewer.scene.view        -> position, yaw, pitch, radius
+      the volume named 'Initial Crop' -> position, rotation, scale
+  To prove you are reading the SAVED snapshot rather than just wherever the
+  camera happens to be, perturb both first and then click the saved-view row;
+  the recall restores them.
+- *** THE TRAP — Potree's zoomTo() ALWAYS TWEENS, EVEN AT DURATION 0. ***
+  potree.js ~89452 unconditionally does
+      new TWEEN.Tween(pos).to(endPosition, animationDuration); tween.start()
+  and a zero-duration tween still fires its onUpdate on the NEXT animation
+  frame. So the startup viewer.fitToScreen() wrote view.position/lookAt ONE
+  FRAME AFTER a synchronous camera apply. The symptom is very specific and
+  misleading: the CROP BOX sticks perfectly while the camera silently snaps
+  back to Potree's default 45-degree framing (yaw PI/4, pitch -PI/4).
+  controls.stopTweens() does NOT rescue it — that only stops tweens the
+  CONTROLS registered in this.tweens, not the ones viewer.zoomTo() news up
+  itself. The fix is to never create the tween:
+      if (!(meta && meta.initialView && meta.initialView.cam)) viewer.fitToScreen();
+- jarvis values (from its "View 1"): cam pos (-0.001598, 8.070512, 4.347782),
+  yaw 3.412, pitch -0.114296, radius 8.714283; crop pos (1.922464, 0.438031,
+  3.420500) scale (5.570002, 4.261508, 6.801000) — trims ONLY the +X and +Y
+  faces (X max 5.754 -> 4.708, Y max 4.344 -> 2.569), min corner and Z left at
+  the scan's full extents.
+- Regression-checked p=stjoseph (no initialView key): default fit orientation,
+  crop box exactly the full scan extents, both scans still load. Verified cold
+  on localhost AND on production.
+- STILL BDA-ONLY — propagate initialView with the next viewer sync.
+
+#############################################################################
 # *** 2026-09-17 — BDA 222 JARVIS: Tekla structural model, AUTO-LOADED ***
 #     (p=jarvis, commit ef9372fd, LIVE)
 #############################################################################
