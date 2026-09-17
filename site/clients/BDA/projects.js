@@ -8,7 +8,25 @@ window.PROJECTS = {
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/jarvis/pointclouds/scan",
     // Tekla structural model (models/model.glb on R2). Opt-in: load it on startup
     // instead of leaving it as an on-demand "Load" row in the Models panel.
-    autoLoadModels: true
+    autoLoadModels: true,
+    // Opening camera + crop, captured from the viewer's own "View 1" snapshot
+    // 2026-09-17: looking up the stairwell with the new beam in frame. The crop
+    // trims only the +X and +Y faces (X max 5.754 -> 4.708, Y max 4.344 -> 2.569);
+    // min corner and Z are the scan's full extents.
+    initialView: {
+      cam: {
+        position: { x: -0.001598, y: 8.070512, z: 4.347782 },
+        yaw: 3.412, pitch: -0.114296, radius: 8.714283,
+        mode: 1                                   // 1 = perspective
+      },
+      clip: {
+        initial: {
+          position: { x: 1.922464, y: 0.438031, z: 3.420500 },
+          rotation: { x: 0, y: 0, z: 0 },
+          scale:    { x: 5.570002, y: 4.261508, z: 6.801000 }
+        }
+      }
+    }
   },
   "stjoseph": {
     name: "St. Joseph's Hamilton",

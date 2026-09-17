@@ -15826,8 +15826,15 @@
       registerPrimaryScan(pc);
       loadAdditionalScans();
 
-      // Fit camera to content on first load
-      viewer.fitToScreen();
+      // Fit camera to content on first load — SKIPPED when the project pins its
+      // own opening camera (meta.initialView.cam), which is applied at the end of
+      // this chain. Potree's zoomTo() always drives the camera through a TWEEN, and
+      // even a zero-duration tween only writes view.position/lookAt on the NEXT
+      // animation frame — i.e. after our synchronous apply — so fitting here would
+      // silently stomp the pinned view one frame later. controls.stopTweens() can't
+      // save us either: it only stops tweens the CONTROLS registered, not the ones
+      // viewer.zoomTo() creates itself. Not creating the tween is the real fix.
+      if (!(meta && meta.initialView && meta.initialView.cam)) viewer.fitToScreen();
 
       // ===== Auto-scale marker size based on bounding box =====
       try {
@@ -15983,6 +15990,30 @@
         }
       } catch (err) {
         console.warn('Clip box init failed:', err);
+      }
+
+      // ===== INITIAL VIEW (per-project opt-in: projects.js meta.initialView) =====
+      // Pin the camera AND the crop box the viewer opens on, so a shared link
+      // always lands on the same framing instead of the whole-scan fit above.
+      // The shape is deliberately identical to a Saved View's own snapshot, so
+      // the numbers can be lifted straight out of a live viewer:
+      //   initialView: {
+      //     cam:  { position: {x,y,z}, yaw, pitch, radius, mode },
+      //     clip: { initial: { position: {x,y,z}, rotation: {x,y,z}, scale: {x,y,z} } }
+      //   }
+      // Both halves are optional. Runs LAST in the load chain (after
+      // fitToScreen and after the crop box exists) so nothing overwrites it;
+      // reuses the Saved Views appliers, so it restores exactly what a view
+      // recall would. Without the key the existing startup behaviour is kept.
+      try {
+        var _iv = meta && meta.initialView;
+        if (_iv) {
+          if (_iv.clip) _applyClip(_iv.clip);
+          if (_iv.cam) _applyCamera(_iv.cam);
+          console.log('[initialView] applied from projects.js');
+        }
+      } catch (err) {
+        console.warn('initialView failed:', err);
       }
     }).catch((err) => {
       console.error(err);
