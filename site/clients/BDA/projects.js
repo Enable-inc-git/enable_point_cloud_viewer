@@ -5,7 +5,10 @@
 window.PROJECTS = {
   "jarvis": {
     name: "222 Jarvis Elevator 4",
-    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/jarvis/pointclouds/scan"
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/jarvis/pointclouds/scan",
+    // Tekla structural model (models/model.glb on R2). Opt-in: load it on startup
+    // instead of leaving it as an on-demand "Load" row in the Models panel.
+    autoLoadModels: true
   },
   "stjoseph": {
     name: "St. Joseph's Hamilton",
