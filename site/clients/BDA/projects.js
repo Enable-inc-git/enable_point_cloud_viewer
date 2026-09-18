@@ -37,6 +37,9 @@ window.PROJECTS = {
     // +32166.95mm Y. We shift the MODEL by the negative instead (keeps stations /
     // second scan / marks in place). Metres, Potree Z-up world frame.
     modelOffset: { x: -9.15, y: -32.16695, z: 0 },
+    // Load models/model.glb on startup instead of leaving it as an on-demand
+    // "Load" row in the Models panel. The offset above is applied either way.
+    autoLoadModels: true,
     clouds: [
       { id: "scan",    name: "Main Scan", folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/scan",    visible: true },
       { id: "columns", name: "Columns",   folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/columns", visible: true }
