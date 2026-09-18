@@ -6,6 +6,29 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-09-18 — BDA ST. JOSEPH'S: model auto-loads too (d11d7b1d, LIVE) ***
+#############################################################################
+- One-line change: autoLoadModels: true on the stjoseph entry in projects.js.
+  NO viewer edit and NO R2 upload were required — bda/stjoseph/models/ has held
+  model.glb + models.json (+ gridlines.json) since the model was first added,
+  and BDA's viewer.html already carried the autoLoadModels opt-in from ef9372fd.
+  Both BDA projects now auto-load their model; the key is still strictly
+  per-project, NOT a BDA-wide default.
+- modelOffset {-9.15, -32.16695, 0} applies exactly as on a manual load.
+  Verified world bounds [-8.85, -32.218, 0]..[5.617, 11.294, 7.337], inside the
+  crop box (= full scan extents), with Main Scan + Columns both still loading.
+  Re-checked p=jarvis in the same file: its initialView camera/crop and model
+  are unaffected.
+- REUSABLE: once a project's models/ folder AND models.json are on R2 and the
+  viewer has the opt-in, "make the model load by default" is genuinely a
+  one-line projects.js edit. Always list R2 <client>/<project>/models/ FIRST —
+  if models.json is absent, production cannot discover the GLB no matter what
+  the key says (Netlify serves no directory listing).
+- gridlines.json in the same folder is a SEPARATE mechanism
+  (discoverGridlines(), off by default, toggled from the top-bar eye dropdown).
+  autoLoadModels does not touch it.
+
+#############################################################################
 # *** 2026-09-17b — NEW GENERIC OPT-IN: meta.initialView (pinned opening view)
 #     (BDA only so far, commit 8ca80d27, LIVE on p=jarvis)
 #############################################################################
