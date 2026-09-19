@@ -14046,7 +14046,11 @@
     gridScene.name = 'EnableGridScene';
     var _gridGroup = null;            // all lines + label bubbles, positioned at modelOffset
     var _gridLabelSprites = [];       // for per-frame screen-space scaling (ortho + perspective)
-    var _gridlinesVisible = false;    // OFF by default; toggled from the Models panel
+    // OFF by default; toggled from the Models panel. OPT-IN per project
+    // (projects.js meta.autoShowGridlines: true) to have them up on startup —
+    // buildGridlines() reads this when it creates the group, and
+    // updateModelsPanel() draws the eye icon from it, so the toggle shows as on.
+    var _gridlinesVisible = !!(meta && meta.autoShowGridlines);
     var _gridlinesLoaded = false;
     var _gridSnapSegs = [];           // [{a,b:Vector3 WORLD, label}] for along-line snapping
     var _gridSnapNodes = [];          // [{p:Vector3 WORLD, label}] axis intersections (priority)

@@ -40,6 +40,9 @@ window.PROJECTS = {
     // Load models/model.glb on startup instead of leaving it as an on-demand
     // "Load" row in the Models panel. The offset above is applied either way.
     autoLoadModels: true,
+    // Show the models/gridlines.json overlay on startup too (separate mechanism
+    // from the model itself; still toggleable from the Models panel).
+    autoShowGridlines: true,
     clouds: [
       { id: "scan",    name: "Main Scan", folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/scan",    visible: true },
       { id: "columns", name: "Columns",   folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/bda/stjoseph/pointclouds/columns", visible: true }
