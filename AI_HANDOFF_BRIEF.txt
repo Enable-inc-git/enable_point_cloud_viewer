@@ -6,6 +6,34 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-09-18b — NEW GENERIC OPT-IN: meta.autoShowGridlines ***
+#     (BDA only so far, commit 069d7453, LIVE on p=stjoseph)
+#############################################################################
+- Show a project's models/gridlines.json overlay on STARTUP instead of leaving
+  it off behind the Models-panel toggle. In projects.js: autoShowGridlines: true
+- Implementation is a single initialiser — all the gridlines plumbing already
+  keyed off one flag:
+      var _gridlinesVisible = !!(meta && meta.autoShowGridlines);   // was false
+  buildGridlines() sets group.visible from it when it creates the group, and
+  updateModelsPanel() draws the eye icon from the same flag, so the panel toggle
+  shows as ON and still turns the overlay off and back on. meta is assigned at
+  viewer.html:803, long before the gridlines block, so reading it in a top-level
+  var initialiser is safe.
+- GRIDLINES ARE INDEPENDENT OF autoLoadModels — separate discovery function
+  (discoverGridlines()), separate THREE.Scene (gridScene), separate toggle.
+  Auto-loading the model does NOT show grids, and vice versa. A project with no
+  models/gridlines.json gets no toggle row at all.
+- Enabled for stjoseph only; every other project keeps gridlines off by default.
+  Regression-checked p=jarvis: no gridlines.json so no toggle row, and its
+  initialView camera/crop plus auto-loaded model are unaffected.
+- COSMETIC, PRE-EXISTING: at St Joseph's default startup framing (whole 55.8M-pt
+  scan, oblique) the grid LABEL bubbles pile into a dense blue cluster over the
+  model. _declutterGridLabels() bakes label positions in a TOP-VIEW plan, so
+  they only spread cleanly when viewed from above. Flipping the default
+  visibility changed no rendering. If that reads as too busy the fix is
+  label-declutter work, not this key.
+
+#############################################################################
 # *** 2026-09-18 — BDA ST. JOSEPH'S: model auto-loads too (d11d7b1d, LIVE) ***
 #############################################################################
 - One-line change: autoLoadModels: true on the stjoseph entry in projects.js.
