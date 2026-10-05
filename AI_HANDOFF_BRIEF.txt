@@ -6,6 +6,23 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-10-05 — MurrayFranks 1531 Dupont: NEW SCAN + MODEL, NO STATIONS ***
+#     (commit 686654b8, LIVE on p=dupont)
+#############################################################################
+- Re-scan "full final.las" (26,213,953 pts, 0 duplicates) → PotreeConverter 1.7
+  (-s 0.2 --scale 0.001 --attributes RGB INTENSITY --material RGB) → R2
+  murrayfranks/1531dupont/pointclouds/FULLFINAL (new key; projects.js folder
+  updated). "proposed canopy.ifc" → IfcConvert → models/canopy.glb + models.json
+  ("Proposed Canopy (Tekla)"), 1:1, no modelOffset.
+- DELETED from R2: old pointclouds/scan, stations/ (17 panoramas + manifest —
+  they belonged to the old scan), models/dupont.glb. stations.json now 404s so
+  the station feature disables itself. Local copies kept in the gitignored
+  mirror under "1531 Dupont (steel canopy)/_superseded_2026-10-05/".
+- MurrayFranks viewer.html now carries the meta.autoLoadModels opt-in (same
+  hunk as BDA ef9372fd); dupont sets autoLoadModels: true. MurrayFranks still
+  lacks clipToModel / clipModelsToBoxes.
+
+#############################################################################
 # *** 2026-09-18b — NEW GENERIC OPT-IN: meta.autoShowGridlines ***
 #     (BDA only so far, commit 069d7453, LIVE on p=stjoseph)
 #############################################################################
