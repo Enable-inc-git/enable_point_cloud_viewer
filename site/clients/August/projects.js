@@ -13,5 +13,10 @@ window.PROJECTS = {
     name: "410 John Street",
     // Own R2 prefix (august/410john). 30.9M pts, 14 station panoramas.
     folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/august/410john/pointclouds/410john"
+  },
+  "200davis": {
+    name: "200 Davis Drive",
+    // Own R2 prefix (august/200davis). 15.32M pts (deduped), 9 station panoramas.
+    folder: "https://pub-3f436f87578a4223ae3a342484363f71.r2.dev/august/200davis/pointclouds/200davis"
   }
 };

@@ -6,6 +6,20 @@
 ==============================================================================
 
 #############################################################################
+# *** 2026-10-08 — NEW PROJECT: August "200 Davis Drive" (?p=200davis) ***
+#############################################################################
+- Source in site/clients/August/200 Davis Drive/: "final scan.las" (15,350,197
+  pts; 29,377 exact duplicates removed → 15,320,820) → PotreeConverter 1.7
+  (-s 0.2 --scale 0.001 --attributes RGB INTENSITY --material RGB) → R2
+  august/200davis/pointclouds/200davis. 9 stations via tools/extract_stations.py
+  --image-type 4177 --image-dir HighResolution --match-by name (Name == Index,
+  no "Area 1" rows; all 9 at 12192x6096) → R2 august/200davis/stations.
+  No model. The local "200 Davis Drive/" folder is NOT gitignored (only *.las
+  is) — never `git add` it; data lives on R2 only.
+- Stations 4 and 5 sit ~3 m outside the cloud's XY bbox (cleaned/cropped scan);
+  user to confirm the pins line up.
+
+#############################################################################
 # *** 2026-10-05 — MurrayFranks 1531 Dupont: NEW SCAN + MODEL, NO STATIONS ***
 #     (commit 686654b8, LIVE on p=dupont)
 #############################################################################
